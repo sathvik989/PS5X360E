@@ -63,7 +63,7 @@ fi
 
 echo "== Running the build inside Docker (as $(id -u):$(id -g))"
 sudo docker run --rm -i --network host --dns 1.1.1.1 \
-	-v "$WS":/ws -w /ws -e HOME=/ws/.home --user "$(id -u):$(id -g)" \
+	-v "$WS":/ws -w /ws -e HOME=/ws/.home -e BRANCH="$BRANCH" --user "$(id -u):$(id -g)" \
 	"$IMAGE" bash -s <<'INNER'
 set -euo pipefail
 mkdir -p "$HOME"
@@ -71,6 +71,7 @@ git config --global --add safe.directory '*'
 git config --global advice.detachedHead false
 
 R=/ws/PS5X360E
+BRANCH=${BRANCH:-edge-port}
 REFS=$R/.deps/references
 
 # Clone a repository and check out an exact commit (shallow, idempotent).
