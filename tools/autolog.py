@@ -60,7 +60,7 @@ def build_report(name, sections):
     # to session IDs in existing builds, so do not attach an unrelated boot.log.
     first = sections[0][1].decode("utf-8", "replace")
     game = re.search(r"^Game: (.*)$", first, re.M)
-    build = re.search(r"^PS5X360 (.*)$", first, re.M)
+    build = re.search(r"^PS5X360E? (.*)$", first, re.M)
     result = MAGIC + "Game: " + (game[1] if game else "Unknown") + "\n"
     result += "Build: " + (build[1] if build else "Unknown") + "\n"
     result += "Capture: stable log snapshot; session exit not confirmed\n"

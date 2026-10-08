@@ -63,7 +63,7 @@ class SessionLog {
     path_ = path;
     part_ = 0;
     created_.fill(false);
-    metadata_ = "PS5X360 " + version + "\nGame: " + title + "\nTitle ID: " + id +
+    metadata_ = "PS5X360E " + version + "\nGame: " + title + "\nTitle ID: " + id +
                 "\nSource: " + game_path + "\nSession: " + stamp +
                 "\nFirst segment preserved; .part1/.part2/.part3 rotate at 8 MiB.\n\n";
     Header();

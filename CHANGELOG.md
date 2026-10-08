@@ -1,5 +1,17 @@
 # Changelog
 
+PS5X360E versions are `0.1-alpha.N+<PS5X360 base>`: an alpha number of this fork, then the
+PS5X360 release it is built on.
+
+## 0.1-alpha.1+0.5.7-fix.1 (PS5X360E)
+
+- Port Xenia Edge's lwarx/stwcx. reservation rework (generation counters per 128-byte granule,
+  host atomics on the same reservations, isync acquire barrier) and its 32-bit address wrap fix.
+  Targets the Need for Speed: The Run hang and crash in My Cars (job threads spinning in CAS loops).
+- Crash and stall reports print the host registers and code at a fault and the guest code that
+  stalled threads are in.
+- Show PS5X360E and its version on screen and in game logs.
+
 ## 0.5.7-fix.1
 
 - Resolve the reported Left 4 Dead 2 loading stall on the development PS5.
