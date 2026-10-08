@@ -445,11 +445,14 @@ void DumpStallCode(xe::Emulator& emulator) {
     uint32_t protection = 0;
     return heap && heap->QueryProtect(address, &protection) && (protection & xe::kMemoryProtectRead);
   };
+  // The executable's code is read without the page check: its heap does not
+  // describe the image's pages, but they are mapped (the game runs from them).
   const auto dump = [&](const char* what, uint32_t first, uint32_t last) {
     first &= ~3u;
+    const bool code = std::string_view(what) == "code";
     std::string line;
     for (uint32_t at = first; at < last; at += 4) {
-      if (!readable(at)) break;
+      if (!code && !readable(at)) break;
       if (((at - first) & 31) == 0) {
         if (!line.empty()) XELOGW("{}", line);
         line = fmt::format("STALLCODE {} {:08X}:", what, at);
@@ -461,6 +464,7 @@ void DumpStallCode(xe::Emulator& emulator) {
   std::vector<std::pair<uint32_t, uint32_t>> done;
   const auto dump_code = [&](uint32_t address) {
     if (address < 0x80000000u || address >= 0x90000000u) return;
+    if (!processor->LookupModule(address) || !processor->LookupModule(address + 0x7F)) return;
     uint32_t first = address >= 0x200 ? address - 0x200 : 0, last = address + 0x80;
     for (auto* function : processor->FindFunctionsWithAddress(address)) {
       if (!function || function->address() > address) continue;
@@ -473,6 +477,8 @@ void DumpStallCode(xe::Emulator& emulator) {
       }
       break;
     }
+    if (!processor->LookupModule(first)) first = address;
+    if (!processor->LookupModule(last - 4)) last = address + 4;
     for (const auto& range : done)
       if (address >= range.first && address < range.second) return;
     done.emplace_back(first, last);
