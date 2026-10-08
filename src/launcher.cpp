@@ -33,7 +33,7 @@ DECLARE_int32(draw_resolution_scale_y);
 DECLARE_bool(gpu_allow_invalid_fetch_constants);
 DECLARE_int32(anisotropic_override);
 DECLARE_string(occlusion_query);
-DECLARE_string(readback_resolve);
+DECLARE_bool(readback_resolve);  // PS5X360E: a bool in Xenia Edge (Canary: none/fast/full).
 DECLARE_bool(async_shader_compilation);
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(delay_via_maybeyield);
@@ -41,7 +41,7 @@ DECLARE_int32(license_mask);
 DECLARE_uint32(internal_display_resolution);
 DECLARE_uint32(internal_display_resolution_x);
 DECLARE_uint32(internal_display_resolution_y);
-DECLARE_uint64(framerate_limit);
+DECLARE_uint32(framerate_limit);  // PS5X360E: 32-bit in Xenia Edge.
 DECLARE_uint32(kernel_display_gamma_type);
 DECLARE_bool(present_letterbox);
 DECLARE_bool(depth_float24_convert_in_pixel_shader);
@@ -402,8 +402,8 @@ void Settings::Apply() const {
   cvars::anisotropic_override = anisotropic ? anisotropic + 1 : -1;  // 2x is 2 ... 16x is 5.
   static const char* const kOcclusion[] = {"fast", "fake", "fast-alt", "strict"};
   if (cvars::occlusion_query != kOcclusion[occlusion & 3]) cvars::occlusion_query = kOcclusion[occlusion & 3];
-  static const char* const kReadback[] = {"none", "fast", "full"};
-  if (cvars::readback_resolve != kReadback[readback % 3]) cvars::readback_resolve = kReadback[readback % 3];
+  // PS5X360E: Xenia Edge copies resolves back when the CPU touches them; only "none" turns it off.
+  cvars::readback_resolve = readback % 3 != 0;
   // PS5X360E: Xenia Edge always reads memexport results back; the setting is kept but unused.
   (void)memexport;
   cvars::async_shader_compilation = async_shaders != 0;

@@ -3,6 +3,13 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.2+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Fix the crash at start (before the window): two settings changed type in Xenia Edge.
+  readback_resolve is a switch there (Canary: none/fast/full), so writing "none" into it crashed;
+  framerate_limit is 32-bit. The launcher's readback setting now turns Edge's readback off only
+  for "none". Every other setting the PS5 code touches was checked against Edge's types.
+
 ## 0.2-alpha.1+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - The emulator core is now Xenia Edge (has207/xenia-edge 2e6898afc) instead of Xenia Canary
