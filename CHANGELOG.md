@@ -3,6 +3,20 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.6+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Need for Speed The Run still stops after Start (around My Cars) exactly as it did on the
+  Canary core: the same guest code spins, and the GPU waits forever at the same kind of
+  WAIT_REG_MEM for a fourth 0xFFFFFFFF marker next to three that did arrive. Xenia on PC has not
+  been reported past this point either.
+- A memory WAIT_REG_MEM that is not met at once now first hands pending resolves to the GPU and
+  waits for memory-export output the guest may be waiting for (on the console, output of earlier
+  GPU work is there for the command processor to see).
+- When such a wait still lasts 3 seconds, the log now lists the last 64 GPU packets and the last
+  64 GPU memory writes, resolves, memory exports and interrupts, to find what should have
+  written the marker. EVENT_WRITE packets with an address (not emulated) are logged once per
+  event.
+
 ## 0.2-alpha.5+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Fix the controller doing nothing in game (Start, and every other button): Xenia Edge only

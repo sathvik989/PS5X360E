@@ -1453,7 +1453,7 @@ index ed9bb6b10..ac659d0f9 100644
    for (int i = 0; i < 32; i++) {
      crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
 diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
-index 4bfd8c3ec..ed29e5ce8 100644
+index 4bfd8c3ec..4caca7c33 100644
 --- a/src/xenia/gpu/command_processor.cc
 +++ b/src/xenia/gpu/command_processor.cc
 @@ -144,6 +144,12 @@ DEFINE_bool(
@@ -1481,8 +1481,69 @@ index 4bfd8c3ec..ed29e5ce8 100644
    if (!SetupContext()) {
      xe::FatalError("Unable to setup command processor internal state");
      return;
+@@ -553,6 +564,60 @@ void CommandProcessor::WorkerThreadMain() {
+   ShutdownContext();
+ }
+ 
++void CommandProcessor::DiagDump() {
++  auto name = [](uint32_t opcode) -> const char* {
++    switch (opcode) {
++      case xenos::PM4_INDIRECT_BUFFER:
++      case xenos::PM4_INDIRECT_BUFFER_PFD:
++        return "INDIRECT_BUFFER";
++      case xenos::PM4_WAIT_REG_MEM:
++        return "WAIT_REG_MEM";
++      case xenos::PM4_REG_RMW:
++        return "REG_RMW";
++      case xenos::PM4_REG_TO_MEM:
++        return "REG_TO_MEM";
++      case xenos::PM4_MEM_WRITE:
++        return "MEM_WRITE";
++      case xenos::PM4_COND_WRITE:
++        return "COND_WRITE";
++      case xenos::PM4_EVENT_WRITE:
++        return "EVENT_WRITE";
++      case xenos::PM4_EVENT_WRITE_SHD:
++        return "EVENT_WRITE_SHD";
++      case xenos::PM4_EVENT_WRITE_EXT:
++        return "EVENT_WRITE_EXT";
++      case xenos::PM4_EVENT_WRITE_ZPD:
++        return "EVENT_WRITE_ZPD";
++      case xenos::PM4_INTERRUPT:
++        return "INTERRUPT";
++      case xenos::PM4_XE_SWAP:
++        return "XE_SWAP";
++      case xenos::PM4_DRAW_INDX:
++        return "DRAW_INDX";
++      case xenos::PM4_DRAW_INDX_2:
++        return "DRAW_INDX_2";
++      case 0x100:
++        return "RESOLVE";
++      case 0x101:
++        return "MEMEXPORT";
++      default:
++        return "packet";
++    }
++  };
++  auto dump = [&](const char* what, const auto& ring, uint32_t pos) {
++    const uint32_t n = std::min<uint32_t>(pos, uint32_t(ring.size()));
++    XELOGW("GPU: last {} {}, oldest first:", n, what);
++    for (uint32_t i = pos - n; i != pos; ++i) {
++      const DiagPacket& p = ring[i % ring.size()];
++      XELOGW("GPU:   {} {:02X} n{} {:08X} {:08X} {:08X}", name(p.opcode),
++             p.opcode, p.count, p.d0, p.d1, p.d2);
++    }
++  };
++  dump("packets (no constants)", diag_packets_, diag_packets_pos_);
++  dump("memory writes, resolves and interrupts", diag_writes_,
++       diag_writes_pos_);
++}
++
+ void CommandProcessor::Pause() {
+   if (paused_) {
+     return;
 diff --git a/src/xenia/gpu/command_processor.h b/src/xenia/gpu/command_processor.h
-index 96d842b84..0e24a016d 100644
+index 96d842b84..863802274 100644
 --- a/src/xenia/gpu/command_processor.h
 +++ b/src/xenia/gpu/command_processor.h
 @@ -136,6 +136,12 @@ class CommandProcessor {
@@ -1507,6 +1568,29 @@ index 96d842b84..0e24a016d 100644
  
    uint32_t primary_buffer_ptr_ = 0;
    uint32_t primary_buffer_size_ = 0;
+@@ -713,6 +721,22 @@ class CommandProcessor {
+   uint32_t read_ptr_update_freq_ = 0;
+   uint32_t read_ptr_writeback_ptr_ = 0;
+ 
++  // PS5X360E: the latest GPU packets, and the latest packets that write guest
++  // memory or interrupt the CPU, printed when a WAIT_REG_MEM never ends.
++  struct DiagPacket {
++    uint32_t opcode, count, d0, d1, d2;
++  };
++  std::array<DiagPacket, 64> diag_packets_{};
++  uint32_t diag_packets_pos_ = 0;
++  std::array<DiagPacket, 64> diag_writes_{};
++  uint32_t diag_writes_pos_ = 0;
++  uint32_t diag_event_write_addr_types_ = 0;
++  void DiagRecordWrite(uint32_t opcode, uint32_t a, uint32_t b, uint32_t c) {
++    diag_writes_[diag_writes_pos_++ % diag_writes_.size()] = {opcode, 0, a, b,
++                                                              c};
++  }
++  void DiagDump();
++
+   std::unique_ptr<xe::threading::Event> write_ptr_index_event_;
+   std::atomic<uint32_t> write_ptr_index_;
+ 
 diff --git a/src/xenia/gpu/draw_util.cc b/src/xenia/gpu/draw_util.cc
 index 916814c86..a3bca419c 100644
 --- a/src/xenia/gpu/draw_util.cc
@@ -1563,10 +1647,37 @@ index b10f87bba..f3f99ae88 100644
  #include "xenia/base/byte_stream.h"
  #include "xenia/base/clock.h"
 diff --git a/src/xenia/gpu/pm4_command_processor_implement.h b/src/xenia/gpu/pm4_command_processor_implement.h
-index b5b005966..d5d987e5c 100644
+index b5b005966..d4d6d731d 100644
 --- a/src/xenia/gpu/pm4_command_processor_implement.h
 +++ b/src/xenia/gpu/pm4_command_processor_implement.h
-@@ -798,6 +798,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_XE_SWAP(uint32_t packet,
+@@ -494,6 +494,18 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
+       }
+     }
+ 
++    // PS5X360E: kept for the report of a WAIT_REG_MEM that never ends.
++    if (opcode != PM4_SET_CONSTANT && opcode != PM4_SET_CONSTANT2 &&
++        opcode != PM4_LOAD_ALU_CONSTANT && opcode != PM4_NOP) {
++      RingBuffer peek = reader_;
++      uint32_t d[3] = {};
++      for (uint32_t i = 0; i < std::min(count, 3u); ++i) {
++        d[i] = peek.ReadAndSwap<uint32_t>();
++      }
++      diag_packets_[diag_packets_pos_++ % diag_packets_.size()] = {
++          opcode, count, d[0], d[1], d[2]};
++    }
++
+     bool result = false;
+     switch (opcode) {
+       case PM4_ME_INIT:
+@@ -754,6 +766,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_INTERRUPT(
+ 
+   // generate interrupt from the command stream
+   uint32_t cpu_mask = reader_.ReadAndSwap<uint32_t>();
++  DiagRecordWrite(PM4_INTERRUPT, cpu_mask, 0, 0);
+ 
+   if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+     COMMAND_PROCESSOR::InsertDebugMarker("PM4_INTERRUPT: cpu_mask=0x%02X",
+@@ -798,6 +811,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_XE_SWAP(uint32_t packet,
                                           frontbuffer_height);
    }
  
@@ -1574,7 +1685,7 @@ index b5b005966..d5d987e5c 100644
    COMMAND_PROCESSOR::IssueSwap(frontbuffer_ptr, frontbuffer_width,
                                 frontbuffer_height);
  
-@@ -870,6 +871,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -870,6 +884,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
                  : register_file_->values[poll_reg_addr];
  
    bool matched = false;
@@ -1585,10 +1696,16 @@ index b5b005966..d5d987e5c 100644
  
    do {
      uint32_t value = value_ref;
-@@ -895,6 +900,29 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -895,6 +913,36 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
      matched = MatchValueAndRef(value & mask, ref, wait_info);
  
      if (!matched) {
++      // PS5X360E: on the console, what earlier GPU work writes is there for the
++      // CP to see; here export and resolve output may still be on the host GPU.
++      if (is_memory && wait_started == std::chrono::steady_clock::time_point{}) {
++        COMMAND_PROCESSOR::SubmitResolvesForGuestSync();
++        COMMAND_PROCESSOR::AwaitMemexportForFence();
++      }
 +      if (!wait_reported) {
 +        const auto now = std::chrono::steady_clock::now();
 +        if (wait_started == std::chrono::steady_clock::time_point{}) {
@@ -1610,12 +1727,67 @@ index b5b005966..d5d987e5c 100644
 +                   around[2], around[3], around[4], around[5], around[6],
 +                   around[7]);
 +          }
++          DiagDump();
 +        }
 +      }
        // Wait using the duration specified by the guest.
        if (wait >= 0x100) {
          PrepareForWait();
-@@ -1359,10 +1387,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
+@@ -978,6 +1026,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
+ 
+   auto endianness = static_cast<xenos::Endian>(mem_addr & 0x3);
+   mem_addr &= ~0x3;
++  DiagRecordWrite(PM4_REG_TO_MEM, mem_addr, reg_val, reg_addr);
+   reg_val = GpuSwap(reg_val, endianness);
+   xe::store(memory_->TranslatePhysical(mem_addr), reg_val);
+   trace_writer_.WriteMemoryWrite(CpuToGpu(mem_addr), 4);
+@@ -997,6 +1046,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
+ 
+   for (uint32_t i = 0; i < count - 1; i++) {
+     uint32_t write_data = reader_.ReadAndSwap<uint32_t>();
++    if (i == 0) {
++      DiagRecordWrite(PM4_MEM_WRITE, write_addr, write_data, count - 1);
++    }
+ 
+     auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
+     auto addr = write_addr & ~0x3;
+@@ -1042,6 +1094,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
+     value = register_file_->values[poll_reg_addr];
+   }
+   bool matched = MatchValueAndRef(value & mask, ref, wait_info);
++  DiagRecordWrite(PM4_COND_WRITE, write_reg_addr, write_data,
++                  (matched ? 0x80000000u : 0u) | (wait_info & 0x1FF));
+ 
+   if (matched) {
+     // Write.
+@@ -1081,7 +1135,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
+     // Just an event flag? Where does this write?
+   } else {
+     // Write to an address.
+-    assert_always();
++    // PS5X360E: not emulated; say so once per event, it may be what a stuck
++    // WAIT_REG_MEM waits for.
++    RingBuffer peek = reader_;
++    uint32_t d1 = peek.ReadAndSwap<uint32_t>();
++    uint32_t d2 = count > 2 ? peek.ReadAndSwap<uint32_t>() : 0;
++    DiagRecordWrite(PM4_EVENT_WRITE, d1, d2, initiator);
++    if (!(diag_event_write_addr_types_ & (1u << (event_type & 31)))) {
++      diag_event_write_addr_types_ |= 1u << (event_type & 31);
++      XELOGW("GPU: EVENT_WRITE {} with {} data dwords ({:08X} {:08X}) ignored",
++             GetEventName(event_type), count - 1, d1, d2);
++    }
+     reader_.AdvanceRead((count - 1) * sizeof(uint32_t));
+   }
+   return true;
+@@ -1116,6 +1180,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
+     // Write value.
+     data_value = value;
+   }
++  DiagRecordWrite(PM4_EVENT_WRITE_SHD, address, data_value, initiator);
+   auto endianness = static_cast<xenos::Endian>(address & 0x3);
+   address &= ~0x3;
+   data_value = GpuSwap(data_value, endianness);
+@@ -1359,10 +1424,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
        }
  
        if (!draw_succeeded) {
@@ -1778,7 +1950,7 @@ index c6a2f0850..a0507e83a 100644
        "{} {} {}{}x{}x{} {} {} texture with {} {}packed mip level{}, "
        "base at 0x{:08X} (pitch {}, size 0x{:08X}), mips at 0x{:08X} (size "
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index 76fc1a45f..5920b282d 100644
+index 76fc1a45f..65293c8af 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,6 +8,9 @@
@@ -1811,6 +1983,25 @@ index 76fc1a45f..5920b282d 100644
    EndSubmission(true);
  }
  
+@@ -4262,6 +4269,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+   }
+ 
+   if (!memexport_ranges_.empty()) {
++    // PS5X360E: for the report of a WAIT_REG_MEM that never ends.
++    DiagRecordWrite(0x101, memexport_ranges_[0].base_address_dwords << 2,
++                    memexport_ranges_[0].size_bytes,
++                    uint32_t(memexport_ranges_.size()));
+     if (route_to_host) {
+       // Producer draw: output landed in host_buffer_ (guest RAM), already CPU
+       // coherent, so no readback. Just record the written pages. Consumers then
+@@ -4765,6 +4776,7 @@ bool VulkanCommandProcessor::IssueCopy() {
+     return false;
+   }
+   ++submission_in_progress_.resolve_count;
++  DiagRecordWrite(0x100, written_address, written_length, is_scaled);
+ 
+   // The resolve wrote the device buffer. Drop any stale memexport marks so the
+   // output isn't overwritten with guest RAM by a later texture load.
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.h b/src/xenia/gpu/vulkan/vulkan_command_processor.h
 index 5fdd9173a..d1b855e78 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.h
