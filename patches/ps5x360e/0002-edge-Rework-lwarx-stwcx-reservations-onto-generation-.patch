@@ -1,0 +1,528 @@
+From f9b7ba6e51bbf7030fb7361178788c3e68e9bc5f Mon Sep 17 00:00:00 2001
+From: "Herman S." <429230+has207@users.noreply.github.com>
+Date: Sun, 26 Jul 2026 21:57:30 +0900
+Subject: [PATCH 2/5] [CPU] Rework lwarx/stwcx reservations onto generation
+ counters
+
+PS5X360E: ported from Xenia Edge (github.com/has207/xenia-edge) onto
+Xenia Canary b083312b + PS5X360's patch. The a64 (ARM) parts are left out:
+the PS5 build only uses the x64 backend.
+
+The reservation bitmap tracked one exclusive bit per 64KB block, released
+only by a matching stwcx. Three problems followed:
+
+- Only one thread could hold a block, so a second lwarx got no reservation
+  at all and its stwcx could never succeed until the first thread released.
+- An abandoned lwarx leaked its bit forever. The usual CAS early-exit
+  (lwarx/cmpw/bne- out) and thread teardown both do this, and afterwards
+  every stwcx in that 64KB fails, so any guest CAS loop there spins forever.
+- x64 emitted an unconditional int3 when an lwarx was taken with a
+  reservation already live, and when a stwcx landed in a different block
+  than its lwarx. PPC replaces the reservation in the first case and fails
+  the store in the second.
+
+Replace the bitmap with a hashed table of generation counters at the 128
+byte Xenon granule. lwarx snapshots the address and its granule generation,
+stwcx requires the flag, an exact address match and an unchanged
+generation, then compare-exchanges and bumps the generation only when the
+store lands. A failed stwcx leaves remote reservations alone, matching
+hardware. No owned state is left to hand back, so nothing can leak and
+thread teardown needs no cleanup. Table collisions and granule sharing cost
+only a spurious failure, which the architecture permits.
+
+(cherry picked from commit f0e2a16f4bc4d41ab5dbbd9ac7538b64693a24b8)
+---
+ src/xenia/cpu/backend/x64/x64_backend.cc      | 102 ++++++------------
+ src/xenia/cpu/backend/x64/x64_backend.h       |  23 ++--
+ src/xenia/cpu/backend/x64/x64_seq_memory.cc   |  42 ++++++--
+ src/xenia/cpu/hir/opcodes.inl                 |   6 +-
+ src/xenia/cpu/ppc/ppc_context.h               |   2 -
+ src/xenia/cpu/ppc/ppc_emit_memory.cc          |   2 +-
+ src/xenia/cpu/ppc/ppc_hir_builder.cc          |   8 --
+ src/xenia/cpu/ppc/ppc_hir_builder.h           |   2 -
+ src/xenia/cpu/ppc/testing/instr_stwcx.s       |  81 ++++++++++++++
+ src/xenia/cpu/ppc/testing/ppc_testing_main.cc |  10 +-
+ 10 files changed, 175 insertions(+), 103 deletions(-)
+
+diff --git a/src/xenia/cpu/backend/x64/x64_backend.cc b/src/xenia/cpu/backend/x64/x64_backend.cc
+index 3e52e704e..4338f7166 100644
+--- a/src/xenia/cpu/backend/x64/x64_backend.cc
++++ b/src/xenia/cpu/backend/x64/x64_backend.cc
+@@ -1557,39 +1557,24 @@ void* X64HelperEmitter::EmitFrsqrteHelper() {
+   return EmitCurrentForOffsets(code_offsets);
+ }
+ 
++// ecx = guest addr
++// rax holds the host addr and must survive the call
+ void* X64HelperEmitter::EmitTryAcquireReservationHelper() {
+   _code_offsets code_offsets = {};
+   code_offsets.prolog = getSize();
+ 
+-  Xbyak::Label already_has_a_reservation;
+-  Xbyak::Label acquire_new_reservation;
+-
+-  btr(GetBackendFlagsPtr(), kX64BackendHasReserveBit);
+   mov(r8, GetBackendCtxPtr(offsetof(X64BackendContext, reserve_helper_)));
+-  jc(already_has_a_reservation);
+-
+-  shr(ecx, RESERVE_BLOCK_SHIFT);
+-  xor_(r9d, r9d);
+   mov(edx, ecx);
+-  shr(edx, 6);  // divide by 64
+-  lea(rdx, ptr[r8 + rdx * 8]);
+-  and_(ecx, 64 - 1);
+-
+-  lock();
+-  bts(qword[rdx], rcx);
+-  // set flag on local backend context for thread to indicate our previous
+-  // attempt to get the reservation succeeded
+-  setnc(r9b);  // success = bitmap did not have a set bit at the idx
+-  shl(r9b, kX64BackendHasReserveBit);
+-
+-  mov(GetBackendCtxPtr(offsetof(X64BackendContext, cached_reserve_offset)),
+-      rdx);
+-  mov(GetBackendCtxPtr(offsetof(X64BackendContext, cached_reserve_bit)), ecx);
+-
+-  or_(GetBackendCtxPtr(offsetof(X64BackendContext, flags)), r9d);
++  shr(edx, RESERVE_GRANULE_SHIFT);
++  and_(edx, RESERVE_ENTRY_MASK);
++  // Snapshot the granule generation before the caller reads the value. x86
++  // load-load ordering keeps the two in program order.
++  mov(r9d, dword[r8 + rdx * 4]);
++  mov(GetBackendCtxPtr(offsetof(X64BackendContext, reserve_generation)), r9d);
++  mov(GetBackendCtxPtr(offsetof(X64BackendContext, reserve_address)), ecx);
++  // lwarx always replaces any reservation this thread already held.
++  bts(GetBackendFlagsPtr(), kX64BackendHasReserveBit);
+   ret();
+-  L(already_has_a_reservation);
+-  DebugBreak();
+ 
+   code_offsets.prolog_stack_alloc = getSize();
+   code_offsets.body = getSize();
+@@ -1600,73 +1585,54 @@ void* X64HelperEmitter::EmitTryAcquireReservationHelper() {
+ // ecx=guest addr
+ // r9 = host addr
+ // r8 = value
+-// if ZF is set and CF is set, we succeeded
++// if ZF is set, we succeeded
+ void* X64HelperEmitter::EmitReservedStoreHelper(bool bit64) {
+   _code_offsets code_offsets = {};
+   code_offsets.prolog = getSize();
+-  Xbyak::Label done;
+-  Xbyak::Label reservation_isnt_for_our_addr;
+-  Xbyak::Label somehow_double_cleared;
+-  // carry must be set + zero flag must be set
++  Xbyak::Label fail;
+ 
++  // stwcx. always clears the reservation, whether or not it stores.
+   btr(GetBackendFlagsPtr(), kX64BackendHasReserveBit);
++  jnc(fail);
+ 
+-  jnc(done);
++  // The reservation must be for the address we're storing to.
++  cmp(GetBackendCtxPtr(offsetof(X64BackendContext, reserve_address)), ecx);
++  jnz(fail);
+ 
+   mov(rax, GetBackendCtxPtr(offsetof(X64BackendContext, reserve_helper_)));
+-
+-  shr(ecx, RESERVE_BLOCK_SHIFT);
+   mov(edx, ecx);
+-  shr(edx, 6);  // divide by 64
+-  lea(rdx, ptr[rax + rdx * 8]);
+-  // begin acquiring exclusive access to cacheline containing our bit
+-  prefetchw(ptr[rdx]);
++  shr(edx, RESERVE_GRANULE_SHIFT);
++  and_(edx, RESERVE_ENTRY_MASK);
++  lea(rcx, ptr[rax + rdx * 4]);
++  // begin acquiring exclusive access to the counter we're about to bump
++  prefetchw(ptr[rcx]);
+ 
+-  cmp(GetBackendCtxPtr(offsetof(X64BackendContext, cached_reserve_offset)),
+-      rdx);
+-  jnz(reservation_isnt_for_our_addr);
++  // Anyone storing to this granule since our lwarx kills the reservation.
++  mov(edx, dword[rcx]);
++  cmp(GetBackendCtxPtr(offsetof(X64BackendContext, reserve_generation)), edx);
++  jnz(fail);
+ 
+   mov(rax,
+       GetBackendCtxPtr(offsetof(X64BackendContext, cached_reserve_value_)));
+ 
+-  // we need modulo bitsize, it turns out bittests' modulus behavior for the
+-  // bitoffset only applies for register operands, for memory ones we bug out
+-  // todo: actually, the above note may not be true, double check it
+-  and_(ecx, 64 - 1);
+-  cmp(GetBackendCtxPtr(offsetof(X64BackendContext, cached_reserve_bit)), ecx);
+-  jnz(reservation_isnt_for_our_addr);
+-
+-  // was our memory modified by kernel code or something?
+   lock();
+   if (bit64) {
+     cmpxchg(ptr[r9], r8);
+-
+   } else {
+     cmpxchg(ptr[r9], r8d);
+   }
+-  // the ZF flag is unaffected by BTR! we exploit this for the retval
++  jnz(fail);
+ 
+-  // cancel our lock on the 65k block
++  // The store landed, so kill every other reservation on this granule.
+   lock();
+-  btr(qword[rdx], rcx);
++  inc(dword[rcx]);
+ 
+-  jnc(somehow_double_cleared);
+-
+-  L(done);
+-  // i don't care that theres a dependency on the prev value of rax atm
+-  // sadly theres no CF&ZF condition code
+-  setz(al);
+-  setc(ah);
+-  cmp(ax, 0x0101);
++  xor_(eax, eax);  // ZF = 1
+   ret();
+ 
+-  // could be the same label, but otherwise we don't know where we came from
+-  // when one gets triggered
+-  L(reservation_isnt_for_our_addr);
+-  DebugBreak();
+-
+-  L(somehow_double_cleared);  // somehow, something else cleared our reserve??
+-  DebugBreak();
++  L(fail);
++  or_(eax, 1);  // ZF = 0
++  ret();
+ 
+   code_offsets.prolog_stack_alloc = getSize();
+   code_offsets.body = getSize();
+diff --git a/src/xenia/cpu/backend/x64/x64_backend.h b/src/xenia/cpu/backend/x64/x64_backend.h
+index c7b55f72f..0bcb06abc 100644
+--- a/src/xenia/cpu/backend/x64/x64_backend.h
++++ b/src/xenia/cpu/backend/x64/x64_backend.h
+@@ -57,15 +57,20 @@ static constexpr uint32_t GUEST_TRAMPOLINE_MIN_LEN = 8;
+ static constexpr uint32_t MAX_GUEST_TRAMPOLINES =
+     (GUEST_TRAMPOLINE_END - GUEST_TRAMPOLINE_BASE) / GUEST_TRAMPOLINE_MIN_LEN;
+ 
+-#define RESERVE_BLOCK_SHIFT 16
+-
+-#define RESERVE_NUM_ENTRIES \
+-  ((1024ULL * 1024ULL * 1024ULL * 4ULL) >> RESERVE_BLOCK_SHIFT)
+ // https://codalogic.com/blog/2022/12/06/Exploring-PowerPCs-read-modify-write-operations
++// The Xenon reservation granule is one 128 byte cache line.
++static constexpr uint32_t RESERVE_GRANULE_SHIFT = 7;
++// One generation counter per granule, hashed into a fixed size table. A
++// successful stwcx. bumps its granule, which kills every other thread's
++// reservation on it. Two granules colliding in the table only costs a spurious
++// stwcx. failure, which the architecture permits.
++static constexpr uint32_t RESERVE_NUM_ENTRIES = 1u << 20;
++static constexpr uint32_t RESERVE_ENTRY_MASK = RESERVE_NUM_ENTRIES - 1;
++
+ struct ReserveHelper {
+-  uint64_t blocks[RESERVE_NUM_ENTRIES / 64];
++  uint32_t generations[RESERVE_NUM_ENTRIES];
+ 
+-  ReserveHelper() { memset(blocks, 0, sizeof(blocks)); }
++  ReserveHelper() { memset(generations, 0, sizeof(generations)); }
+ };
+ 
+ struct X64BackendStackpoint {
+@@ -100,8 +105,10 @@ struct X64BackendContext {
+   uint64_t* guest_tick_count;
+   // records mapping of host_stack to guest_stack
+   X64BackendStackpoint* stackpoints;
+-  uint64_t cached_reserve_offset;
+-  uint32_t cached_reserve_bit;
++  // guest address the live reservation was taken on, and the granule
++  // generation as it read at that point
++  uint32_t reserve_address;
++  uint32_t reserve_generation;
+   unsigned int current_stackpoint_depth;
+   unsigned int mxcsr_fpu;  // currently, the way we implement rounding mode
+                            // affects both vmx and the fpu
+diff --git a/src/xenia/cpu/backend/x64/x64_seq_memory.cc b/src/xenia/cpu/backend/x64/x64_seq_memory.cc
+index f59af1102..091b5bb9b 100644
+--- a/src/xenia/cpu/backend/x64/x64_seq_memory.cc
++++ b/src/xenia/cpu/backend/x64/x64_seq_memory.cc
+@@ -449,7 +449,11 @@ struct RESERVED_LOAD_INT32
+     // we will do a load first, but we'll need exclusive access once we do our
+     // atomic op in the store
+     e.prefetchw(e.ptr[e.rax]);
+-    e.mov(e.ecx, i.src1.reg().cvt32());
++    if (i.src1.is_constant) {
++      e.mov(e.ecx, static_cast<uint32_t>(i.src1.constant()));
++    } else {
++      e.mov(e.ecx, i.src1.reg().cvt32());
++    }
+     e.call(e.backend()->try_acquire_reservation_helper_);
+     e.mov(i.dest, e.dword[e.rax]);
+ 
+@@ -464,14 +468,18 @@ struct RESERVED_LOAD_INT64
+   static void Emit(X64Emitter& e, const EmitArgType& i) {
+     // try_acquire_reservation_helper_ doesnt spoil rax
+     e.lea(e.rax, e.ptr[ComputeMemoryAddress(e, i.src1)]);
+-    e.mov(e.ecx, i.src1.reg().cvt32());
++    if (i.src1.is_constant) {
++      e.mov(e.ecx, static_cast<uint32_t>(i.src1.constant()));
++    } else {
++      e.mov(e.ecx, i.src1.reg().cvt32());
++    }
+     // begin acquiring exclusive access to the location
+     // we will do a load first, but we'll need exclusive access once we do our
+     // atomic op in the store
+     e.prefetchw(e.ptr[e.rax]);
+ 
+     e.call(e.backend()->try_acquire_reservation_helper_);
+-    e.mov(i.dest, e.qword[ComputeMemoryAddress(e, i.src1)]);
++    e.mov(i.dest, e.qword[e.rax]);
+ 
+     e.mov(
+         e.GetBackendCtxPtr(offsetof(X64BackendContext, cached_reserve_value_)),
+@@ -488,13 +496,21 @@ struct RESERVED_STORE_INT32
+     : Sequence<RESERVED_STORE_INT32,
+                I<OPCODE_RESERVED_STORE, I8Op, I64Op, I32Op>> {
+   static void Emit(X64Emitter& e, const EmitArgType& i) {
+-    // edx=guest addr
++    // ecx = guest addr
+     // r9 = host addr
+     // r8 = value
+-    // if ZF is set and CF is set, we succeeded
+-    e.mov(e.ecx, i.src1.reg().cvt32());
++    // if ZF is set, we succeeded
++    if (i.src1.is_constant) {
++      e.mov(e.ecx, static_cast<uint32_t>(i.src1.constant()));
++    } else {
++      e.mov(e.ecx, i.src1.reg().cvt32());
++    }
+     e.lea(e.r9, e.ptr[ComputeMemoryAddress(e, i.src1)]);
+-    e.mov(e.r8d, i.src2);
++    if (i.src2.is_constant) {
++      e.mov(e.r8d, static_cast<uint32_t>(i.src2.constant()));
++    } else {
++      e.mov(e.r8d, i.src2);
++    }
+     e.call(e.backend()->reserved_store_32_helper);
+     e.setz(i.dest);
+   }
+@@ -504,9 +520,17 @@ struct RESERVED_STORE_INT64
+     : Sequence<RESERVED_STORE_INT64,
+                I<OPCODE_RESERVED_STORE, I8Op, I64Op, I64Op>> {
+   static void Emit(X64Emitter& e, const EmitArgType& i) {
+-    e.mov(e.ecx, i.src1.reg().cvt32());
++    if (i.src1.is_constant) {
++      e.mov(e.ecx, static_cast<uint32_t>(i.src1.constant()));
++    } else {
++      e.mov(e.ecx, i.src1.reg().cvt32());
++    }
+     e.lea(e.r9, e.ptr[ComputeMemoryAddress(e, i.src1)]);
+-    e.mov(e.r8, i.src2);
++    if (i.src2.is_constant) {
++      e.mov(e.r8, static_cast<uint64_t>(i.src2.constant()));
++    } else {
++      e.mov(e.r8, i.src2);
++    }
+     e.call(e.backend()->reserved_store_64_helper);
+     e.setz(i.dest);
+   }
+diff --git a/src/xenia/cpu/hir/opcodes.inl b/src/xenia/cpu/hir/opcodes.inl
+index 255b4fb80..e0c31e577 100644
+--- a/src/xenia/cpu/hir/opcodes.inl
++++ b/src/xenia/cpu/hir/opcodes.inl
+@@ -706,14 +706,14 @@ DEFINE_OPCODE(
+     OPCODE_SIG_X_V_V,
+     OPCODE_FLAG_MEMORY)
+ 
+-DEFINE_OPCODE(	
++DEFINE_OPCODE(
+ 	OPCODE_RESERVED_LOAD,
+ 	"reserved_load",
+     OPCODE_SIG_V_V,
+-    OPCODE_FLAG_MEMORY)
++    OPCODE_FLAG_MEMORY | OPCODE_FLAG_VOLATILE)
+ 
+ DEFINE_OPCODE(
+     OPCODE_RESERVED_STORE,
+     "reserved_store",
+     OPCODE_SIG_V_V_V,
+-    OPCODE_FLAG_MEMORY)
+\ No newline at end of file
++    OPCODE_FLAG_MEMORY | OPCODE_FLAG_VOLATILE)
+\ No newline at end of file
+diff --git a/src/xenia/cpu/ppc/ppc_context.h b/src/xenia/cpu/ppc/ppc_context.h
+index c9498e57c..bb241e116 100644
+--- a/src/xenia/cpu/ppc/ppc_context.h
++++ b/src/xenia/cpu/ppc/ppc_context.h
+@@ -426,8 +426,6 @@ typedef struct alignas(64) PPCContext_s {
+ 
+   uint8_t* physical_membase;
+ 
+-  // Value of last reserved load
+-  uint64_t reserved_val;
+   ThreadState* thread_state;
+   uint8_t* virtual_membase;
+ 
+diff --git a/src/xenia/cpu/ppc/ppc_emit_memory.cc b/src/xenia/cpu/ppc/ppc_emit_memory.cc
+index 33e1b0f46..368b2f6c3 100644
+--- a/src/xenia/cpu/ppc/ppc_emit_memory.cc
++++ b/src/xenia/cpu/ppc/ppc_emit_memory.cc
+@@ -892,7 +892,7 @@ int InstrEmit_stwcx(PPCHIRBuilder& f, const InstrData& i) {
+ 
+     f.StoreContext(offsetof(PPCContext, cr0.cr0_eq), f.LoadConstantInt8(1));
+   } else {
+-    Value* v = f.StoreWithReserve(ea, rt, INT64_TYPE);
++    Value* v = f.StoreWithReserve(ea, rt, INT32_TYPE);
+     f.StoreContext(offsetof(PPCContext, cr0.cr0_eq), v);
+   }
+ 
+diff --git a/src/xenia/cpu/ppc/ppc_hir_builder.cc b/src/xenia/cpu/ppc/ppc_hir_builder.cc
+index 42d996cba..0f069851b 100644
+--- a/src/xenia/cpu/ppc/ppc_hir_builder.cc
++++ b/src/xenia/cpu/ppc/ppc_hir_builder.cc
+@@ -577,14 +577,6 @@ void PPCHIRBuilder::StoreVR(uint32_t reg, Value* value) {
+   trace_reg.value = value;
+ }
+ 
+-void PPCHIRBuilder::StoreReserved(Value* val) {
+-  assert_true(val->type == INT64_TYPE);
+-  StoreContext(offsetof(PPCContext, reserved_val), val);
+-}
+-
+-Value* PPCHIRBuilder::LoadReserved() {
+-  return LoadContext(offsetof(PPCContext, reserved_val), INT64_TYPE);
+-}
+ void PPCHIRBuilder::SetReturnAddress(Value* value) {
+   /*
+      Record the address as being a possible target of a return. This is
+diff --git a/src/xenia/cpu/ppc/ppc_hir_builder.h b/src/xenia/cpu/ppc/ppc_hir_builder.h
+index f6f76fb5b..c7e08aa42 100644
+--- a/src/xenia/cpu/ppc/ppc_hir_builder.h
++++ b/src/xenia/cpu/ppc/ppc_hir_builder.h
+@@ -78,8 +78,6 @@ class PPCHIRBuilder : public hir::HIRBuilder {
+   Value* LoadVR(uint32_t reg);
+   void StoreVR(uint32_t reg, Value* value);
+ 
+-  void StoreReserved(Value* val);
+-  Value* LoadReserved();
+   // calls original impl in hirbuilder, but also records the is_return_site bit
+   // into flags in the guestmodule
+   void SetReturnAddress(Value* value);
+diff --git a/src/xenia/cpu/ppc/testing/instr_stwcx.s b/src/xenia/cpu/ppc/testing/instr_stwcx.s
+index e9cacd1ba..67bf6101c 100644
+--- a/src/xenia/cpu/ppc/testing/instr_stwcx.s
++++ b/src/xenia/cpu/ppc/testing/instr_stwcx.s
+@@ -30,6 +30,87 @@ test_stwcx_fail:
+   #_ REGISTER_OUT r12 0x00000000
+   #_ MEMORY_OUT 0x0000000010001000 [00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+ 
++test_stwcx_lwarx_twice:
++  #_ MEMORY_IN 0x10001000 00000000
++  #_ REGISTER_IN r3 0x00000000AABBCCDD
++  #_ REGISTER_IN r4 0x0000000010001000
++  #_ REGISTER_IN r5 0x0000000000000000
++  # A second lwarx replaces the first reservation rather than trapping.
++  lwarx r6, r4, r5
++  lwarx r7, r4, r5
++  stwcx. r3, r4, r5
++  mfcr r12
++  blr
++  #_ REGISTER_OUT r6 0x0000000000000000
++  #_ REGISTER_OUT r7 0x0000000000000000
++  #_ REGISTER_OUT r12 0x20000000
++  #_ MEMORY_OUT 0x10001000 AABBCCDD
++
++test_stwcx_abandoned_reservation:
++  #_ MEMORY_IN 0x10001000 00000000
++  #_ MEMORY_IN 0x10001080 00000000
++  #_ REGISTER_IN r3 0x0000000011223344
++  #_ REGISTER_IN r4 0x0000000010001000
++  #_ REGISTER_IN r5 0x0000000000000000
++  #_ REGISTER_IN r7 0x0000000000000080
++  # Walking away from a reservation must not wedge its granule.
++  lwarx r6, r4, r5
++  lwarx r8, r4, r7
++  stwcx. r3, r4, r7
++  mfcr r12
++  blr
++  #_ REGISTER_OUT r12 0x20000000
++  #_ MEMORY_OUT 0x10001000 00000000
++  #_ MEMORY_OUT 0x10001080 11223344
++
++test_stwcx_address_mismatch:
++  #_ MEMORY_IN 0x10001000 00000000
++  #_ MEMORY_IN 0x10001080 00000000
++  #_ REGISTER_IN r3 0x0000000055667788
++  #_ REGISTER_IN r4 0x0000000010001000
++  #_ REGISTER_IN r5 0x0000000000000000
++  #_ REGISTER_IN r7 0x0000000000000080
++  # stwcx. to an address the lwarx didn't reserve fails without storing.
++  lwarx r6, r4, r5
++  stwcx. r3, r4, r7
++  mfcr r12
++  blr
++  #_ REGISTER_OUT r12 0x00000000
++  #_ MEMORY_OUT 0x10001000 00000000
++  #_ MEMORY_OUT 0x10001080 00000000
++
++test_stwcx_clears_reservation:
++  #_ MEMORY_IN 0x10001000 00000000
++  #_ REGISTER_IN r3 0x0000000012345678
++  #_ REGISTER_IN r4 0x0000000010001000
++  #_ REGISTER_IN r5 0x0000000000000000
++  #_ REGISTER_IN r7 0x00000000DEADBEEF
++  # The first stwcx. consumes the reservation, so the second must fail.
++  lwarx r6, r4, r5
++  stwcx. r3, r4, r5
++  mfcr r11
++  stwcx. r7, r4, r5
++  mfcr r12
++  blr
++  #_ REGISTER_OUT r11 0x20000000
++  #_ REGISTER_OUT r12 0x00000000
++  #_ MEMORY_OUT 0x10001000 12345678
++
++test_stwcx_value_changed:
++  #_ MEMORY_IN 0x10001000 00000000
++  #_ REGISTER_IN r3 0x00000000AABBCCDD
++  #_ REGISTER_IN r4 0x0000000010001000
++  #_ REGISTER_IN r5 0x0000000000000000
++  #_ REGISTER_IN r7 0x0000000099999999
++  # A plain store between the pair invalidates the reservation.
++  lwarx r6, r4, r5
++  stw r7, 0(r4)
++  stwcx. r3, r4, r5
++  mfcr r12
++  blr
++  #_ REGISTER_OUT r12 0x00000000
++  #_ MEMORY_OUT 0x10001000 99999999
++
+ test_stdcx_1:
+   #_ MEMORY_IN 0x0000000010001000 [00, 00, 00, 00, 00, 00, 00, 00]
+   #_ REGISTER_IN r3 0xABCDEF1234567890
+diff --git a/src/xenia/cpu/ppc/testing/ppc_testing_main.cc b/src/xenia/cpu/ppc/testing/ppc_testing_main.cc
+index c60bc872e..b84eb5b61 100644
+--- a/src/xenia/cpu/ppc/testing/ppc_testing_main.cc
++++ b/src/xenia/cpu/ppc/testing/ppc_testing_main.cc
+@@ -318,7 +318,10 @@ class TestRunner {
+           processor_->backend());
+       auto* bctx =
+           x64_backend->BackendContextForGuestContext(thread_state_->context());
+-      bctx->flags &= ~(1U << xe::cpu::backend::x64::kX64BackendMXCSRModeBit);
++      // Also drop any reservation a previous test left behind, so stwcx.
++      // tests don't depend on file/test ordering.
++      bctx->flags &= ~((1U << xe::cpu::backend::x64::kX64BackendMXCSRModeBit) |
++                       (1U << xe::cpu::backend::x64::kX64BackendHasReserveBit));
+     }
+ #elif XE_ARCH_ARM64
+     // Reset FPCR and backend flags to default FPU state before each test.
+@@ -327,7 +330,10 @@ class TestRunner {
+           processor_->backend());
+       auto* bctx =
+           a64_backend->BackendContextForGuestContext(thread_state_->context());
+-      bctx->flags &= ~(1U << xe::cpu::backend::a64::kA64BackendFPCRModeBit);
++      // Also drop any reservation a previous test left behind, so stwcx.
++      // tests don't depend on file/test ordering.
++      bctx->flags &= ~((1U << xe::cpu::backend::a64::kA64BackendFPCRModeBit) |
++                       (1U << xe::cpu::backend::a64::kA64BackendHasReserveBit));
+       // Explicitly reset the hardware FPCR to default FPU mode (0 = round
+       // nearest, no flush-to-zero, no default-NaN). Without this, a previous
+       // test that set VMX mode (FZ|DN) leaves the hardware FPCR dirty, and
