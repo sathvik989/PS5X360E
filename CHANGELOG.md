@@ -3,6 +3,19 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.9+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Fix VSync off making the emulated console's vblanks unlimited. Since 0.2-alpha.2 the VSync
+  setting was mapped to Edge's guest_display_refresh_cap, whose "off" hands the game vblanks as
+  fast as it takes them; on Canary, VSync off still paced them at 60 Hz (the setting's own
+  description says so). Guest vblanks are now always capped at 60 Hz (50 Hz in PAL mode).
+- Why it matters: with alpha.8 (guest scheduler on) NFS The Run gets further, then stops with its
+  CPU side eight GPU submissions ahead of a GPU wait that the CPU has yet to satisfy: the job
+  that should satisfy it waits for submission room. Unlimited vblanks let the game queue frames
+  as fast as it can, which is how it gets that far ahead.
+- The 120 Hz video clock option no longer changes the guest vblank rate (Edge has 50 and 60 Hz
+  only); it only raises the presentation limit.
+
 ## 0.2-alpha.8+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Xenia Edge's guest scheduler is on, as it is in Edge on PC: guest threads run as fibers on

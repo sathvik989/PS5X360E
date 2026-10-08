@@ -61,6 +61,7 @@
 DECLARE_path(log_file);
 // PS5X360E: Xenia Edge's name for emulated VSync (Canary's vsync).
 DECLARE_bool(guest_display_refresh_cap);
+DECLARE_bool(use_50Hz_mode);
 DECLARE_int32(log_level);
 DECLARE_bool(headless);
 // The launcher's language setting. Canary declares this variable in its kernel
@@ -946,7 +947,12 @@ int main(int argc, char** argv) {
   }
   // Canary caches the vblank period at graphics setup. Apply only on startup;
   // the library saves changes and restarts rather than mutating a live flag.
-  cvars::guest_display_refresh_cap = settings.vsync != 0;
+  // PS5X360E: always capped. Canary with VSync off still paced its vblanks at
+  // framerate_limit (60, or 120 with the 120 Hz video clock), which is what the
+  // setting's description promises; Edge's uncapped mode instead hands the
+  // game vblanks as fast as it can take them, and NFS The Run then queued
+  // frames far ahead of the GPU until it deadlocked.
+  cvars::guest_display_refresh_cap = true;
   const xbox360ps5::Settings started = settings;
   auto owned_game_log = std::make_unique<GameLogSink>();
   auto* game_log = owned_game_log.get();
@@ -1495,7 +1501,8 @@ int main(int argc, char** argv) {
         }
         XELOGI("GAME LAUNCH {:08X}", status);
         XELOGW("Game: '{}' title {:08X}, launch status {:08X}", emulator.title_name(), emulator.title_id(), status);
-        XELOGW("Graphics: emulated VSync {}", xbox360ps5::EffectiveVsync(settings.vsync) ? "on" : "off");
+        XELOGW("Graphics: emulated VSync {} (guest vblanks capped at {} Hz either way)",
+               xbox360ps5::EffectiveVsync(settings.vsync) ? "on" : "off", cvars::use_50Hz_mode ? 50 : 60);
         XELOGW("Settings: {} of this game's own ({}); not at the recommended value: {}", overrides.size(),
                settings_title.empty() ? "title not identified yet" : settings_title, ChangedOptions(settings));
         if (!status) start_reached();
