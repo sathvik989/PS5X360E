@@ -1253,7 +1253,7 @@ index 36156c80c..6c120eda9 100644
  
  struct XexInfoCache {
 diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
-index ed9bb6b10..2aec9f07a 100644
+index ed9bb6b10..ac659d0f9 100644
 --- a/src/xenia/emulator.cc
 +++ b/src/xenia/emulator.cc
 @@ -13,6 +13,19 @@
@@ -1370,6 +1370,20 @@ index ed9bb6b10..2aec9f07a 100644
      return FileSignatureType::XISO;
    }
  
+@@ -706,10 +728,10 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
+ 
+ // Whether a disc image holds an original Xbox game rather than an Xbox 360
+ // one, from the executables in its root.
++// Xbox360PS5: reads the image's headers instead of mapping all of it, which
++// stopped the PS5 (the whole console) before a game started.
+ static bool IsXboxOriginalDisc(const std::filesystem::path& path) {
+-  auto mmap = xe::MappedMemory::Open(path, xe::MappedMemory::Mode::kRead);
+-  return mmap &&
+-         vfs::FindXboxOriginalXbe(mmap->data(), mmap->size()).has_value();
++  return vfs::FindXboxOriginalXbe(path).has_value();
+ }
+ 
+ X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
 @@ -727,6 +749,8 @@ X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
  
    X_STATUS mount_result = X_STATUS_SUCCESS;
@@ -5574,6 +5588,124 @@ index 1ee035dd1..352f377af 100644
  }
  
  }  // namespace vfs
+diff --git a/src/xenia/vfs/xbe_metadata.cc b/src/xenia/vfs/xbe_metadata.cc
+index 2bcfbfa96..a2f487e0d 100644
+--- a/src/xenia/vfs/xbe_metadata.cc
++++ b/src/xenia/vfs/xbe_metadata.cc
+@@ -13,6 +13,7 @@
+ #include <cstring>
+ #include <functional>
+ #include <span>
++#include <vector>
+ 
+ #include "xenia/base/filesystem.h"
+ #include "xenia/base/mapped_memory.h"
+@@ -408,6 +409,57 @@ std::optional<GdfxFileLocation> FindXboxOriginalXbe(const uint8_t* data,
+   return location;
+ }
+ 
++std::optional<GdfxFileLocation> FindXboxOriginalXbe(
++    const std::filesystem::path& path) {
++  auto file = xe::filesystem::FileHandle::OpenExisting(
++      path, xe::filesystem::FileAccess::kGenericRead);
++  std::error_code size_error;
++  const uint64_t size = std::filesystem::file_size(path, size_error);
++  if (!file || size_error) {
++    return std::nullopt;
++  }
++  auto read = [&file, size](size_t offset, void* buffer, size_t length) {
++    size_t bytes_read = 0;
++    return offset <= size && size - offset >= length &&
++           file->Read(offset, buffer, length, &bytes_read) &&
++           bytes_read == length;
++  };
++  // As GdfxFindPartition: the first likely offset with the magic at sector 32
++  // and a sane root directory.
++  for (size_t offset : kGdfxLikelyOffsets) {
++    uint8_t header[28];
++    if (!read(offset + 32 * kGdfxSectorSize, header, sizeof(header)) ||
++        std::memcmp(header, kGdfxMagic, kGdfxMagicSize) != 0) {
++      continue;
++    }
++    const uint32_t root_sector = xe::load<uint32_t>(header + 20);
++    const uint32_t root_size = xe::load<uint32_t>(header + 24);
++    if (root_size < 13 || root_size > 32 * 1024 * 1024) {
++      continue;
++    }
++    std::vector<uint8_t> root(root_size);
++    if (!read(offset + size_t(root_sector) * kGdfxSectorSize, root.data(),
++              root.size())) {
++      return std::nullopt;
++    }
++    auto find = [&](const char* name) {
++      return detail::GdfxFindFileInDirectory(nullptr, size_t(size), offset,
++                                             root.data(), root.size(), 0, name,
++                                             std::strlen(name), 0);
++    };
++    if (find("default.xex")) {
++      return std::nullopt;
++    }
++    auto location = find("default.xbe");
++    if (!location || location->offset > size ||
++        size - location->offset < location->length) {
++      return std::nullopt;
++    }
++    return location;
++  }
++  return std::nullopt;
++}
++
+ std::optional<XbeMetadata> ExtractXbeMetadata(const uint8_t* data,
+                                               size_t size) {
+   return ParseXbe([data, size](size_t offset, std::span<uint8_t> buffer) {
+@@ -442,15 +494,27 @@ std::optional<XbeMetadata> ExtractXbeMetadata(
+   if (auto metadata = ExtractFromPackage(path)) {
+     return metadata;
+   }
+-  auto mmap = xe::MappedMemory::Open(path, xe::MappedMemory::Mode::kRead);
+-  if (!mmap) {
++  // Xbox360PS5: the disc image is read, not mapped (see FindXboxOriginalXbe).
++  auto location = FindXboxOriginalXbe(path);
++  if (!location) {
+     return std::nullopt;
+   }
+-  auto location = FindXboxOriginalXbe(mmap->data(), mmap->size());
+-  if (!location) {
++  auto file = xe::filesystem::FileHandle::OpenExisting(
++      path, xe::filesystem::FileAccess::kGenericRead);
++  if (!file) {
+     return std::nullopt;
+   }
+-  return ExtractXbeMetadata(mmap->data() + location->offset, location->length);
++  auto* handle = file.get();
++  const GdfxFileLocation xbe = *location;
++  return ParseXbe([handle, xbe](size_t offset, std::span<uint8_t> buffer) {
++    if (offset > xbe.length || xbe.length - offset < buffer.size()) {
++      return false;
++    }
++    size_t read = 0;
++    return handle->Read(xbe.offset + offset, buffer.data(), buffer.size(),
++                        &read) &&
++           read == buffer.size();
++  });
+ }
+ 
+ }  // namespace vfs
+diff --git a/src/xenia/vfs/xbe_metadata.h b/src/xenia/vfs/xbe_metadata.h
+index 071ac3259..7ba43238e 100644
+--- a/src/xenia/vfs/xbe_metadata.h
++++ b/src/xenia/vfs/xbe_metadata.h
+@@ -43,6 +43,10 @@ std::optional<XbeMetadata> ExtractXbeMetadata(const uint8_t* data, size_t size);
+ // Xbox 360 disc, which keeps a default.xex.
+ std::optional<GdfxFileLocation> FindXboxOriginalXbe(const uint8_t* data,
+                                                     size_t size);
++// The same for a disc image file, reading only its headers and root
++// directory. Xbox360PS5: mapping a whole disc image stops the PS5.
++std::optional<GdfxFileLocation> FindXboxOriginalXbe(
++    const std::filesystem::path& path);
+ 
+ }  // namespace vfs
+ }  // namespace xe
 diff --git a/third_party/CMakeLists.txt b/third_party/CMakeLists.txt
 index 9713067c0..7253000c8 100644
 --- a/third_party/CMakeLists.txt

@@ -3,6 +3,13 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.4+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Fix the console freezing when a disc image game starts ("LOAD classify source" was the last
+  step logged): Xenia Edge checks whether a disc image is an original Xbox game by mapping the
+  whole image into memory, which the PS5 cannot do with a multi-gigabyte file. It now reads only
+  the image's header and root directory. The same for reading an original Xbox disc's details.
+
 ## 0.2-alpha.3+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Fix the crash right after "emulator setup returned": Xenia Edge's Setup no longer creates the
