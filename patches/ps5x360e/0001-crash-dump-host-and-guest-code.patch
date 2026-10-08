@@ -1,0 +1,63 @@
+diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+index 770578fab..e046879e2 100644
+--- a/src/xenia/emulator.cc
++++ b/src/xenia/emulator.cc
+@@ -1459,6 +1459,58 @@ bool Emulator::ExceptionCallback(Exception* ex) {
+   } else if (ex->code() == Exception::Code::kIllegalInstruction) {
+     crash_msg.append("Illegal Instruction\n");
+   }
++  // PS5X360E: enough to see what the faulting code did without the game's
++  // executable: the host registers and machine code at the fault, and the
++  // guest instructions that code was translated from.
++  {
++    const uint32_t guest_pc = guest_function->MapMachineCodeToGuestAddress(ex->pc());
++    crash_msg.append(fmt::format(
++        "Guest function: 0x{:08X}-0x{:08X}, virtual membase {}, physical membase {}\n",
++        guest_function->address(), guest_function->end_address(),
++        fmt::ptr(memory()->virtual_membase()),
++        fmt::ptr(memory()->physical_membase())));
++#if XE_ARCH_AMD64
++    static const char* const kHostRegisterNames[16] = {
++        "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
++        "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15"};
++    crash_msg.append(fmt::format("Host rip = {:016X} (code cache +0x{:X})\n",
++                                 ex->pc(), ex->pc() - code_base));
++    for (int i = 0; i < 16; i++) {
++      crash_msg.append(fmt::format(" {:<3} = {:016X}\n", kHostRegisterNames[i],
++                                   ex->thread_context()->int_registers[i]));
++    }
++#endif
++    // Host machine code: 96 bytes before the faulting instruction, 32 after.
++    const uint64_t host_first = std::max<uint64_t>(ex->pc() - 96, code_base);
++    const uint64_t host_last = std::min<uint64_t>(ex->pc() + 32, code_end);
++    crash_msg.append(fmt::format("Host code from {:016X} (fault at +0x{:X}):",
++                                 host_first, ex->pc() - host_first));
++    for (uint64_t at = host_first; at < host_last; ++at) {
++      if (((at - host_first) & 31) == 0) crash_msg.append("\n ");
++      crash_msg.append(
++          fmt::format("{:02X}", *reinterpret_cast<const uint8_t*>(at)));
++    }
++    crash_msg.append("\n");
++    // Guest code: from the function's start (at most 0x200 bytes back) to
++    // 0x40 bytes past the faulting instruction.
++    uint32_t guest_first = guest_function->address();
++    if (guest_pc >= guest_first + 0x200) guest_first = (guest_pc - 0x200) & ~3u;
++    uint32_t guest_last = guest_pc + 0x40;
++    if (guest_function->end_address() > guest_pc &&
++        guest_function->end_address() < guest_last) {
++      guest_last = guest_function->end_address() + 4;
++    }
++    crash_msg.append(fmt::format("Guest code from 0x{:08X}:", guest_first));
++    for (uint32_t at = guest_first; at < guest_last; at += 4) {
++      if (((at - guest_first) & 31) == 0) {
++        crash_msg.append(fmt::format("\n {:08X}:", at));
++      }
++      crash_msg.append(fmt::format(
++          " {:08X}", xe::load_and_swap<uint32_t>(
++                         memory()->TranslateVirtual<const uint8_t*>(at))));
++    }
++    crash_msg.append("\n");
++  }
+   crash_msg.append("Registers:\n");
+   for (int i = 0; i < 32; i++) {
+     crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));

@@ -8,6 +8,10 @@
 The emulator core is Canary's own tree (.deps/xenia-canary) built with its own
 CMake files (see canary/CMakeLists.txt); everything the PS5 needs changed in it
 is in the one patch, each change marked "Xbox360PS5" in the source.
+
+PS5X360E: the fork's own changes (Xenia Edge ports, diagnostics) are kept apart
+from it, as numbered patches in patches/ps5x360e/ applied in order after it.
+--export still writes only the Xbox360PS5 patch, so run it with them unapplied.
 """
 import argparse
 import json
@@ -17,6 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / ".deps/xenia-canary"
 PATCH = ROOT / "patches/canary/xbox360ps5.patch"
+FORK_PATCHES = sorted((ROOT / "patches/ps5x360e").glob("*.patch"))
 # Written by Canary's build (compiled shaders, its in-tree snappy configure).
 GENERATED = ("src/xenia/gpu/shaders/bytecode/", "CMakeCache.txt", "CMakeFiles/", "Makefile", "cmake_install.cmake")
 
@@ -56,7 +61,11 @@ def main():
     submodules = [line.split()[1] for line in paths if line.split()[1] not in dep["submodules_excluded"]]
     subprocess.check_call(["git", "-C", str(SOURCE), "submodule", "update", "--init", "--depth", "1", "--", *submodules])
     git("apply", "--whitespace=nowarn", str(PATCH))
-    print(f"Xenia Canary {dep['revision'][:8]} with {PATCH.name} ({len(changed())} files changed)")
+    for patch in FORK_PATCHES:
+        git("apply", "--whitespace=nowarn", str(patch))
+        print(f"  + {patch.name}")
+    print(f"Xenia Canary {dep['revision'][:8]} with {PATCH.name} and {len(FORK_PATCHES)} PS5X360E patch(es)"
+          f" ({len(changed())} files changed)")
 
 
 if __name__ == "__main__":
