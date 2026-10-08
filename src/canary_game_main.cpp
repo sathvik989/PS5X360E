@@ -405,23 +405,93 @@ std::string WaitText(const xe::kernel::XThread& thread) {
 // on its stack (each frame points to its caller's, which holds the return
 // address eight bytes below). Read from a running thread, so only memory
 // that is readable is followed, and the list can be cut short or stale.
-std::string CallersText(xe::Memory* memory, uint32_t stack) {
+std::vector<uint32_t> CallerAddresses(xe::Memory* memory, uint32_t stack) {
   const auto readable = [memory](uint32_t address) {
     auto* heap = memory->LookupHeap(address);
     uint32_t protection = 0;
     return heap && heap->QueryProtect(address, &protection) && (protection & xe::kMemoryProtectRead);
   };
-  std::string text;
+  std::vector<uint32_t> callers;
   for (int depth = 0; depth < 8; ++depth) {
     if (!stack || (stack & 3) || !readable(stack)) break;
     const uint32_t caller = xe::load_and_swap<uint32_t>(memory->TranslateVirtual(stack));
     if (caller <= stack || caller - stack > 0x10000 || !readable(caller - 8)) break;
-    char item[16];
-    std::snprintf(item, sizeof(item), " %08X", xe::load_and_swap<uint32_t>(memory->TranslateVirtual(caller - 8)));
-    text += item;
+    callers.push_back(xe::load_and_swap<uint32_t>(memory->TranslateVirtual(caller - 8)));
     stack = caller;
   }
+  return callers;
+}
+std::string CallersText(xe::Memory* memory, uint32_t stack) {
+  std::string text;
+  for (const uint32_t caller : CallerAddresses(memory, stack)) {
+    char item[16];
+    std::snprintf(item, sizeof(item), " %08X", caller);
+    text += item;
+  }
   return text.empty() ? " none read" : text;
+}
+// PS5X360E: the guest code the stalled threads are in, once per session, so a
+// hang can be read without the game's executable: every function their lr,
+// ctr and callers point into (from its start, at most 0x800 bytes; around the
+// address when the function is longer or not known), and 64 bytes at what r3,
+// r4, r5 and r31 point to for threads that are not in a wait.
+void DumpStallCode(xe::Emulator& emulator) {
+  static std::atomic<bool> dumped{false};
+  if (dumped.exchange(true)) return;
+  xe::Memory* memory = emulator.memory();
+  auto* processor = emulator.processor();
+  const auto readable = [memory](uint32_t address) {
+    auto* heap = memory->LookupHeap(address);
+    uint32_t protection = 0;
+    return heap && heap->QueryProtect(address, &protection) && (protection & xe::kMemoryProtectRead);
+  };
+  const auto dump = [&](const char* what, uint32_t first, uint32_t last) {
+    first &= ~3u;
+    std::string line;
+    for (uint32_t at = first; at < last; at += 4) {
+      if (!readable(at)) break;
+      if (((at - first) & 31) == 0) {
+        if (!line.empty()) XELOGW("{}", line);
+        line = fmt::format("STALLCODE {} {:08X}:", what, at);
+      }
+      line += fmt::format(" {:08X}", xe::load_and_swap<uint32_t>(memory->TranslateVirtual(at)));
+    }
+    if (!line.empty()) XELOGW("{}", line);
+  };
+  std::vector<std::pair<uint32_t, uint32_t>> done;
+  const auto dump_code = [&](uint32_t address) {
+    if (address < 0x80000000u || address >= 0x90000000u) return;
+    uint32_t first = address >= 0x200 ? address - 0x200 : 0, last = address + 0x80;
+    for (auto* function : processor->FindFunctionsWithAddress(address)) {
+      if (!function || function->address() > address) continue;
+      if (function->has_end_address() && function->end_address() >= address &&
+          function->end_address() - function->address() <= 0x800) {
+        first = function->address();
+        last = function->end_address() + 4;
+      } else if (address - function->address() <= 0x200) {
+        first = function->address();
+      }
+      break;
+    }
+    for (const auto& range : done)
+      if (address >= range.first && address < range.second) return;
+    done.emplace_back(first, last);
+    dump("code", first, last);
+  };
+  for (const auto& thread : emulator.kernel_state()->object_table()->GetObjectsByType<xe::kernel::XThread>()) {
+    if (!thread->thread_state() || !thread->is_guest_thread()) continue;
+    const auto* context = thread->thread_state()->context();
+    dump_code(uint32_t(context->lr));
+    dump_code(uint32_t(context->ctr));
+    for (const uint32_t caller : CallerAddresses(memory, uint32_t(context->r[1]))) dump_code(caller);
+    if (thread->wait_note().count) continue;
+    for (const int r : {3, 4, 5, 31}) {
+      const uint32_t at = uint32_t(context->r[r]);
+      if (at < 0x10000) continue;
+      dump(fmt::format("{:08X}-r{}", thread->handle(), r).c_str(), at, at + 64);
+    }
+  }
+  xe::FlushLog();
 }
 void ReportStall(xe::Emulator& emulator, int pass) {
   const auto threads = emulator.kernel_state()->object_table()->GetObjectsByType<xe::kernel::XThread>();
@@ -437,6 +507,7 @@ void ReportStall(xe::Emulator& emulator, int pass) {
            uint32_t(context->r[3]), uint32_t(context->r[4]), uint32_t(context->r[5]));
   }
   xe::FlushLog();
+  DumpStallCode(emulator);
   for (const auto& thread : threads) {
     if (!thread->thread()) continue;
     char name[24];
