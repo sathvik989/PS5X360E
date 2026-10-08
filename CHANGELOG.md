@@ -3,6 +3,18 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.8+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Xenia Edge's guest scheduler is on, as it is in Edge on PC: guest threads run as fibers on
+  six dispatch threads, one per Xbox 360 hardware thread, instead of one PS5 thread each (the
+  Canary model the earlier builds kept). Edge's NFS The Run fixes were made with it on.
+- Fiber stacks come from direct memory on the console, 4 MiB each (Edge asks for 16 MiB from
+  anonymous mmap, which on the PS5 is charged to the 448 MiB flexible budget and would run out
+  with NFS The Run's ~60 threads). Guest threads already ran on 2 MiB stacks before.
+- To go back to one PS5 thread per guest thread for a game, put
+  `[Kernel]` / `guest_scheduler = false` in
+  `/download0/xbox360ps5/game-configs/<title id>.config.toml`.
+
 ## 0.2-alpha.7+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - NFS The Run now draws the garage (alpha.6's flush of GPU output before memory waits got it

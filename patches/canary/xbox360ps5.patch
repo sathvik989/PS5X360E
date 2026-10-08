@@ -952,6 +952,79 @@ index ad73123f1..e1e1ac747 100644
  
    // Returns the ID of the thread.
    virtual uint32_t system_id() const = 0;
+diff --git a/src/xenia/base/threading_fiber.cc b/src/xenia/base/threading_fiber.cc
+index 868a331a0..538de7fdf 100644
+--- a/src/xenia/base/threading_fiber.cc
++++ b/src/xenia/base/threading_fiber.cc
+@@ -15,6 +15,7 @@
+ 
+ #include "xenia/base/assert.h"
+ #include "xenia/base/logging.h"
++#include "xenia/base/memory.h"
+ #include "xenia/base/platform.h"
+ #include "xenia/base/threading.h"
+ 
+@@ -64,7 +65,10 @@ namespace {
+ thread_local Fiber* current_fiber_ = nullptr;
+ 
+ size_t HostPageSize() {
+-#if XE_PLATFORM_WIN32
++#if XE_PLATFORM_PS5
++  // PS5X360E: the protection granule of the console's direct memory.
++  return xe::memory::page_size();
++#elif XE_PLATFORM_WIN32
+   SYSTEM_INFO si;
+   GetSystemInfo(&si);
+   return static_cast<size_t>(si.dwPageSize);
+@@ -158,8 +162,22 @@ LONG NTAPI FiberStackExceptionHandler(PEXCEPTION_POINTERS info) {
+ std::once_flag veh_install_once_;
+ #endif  // XE_PLATFORM_WIN32
+ 
++#if XE_PLATFORM_PS5
++// PS5X360E: anonymous mmap on the console is charged to its small flexible
++// memory budget (448 MiB), which some 60 guest threads with 16 MiB stacks
++// would exhaust, and it is not committed lazily. Fiber stacks are direct
++// memory instead, at a quarter of the size: guest threads already ran on the
++// console's 2 MiB thread stacks before the scheduler.
++constexpr size_t kPs5FiberStackBytes = 4 * 1024 * 1024;
++#endif
++
+ FiberStack AllocFiberStack(size_t size) {
+   const size_t page = HostPageSize();
++#if XE_PLATFORM_PS5
++  if (size > kPs5FiberStackBytes) {
++    size = kPs5FiberStackBytes;
++  }
++#endif
+   size_t pages = (size + page - 1) / page;
+   if (pages < 1) {
+     pages = 1;
+@@ -191,6 +209,16 @@ FiberStack AllocFiberStack(size_t size) {
+     VirtualAlloc(guard, page, MEM_COMMIT, PAGE_READWRITE | PAGE_GUARD);
+     record.guard = reinterpret_cast<uintptr_t>(guard);
+   }
++#elif XE_PLATFORM_PS5
++  s.base = xe::memory::AllocFixed(nullptr, s.total,
++                                  xe::memory::AllocationType::kReserveCommit,
++                                  xe::memory::PageAccess::kReadWrite);
++  if (!s.base) {
++    xe::FatalError("Failed to map fiber stack");
++  }
++  xe::memory::Protect(s.base, page, xe::memory::PageAccess::kNoAccess,
++                      nullptr);
++  record.guard = reinterpret_cast<uintptr_t>(s.base);
+ #else
+   s.base = mmap(nullptr, s.total, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+@@ -227,6 +255,8 @@ void FreeFiberStack(FiberStack& s) {
+   }
+ #if XE_PLATFORM_WIN32
+   VirtualFree(s.base, 0, MEM_RELEASE);
++#elif XE_PLATFORM_PS5
++  xe::memory::DeallocFixed(s.base, 0, xe::memory::DeallocationType::kRelease);
+ #else
+   munmap(s.base, s.total);
+ #endif
 diff --git a/src/xenia/base/threading_posix.cc b/src/xenia/base/threading_posix.cc
 index b02ac0c9d..4825a8089 100644
 --- a/src/xenia/base/threading_posix.cc
@@ -2224,28 +2297,19 @@ index d5014b949..ede4696a5 100644
  #include <array>
  #include <cstddef>
 diff --git a/src/xenia/kernel/kernel_flags.cc b/src/xenia/kernel/kernel_flags.cc
-index 57b097c11..b3d1e4f50 100644
+index 57b097c11..42a142055 100644
 --- a/src/xenia/kernel/kernel_flags.cc
 +++ b/src/xenia/kernel/kernel_flags.cc
-@@ -11,8 +11,16 @@
+@@ -11,6 +11,8 @@
  
  DEFINE_bool(log_high_frequency_kernel_calls, false,
              "Log kernel calls with the kHighFrequency tag.", "Logging");
-+// PS5X360E: off on the PS5 until the cooperative fibers are tried there
-+// (their 16 MiB stacks and the console's small flexible-memory budget); a game
-+// config can turn it on ([Kernel] guest_scheduler = true).
-+#if XE_PLATFORM_PS5
-+#define XE_GUEST_SCHEDULER_DEFAULT false
-+#else
-+#define XE_GUEST_SCHEDULER_DEFAULT true
-+#endif
++// PS5X360E: on, as in Xenia Edge everywhere; its fiber stacks are direct
++// memory on the console (base/threading_fiber.cc).
  DEFINE_bool(
--    guest_scheduler, true,
-+    guest_scheduler, XE_GUEST_SCHEDULER_DEFAULT,
+     guest_scheduler, true,
      "Run guest threads as cooperative fibers driven by an in-kernel scheduler "
-     "instead of mapping each to its own host OS thread. Requires a restart to "
-     "take effect.",
-@@ -24,3 +32,9 @@ DEFINE_uint32(
+@@ -24,3 +26,9 @@ DEFINE_uint32(
      "this long yields at its next JIT safepoint so co-resident fibers on the "
      "same dispatch thread make progress. Lower is fairer but switches more.",
      "Kernel");
