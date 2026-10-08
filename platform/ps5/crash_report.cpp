@@ -63,6 +63,7 @@ size_t used = 0;
 uintptr_t CodeStart() { return reinterpret_cast<uintptr_t>(&_start) & ~uintptr_t(0x3fff); }
 uintptr_t CodeEnd() { return reinterpret_cast<uintptr_t>(__eh_frame_hdr_start); }
 bool InCode(uint64_t address) { return address >= CodeStart() && address < CodeEnd(); }
+std::atomic<uint64_t> generated_begin{0}, generated_end{0};
 void Put(char c) { if (used + 2 < sizeof(line)) line[used++] = c; }
 void Put(const char* text) { for (; *text; ++text) Put(*text); }
 void Hex(uint64_t value) {
@@ -184,7 +185,7 @@ void Probe(int, siginfo_t*, void* context) {
     out->caller = out->caller2 = out->slot = 0;
     out->cpu = sceKernelGetCurrentCpu();
     out->in_title = InCode(m[20]);
-    if (!out->in_title && !(m[20] >= 0x40000000 && m[20] < 0x50000000)) {
+    if (!out->in_title && !InGeneratedCode(m[20])) {
       for (uint64_t at = m[23] & ~uint64_t(7), end = at + 0x300; at < end; at += 8) {
         uint64_t value;
         if (!Copy(at, &value, sizeof(value))) break;
@@ -334,3 +335,14 @@ void ReportPlatformMemory() {
   }
 }
 }
+
+namespace xbox360ps5 {
+void SetGeneratedCodeRange(unsigned long long begin, unsigned long long end) {
+  generated_begin.store(begin, std::memory_order_relaxed);
+  generated_end.store(end, std::memory_order_relaxed);
+}
+bool InGeneratedCode(unsigned long long address) {
+  return address >= generated_begin.load(std::memory_order_relaxed) &&
+         address < generated_end.load(std::memory_order_relaxed);
+}
+}  // namespace xbox360ps5

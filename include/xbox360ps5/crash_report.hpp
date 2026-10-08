@@ -15,8 +15,13 @@ bool SetCrashReportFile(const char* path);
 // Logs where a thread (a pthread_t) is: its instruction and the return
 // addresses on its stack. For a title that stopped without crashing.
 void ProbeThread(void* thread, const char* name);
+// Where the generated guest code is (the JIT's code cache), once the emulator
+// has set it up. PS5X360E: on Xenia Edge the cache is placed where the system
+// allows, not at a fixed 0x40000000.
+void SetGeneratedCodeRange(unsigned long long begin, unsigned long long end);
+bool InGeneratedCode(unsigned long long address);
 // One performance sample of a thread. rip: the instruction (an offset into the
-// title when in_title, else an address: 0x40000000-0x4FFFFFFF is generated
+// title when in_title, else an address, see InGeneratedCode for generated
 // guest code); caller: for an instruction in a system library, the offset of
 // the nearest return address into the title, or 0.
 // caller2: the next return address into the title above `caller`, or 0.

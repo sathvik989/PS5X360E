@@ -11,7 +11,12 @@ cd "$root"
 : "${PS5_PAYLOAD_SDK:?Set PS5_PAYLOAD_SDK}"
 reference="$root/.deps/references/PS5_Vulkan"
 sdk="$reference/.deps/native/ps5-payload-sdk"
-build="$root/build/canary-ps5"
+# PS5X360E: the core is Xenia Edge; its own build directory, so nothing configured
+# for the Canary core is reused.
+build="$root/build/edge-ps5"
+: "${XE_HOST_SHADER_CC:?Set XE_HOST_SHADER_CC (the xenia-shader-cc built by tools/host-shader-cc)}"
+: "${SLANGC_PATH:?Set SLANGC_PATH (slangc 2026.8, which xenia-shader-cc drives)}"
+export SLANGC_PATH
 work="${XBOX360PS5_OUTPUT_DIR:-$root/build/canary-game}"
 mkdir -p "$work/obj" "$work/host" build/radv-stubs
 
@@ -31,14 +36,15 @@ if [[ ! -f "$build/build.ninja" ]] || \
   cmake -S canary -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE="$PS5_PAYLOAD_SDK/toolchain/prospero.cmake" \
     -DXBOX360PS5_EXPERIMENTAL_DIAGNOSTICS="${XBOX360PS5_EXPERIMENTAL_DIAGNOSTICS:-OFF}" \
-    -DXBOX360PS5_VERSION_OVERRIDE="${XBOX360PS5_VERSION_OVERRIDE:-}"
+    -DXBOX360PS5_VERSION_OVERRIDE="${XBOX360PS5_VERSION_OVERRIDE:-}" \
+    -DXE_HOST_SHADER_CC="$XE_HOST_SHADER_CC"
 fi
 # Canary's xenia-build.py normally writes this.
 commit=$(git -C .deps/xenia-canary rev-parse HEAD)
 cat > "$build/version.h.new" <<EOF
 #ifndef GENERATED_VERSION_H_
 #define GENERATED_VERSION_H_
-#define XE_BUILD_BRANCH "canary_experimental"
+#define XE_BUILD_BRANCH "edge"
 #define XE_BUILD_COMMIT "$commit"
 #define XE_BUILD_COMMIT_SHORT "${commit:0:7}"
 #define XE_BUILD_DATE __DATE__
@@ -47,8 +53,9 @@ EOF
 cmp -s "$build/version.h.new" "$build/version.h" || mv "$build/version.h.new" "$build/version.h"
 ninja -C "$build" -j"${JOBS:-8}" xbox360ps5-title-objects \
   xenia-base xenia-cpu xenia-cpu-backend-x64 xenia-core xenia-kernel xenia-gpu xenia-gpu-vulkan \
-  xenia-ui xenia-ui-vulkan xenia-vfs xenia-apu xenia-apu-nop xenia-hid xenia-patcher \
-  aes_128 capstone fmt dxbc imgui libavcodec libavutil mspack snappy xxhash glslang-spirv
+  xenia-ui xenia-ui-vulkan xenia-vfs xenia-apu xenia-apu-nop xenia-hid xenia-hid-nop xenia-patcher \
+  aes_128 boost_context capstone fmt dxbc imgui libavcodec libavformat libavutil mspack snappy \
+  xxhash glslang-spirv zarchive zlib-ng zstd pugixml
 
 native="$reference/tooling/native"
 zlib="$reference/.deps/native/zlib/root/usr"

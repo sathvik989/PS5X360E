@@ -35,14 +35,20 @@
     "https://github.com/klortekhq/NATIVE-EMUS-PS5"
   ],
   "xenia_canary": {
-    "url": "https://github.com/xenia-canary/xenia-canary.git",
-    "branch": "canary_experimental",
-    "revision": "b083312b8b18e07e6e410b82104191f126722794",
+    "url": "https://github.com/has207/xenia-edge.git",
+    "branch": "edge",
+    "revision": "2e6898afc108bad42c0b3d1710941a041909bd67",
+    "note": "PS5X360E: the core is Xenia Edge (has207/xenia-edge); the key keeps its old name so the tools need no change.",
     "submodules_excluded": [
       "third_party/DirectXShaderCompiler",
       "third_party/DirectX-Headers",
       "third_party/cpplint",
-      "third_party/catch"
+      "third_party/catch",
+      "third_party/MoltenVK",
+      "third_party/metal-cpp",
+      "third_party/wxWidgets",
+      "third_party/mesa",
+      "third_party/SDL3"
     ]
   }
 }

@@ -38,8 +38,9 @@ set(XBOX360PS5_CANARY_LIBRARIES
   xenia-apu xenia-apu-nop xenia-base xenia-core xenia-cpu xenia-gpu xenia-hid
   xenia-kernel xenia-patcher xenia-ui xenia-vfs xenia-gpu-vulkan xenia-ui-vulkan
   xenia-cpu-backend-x64
-  aes_128 capstone fmt dxbc imgui libavcodec libavutil mspack snappy xxhash
-  glslang-spirv)
+  xenia-hid-nop
+  aes_128 boost_context capstone fmt dxbc imgui libavcodec libavformat libavutil
+  mspack snappy xxhash glslang-spirv zarchive zlib-ng zstd pugixml)
 
 if(NOT CMAKE_CROSSCOMPILING)
   add_executable(xbox360ps5-runner

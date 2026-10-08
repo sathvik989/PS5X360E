@@ -69,7 +69,7 @@ class HeadlessWindow final : public xe::ui::Window {
  protected:
   bool OpenImpl() override {
     WindowDestructionReceiver receiver(this);
-    OnActualSizeUpdate(1280, 720, WindowResizeAction::kManual, receiver);
+    OnActualSizeUpdate(1280, 720, receiver);
     return true;
   }
   void RequestCloseImpl() override {}

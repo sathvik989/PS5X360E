@@ -305,6 +305,18 @@ bool Protect(void* address, size_t length, PageAccess access, PageAccess* previo
   std::lock_guard lock(guard);
   return SetAccess(reinterpret_cast<uintptr_t>(address), length, access, previous, true);
 }
+// PS5X360E: Xenia Edge's user mode views (KeCreateUserMode, used by system
+// software rather than games) need a window of 64 KiB views replacing a
+// reservation one at a time. Not done on the console yet: the user mode
+// window cannot be claimed and KeCreateUserMode reports no memory.
+bool ReserveFileViewPages(void*, size_t) { return false; }
+void* MapFileViewPages(FileMappingHandle handle, void* base_address, size_t length, PageAccess access,
+                       size_t file_offset) {
+  return MapFileView(handle, base_address, length, access, file_offset);
+}
+bool ReleaseFileViewPages(FileMappingHandle handle, void* base_address, size_t length) {
+  return UnmapFileView(handle, base_address, length);
+}
 bool QueryProtect(void* address, size_t& length, PageAccess& access) {
   std::lock_guard lock(guard);
   const uintptr_t at = reinterpret_cast<uintptr_t>(address);

@@ -21,8 +21,10 @@
 set -euo pipefail
 
 WS="$(pwd)"
-IMAGE="ps5x360e-builder"
-BRANCH="edge-port"
+# The tag changes whenever the image gains something a build needs, so an old
+# image is replaced without --image.
+IMAGE="ps5x360e-builder:edge1"
+BRANCH="edge-core"
 LOG="$WS/build-$(date +%Y%m%d-%H%M%S).log"
 exec > >(tee -a "$LOG") 2>&1
 echo "== PS5X360E build, $(date), workspace: $WS"
@@ -58,6 +60,12 @@ RUN git clone -q --depth 1 --branch v2025.4 https://github.com/KhronosGroup/SPIR
  && for t in /opt/spirv-tools/bin/spirv-*; do ln -sfn "$t" /usr/local/bin/; done \
  && rm -rf /tmp/st \
  && spirv-opt --version && spirv-opt --help | grep -q -- --canonicalize-ids
+# Xenia Edge compiles its shaders with Slang; xenia-build.py pins 2026.8.
+RUN mkdir -p /opt/slang \
+ && wget -q -O /tmp/slang.tar.gz https://github.com/shader-slang/slang/releases/download/v2026.8/slang-2026.8-linux-x86_64.tar.gz \
+ && tar -xzf /tmp/slang.tar.gz -C /opt/slang && rm /tmp/slang.tar.gz \
+ && /opt/slang/bin/slangc -v
+ENV SLANGC_PATH=/opt/slang/bin/slangc
 EOF
 fi
 
@@ -71,7 +79,7 @@ git config --global --add safe.directory '*'
 git config --global advice.detachedHead false
 
 R=/ws/PS5X360E
-BRANCH=${BRANCH:-edge-port}
+BRANCH=${BRANCH:-edge-core}
 REFS=$R/.deps/references
 
 # Clone a repository and check out an exact commit (shallow, idempotent).
@@ -89,7 +97,7 @@ clone_at() {
 	echo "   $(basename "$dir") at ${rev:0:12}"
 }
 
-echo "== 1/6 Your fork, branch $BRANCH (latest)"
+echo "== 1/7 Your fork, branch $BRANCH (latest)"
 if [[ ! -d $R/.git ]]; then
 	git clone -q https://github.com/sathvik989/PS5X360E "$R"
 fi
@@ -97,7 +105,7 @@ git -C "$R" fetch -q origin
 git -C "$R" checkout -q -f -B "$BRANCH" "origin/$BRANCH"
 echo "   PS5X360E at $(git -C "$R" rev-parse --short HEAD): $(git -C "$R" log -1 --format=%s)"
 
-echo "== 2/6 Pinned dependencies (versions from PS5X360's docs/CREDITS.md and PS5_Vulkan's scripts)"
+echo "== 2/7 Pinned dependencies (versions from PS5X360's docs/CREDITS.md and PS5_Vulkan's scripts)"
 clone_at https://github.com/mihawk-99/PS5_Vulkan     "$REFS/PS5_Vulkan"     3f3ee69607013b345d2baa6d6a37c86745649a08
 clone_at https://github.com/mihawk-99/PS5_Mesa       "$REFS/PS5_Mesa"       0b2d6d1a61d9bbf89cf8beb88a696144f67c61f8
 clone_at https://github.com/mihawk-99/PS5_PayloadSDK "$REFS/PS5_PayloadSDK" 95c08f27386fc698f6bbe21dde3030140a41d10b
@@ -108,13 +116,13 @@ if [[ ! -d /ws/Castation/native-ps5/.git ]]; then
 fi
 echo "   castation at $(git -C /ws/Castation/native-ps5 rev-parse --short HEAD) (public head; see note above)"
 
-echo "== 3/6 PS5 payload SDK and zlib (PS5_Vulkan tools/setup-native-dependencies.sh)"
+echo "== 3/7 PS5 payload SDK and zlib (PS5_Vulkan tools/setup-native-dependencies.sh)"
 ( cd "$REFS/PS5_Vulkan" && bash tools/setup-native-dependencies.sh )
 
-echo "== 4/6 RADV release build (PS5_Vulkan tools/build-radv.sh release) - the slow step, first time only"
+echo "== 4/7 RADV release build (PS5_Vulkan tools/build-radv.sh release) - the slow step, first time only"
 ( cd "$REFS/PS5_Vulkan" && bash tools/build-radv.sh release )
 
-echo "== 5/6 Xenia Canary at the pinned commit + PS5X360's PS5 patch + PS5X360E's patches"
+echo "== 5/7 Xenia Edge at the pinned commit + the PS5 patch + PS5X360E's patches"
 mkdir -p "$R/build/native-runtime-stage/tools"
 cp /ws/Castation/native-ps5/tools/verify-image.py "$R/build/native-runtime-stage/tools/verify-image.py"
 # PS5X360's prepare_canary.py expects Canary already checked out: on a fresh
@@ -123,6 +131,12 @@ cp /ws/Castation/native-ps5/tools/verify-image.py "$R/build/native-runtime-stage
 C=$R/.deps/xenia-canary
 CANARY_URL=$(python3 -c "import json;print(json.load(open('$R/deps.json'))['xenia_canary']['url'])")
 CANARY_REV=$(python3 -c "import json;print(json.load(open('$R/deps.json'))['xenia_canary']['revision'])")
+# The core moved from Xenia Canary to Xenia Edge: a tree cloned from another
+# repository is replaced (it is only a download; nothing of yours is in it).
+if [[ -d $C/.git && $(git -C "$C" remote get-url origin) != "$CANARY_URL" ]]; then
+	echo "   replacing $(git -C "$C" remote get-url origin) with $CANARY_URL"
+	rm -rf "$C"
+fi
 if [[ ! -d $C/.git ]]; then
 	git clone -q --filter=blob:none --no-checkout "$CANARY_URL" "$C"
 fi
@@ -153,8 +167,17 @@ else
 	echo "$WANT" > "$STAMP"
 fi
 
-echo "== 6/6 Building the PS5 title"
+echo "== 6/7 Xenia Edge's shader compiler for this machine (first time several minutes)"
+H=$R/build/host-shader-cc
+if [[ ! -f $H/build.ninja ]]; then
+	cmake -S "$R/tools/host-shader-cc" -B "$H" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DXENIA_SOURCE="$C" >/dev/null
+fi
+ninja -C "$H" -j"$(nproc)" xenia-shader-cc | tail -1
+
+echo "== 7/7 Building the PS5 title"
 ( cd "$R" && PS5_PAYLOAD_SDK="$REFS/PS5_Vulkan/.deps/native/ps5-payload-sdk" JOBS="$(nproc)" \
+	XE_HOST_SHADER_CC="$H/xenia-shader-cc" SLANGC_PATH="$SLANGC_PATH" \
 	bash tools/build-canary-game.sh )
 
 echo

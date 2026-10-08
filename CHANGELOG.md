@@ -1,7 +1,28 @@
 # Changelog
 
-PS5X360E versions are `0.1-alpha.N+<PS5X360 base>`: an alpha number of this fork, then the
+PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
+
+## 0.2-alpha.1+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- The emulator core is now Xenia Edge (has207/xenia-edge 2e6898afc) instead of Xenia Canary
+  b083312b8: PS5X360's PS5 patch was carried over to it as a whole rather than porting Edge fixes
+  one at a time. patches/canary/xbox360ps5.patch is now the patch against Xenia Edge; the separate
+  patches/ps5x360e/ ports are gone (they are part of Edge), except the crash dump and the stuck
+  WAIT_REG_MEM report, which are in the main patch.
+- Left out for now on the PS5 (Edge reworked these parts): the "optimized video memory" unwatched
+  pages, mounting Kinect content packages from game files, PS5X360's auto-reset event ticket
+  wait, its xconfig and socket changes (Edge's asio sockets are used). Edge's cooperative guest
+  scheduler is off on the PS5 by default; Edge's user mode views (KeCreateUserMode) are not
+  supported on the console yet.
+- Settings mapped to Edge: VSync is Edge's guest_display_refresh_cap, the internal resolution
+  setting uses Edge's internal_display_resolution; the memexport readback setting does nothing
+  (Edge always reads memexport back). The kernel's dialogs still answer themselves on the PS5
+  (Canary's headless mode, which Edge removed, kept for the PS5).
+- JIT code cache 512 MB on the PS5 (Edge: 1 GB; Canary's PS5 build: 256 MB); generated code may
+  be placed anywhere (Edge's encoded indirection), and crash/stall reports follow it.
+- Build: Slang shader compiler 2026.8 in the builder image, and Edge's xenia-shader-cc built for
+  the build machine (tools/host-shader-cc). Builds in build/edge-ps5.
 
 ## 0.1-alpha.3+0.5.7-fix.1 (PS5X360E)
 

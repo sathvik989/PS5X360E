@@ -4,7 +4,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/cvar.h"
-DECLARE_bool(vsync);
+DECLARE_bool(guest_display_refresh_cap);  // PS5X360E: Canary's vsync.
 #include "xenia/cpu/xex_module.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/memory.h"
@@ -389,7 +389,7 @@ void ApplyGamePatches(xe::Memory* memory, xe::kernel::UserModule* module, uint32
       }
       std::string description = patch.description;
       std::transform(description.begin(), description.end(), description.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-      if (EffectiveVsync(cvars::vsync) && !PatchRequiresVsyncOff(patch) && (description.find("v-sync") != std::string::npos || description.find("vsync") != std::string::npos))
+      if (EffectiveVsync(cvars::guest_display_refresh_cap) && !PatchRequiresVsyncOff(patch) && (description.find("v-sync") != std::string::npos || description.find("vsync") != std::string::npos))
         XELOGW("Patches: {} mentions VSync in its requirements; currently ON. Check the patch description and restart after changing Settings", patch.name);
       if (PatchRequiresVsyncOff(patch)) {
         patch_vsync_off.store(true, std::memory_order_relaxed);

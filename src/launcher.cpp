@@ -27,7 +27,6 @@
 DECLARE_int32(user_language);
 DECLARE_int32(log_level);
 DECLARE_bool(mute);
-DECLARE_bool(vsync);
 DECLARE_bool(log_to_stdout);
 DECLARE_int32(draw_resolution_scale_x);
 DECLARE_int32(draw_resolution_scale_y);
@@ -35,13 +34,13 @@ DECLARE_bool(gpu_allow_invalid_fetch_constants);
 DECLARE_int32(anisotropic_override);
 DECLARE_string(occlusion_query);
 DECLARE_string(readback_resolve);
-DECLARE_bool(readback_memexport);
 DECLARE_bool(async_shader_compilation);
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(delay_via_maybeyield);
 DECLARE_int32(license_mask);
-DECLARE_uint32(custom_internal_display_resolution_x);
-DECLARE_uint32(custom_internal_display_resolution_y);
+DECLARE_uint32(internal_display_resolution);
+DECLARE_uint32(internal_display_resolution_x);
+DECLARE_uint32(internal_display_resolution_y);
 DECLARE_uint64(framerate_limit);
 DECLARE_uint32(kernel_display_gamma_type);
 DECLARE_bool(present_letterbox);
@@ -405,7 +404,8 @@ void Settings::Apply() const {
   if (cvars::occlusion_query != kOcclusion[occlusion & 3]) cvars::occlusion_query = kOcclusion[occlusion & 3];
   static const char* const kReadback[] = {"none", "fast", "full"};
   if (cvars::readback_resolve != kReadback[readback % 3]) cvars::readback_resolve = kReadback[readback % 3];
-  cvars::readback_memexport = memexport != 0;
+  // PS5X360E: Xenia Edge always reads memexport results back; the setting is kept but unused.
+  (void)memexport;
   cvars::async_shader_compilation = async_shaders != 0;
   cvars::clear_memory_page_state = clear_pages != 0;
   gpu_diag::read_released_pages = released_memory != 0;
@@ -419,9 +419,12 @@ void Settings::Apply() const {
   // Read when a game starts.
   cvars::delay_via_maybeyield = guest_yield != 0;
   cvars::license_mask = arcade_full ? 1 : 0;
-  static constexpr uint32_t kResolutions[][2] = {{0, 0}, {1920, 1080}, {848, 480}, {960, 540}};
-  cvars::custom_internal_display_resolution_x = kResolutions[internal_resolution & 3][0];
-  cvars::custom_internal_display_resolution_y = kResolutions[internal_resolution & 3][1];
+  // PS5X360E: Xenia Edge's internal_display_resolution: 8 = 1280x720 (default),
+  // 16 = 1920x1080, 5 = 848x480, 17 = internal_display_resolution_x/y (960x540).
+  static constexpr uint32_t kResolutions[] = {8, 16, 5, 17};
+  cvars::internal_display_resolution = kResolutions[internal_resolution & 3];
+  cvars::internal_display_resolution_x = 960;
+  cvars::internal_display_resolution_y = 540;
   static constexpr uint32_t kGamma[] = {2, 1, 0};
   cvars::kernel_display_gamma_type = kGamma[gamma % 3];
   cvars::depth_bias_shader_offset = decal_bias != 0;

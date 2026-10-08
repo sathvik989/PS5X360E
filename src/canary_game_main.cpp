@@ -59,13 +59,16 @@
 #include <cstdlib>
 #include <unistd.h>
 DECLARE_path(log_file);
-DECLARE_bool(vsync);
+// PS5X360E: Xenia Edge's name for emulated VSync (Canary's vsync).
+DECLARE_bool(guest_display_refresh_cap);
 DECLARE_int32(log_level);
 DECLARE_bool(headless);
 // The launcher's language setting. Canary declares this variable in its kernel
 // without defining it (the language comes from the signed-in profile there).
-DECLARE_bool(mute);
-DEFINE_int32(user_language, 1, "Xbox 360 language id told to games.", "XConfig");
+// PS5X360E: Xenia Edge has no mute setting; the PS5 audio output reads this one.
+DEFINE_bool(mute, false, "Mutes all audio output.", "APU");
+// PS5X360E: Xenia Edge defines user_language (xconfig.cc); the launcher sets it.
+DECLARE_int32(user_language);
 extern "C" {
 int sceUserServiceInitialize(const void*);
 int sceUserServiceGetInitialUser(int32_t*);
@@ -558,7 +561,7 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
       ++tally.total;
       if (sample.cpu >= 0 && sample.cpu < 64) tally.cpus_seen |= uint64_t(1) << sample.cpu;
       if (sample.in_title) { ++tally.title; tally.Add(1, sample.rip & ~uint64_t(0x3F)); tally.Add(4, sample.rip >> 20); }
-      else if (sample.rip >= 0x40000000 && sample.rip < 0x50000000) {
+      else if (xbox360ps5::InGeneratedCode(sample.rip)) {
         ++tally.guest;
         auto* function = code_cache->LookupFunction(sample.rip);
         tally.Add(0, function ? function->address() : 0);
@@ -625,7 +628,7 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
       ++focus.total;
       if (sample.cpu >= 0 && sample.cpu < 64) focus.cpus_seen |= uint64_t(1) << sample.cpu;
       if (sample.in_title) { ++focus.title; focus.Add(1, sample.rip & ~uint64_t(0x3F)); focus.Add(4, sample.rip >> 20); }
-      else if (sample.rip >= 0x40000000 && sample.rip < 0x50000000) ++focus.guest;
+      else if (xbox360ps5::InGeneratedCode(sample.rip)) ++focus.guest;
       else { ++focus.system; focus.Add(2, sample.caller | (sample.caller2 << 32)); }
     }
     xbox360ps5::UnseatSampler(handle, seat);
@@ -707,7 +710,7 @@ class NativeWindow final : public xe::ui::Window {
  protected:
   bool OpenImpl() override {
     WindowDestructionReceiver receiver(this);
-    OnActualSizeUpdate(1920, 1080, WindowResizeAction::kManual, receiver);
+    OnActualSizeUpdate(1920, 1080, receiver);
     OnFocusUpdate(true, receiver);
     OnDesiredFullscreenUpdate(true);
     return true;
@@ -943,7 +946,7 @@ int main(int argc, char** argv) {
   }
   // Canary caches the vblank period at graphics setup. Apply only on startup;
   // the library saves changes and restarts rather than mutating a live flag.
-  cvars::vsync = settings.vsync != 0;
+  cvars::guest_display_refresh_cap = settings.vsync != 0;
   const xbox360ps5::Settings started = settings;
   auto owned_game_log = std::make_unique<GameLogSink>();
   auto* game_log = owned_game_log.get();
@@ -1101,6 +1104,12 @@ int main(int argc, char** argv) {
         input = player_inputs[0]; return drivers;
       });
     XELOGI("ENGINE SETUP {:08X}", status);
+    if (!status) {
+      // PS5X360E: where the JIT put its code, for the samplers and crash reports.
+      auto* code_cache = emulator.processor()->backend()->code_cache();
+      xbox360ps5::SetGeneratedCodeRange(code_cache->execute_base_address(),
+                                        code_cache->execute_base_address() + code_cache->total_size());
+    }
     Stage("BOOT emulator setup returned");
     xbox360ps5::ReportPlatformMemory();
     if (status) { result = 4; }
