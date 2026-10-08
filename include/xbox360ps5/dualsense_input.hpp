@@ -3,6 +3,8 @@
 #include "xenia/hid/input_driver.h"
 #include <deque>
 #include <mutex>
+#include <string>
+#include <vector>
 namespace xbox360ps5 {
 struct PadSample {
   uint32_t buttons = 0;
@@ -23,6 +25,9 @@ class DualSenseInput final : public xe::hid::InputDriver {
 #if XBOX360PS5_CANARY
   xe::hid::InputType GetInputType() const override { return xe::hid::InputType::Controller; }
 #endif
+  // PS5X360E: Xenia Edge binds guest controller slots to the devices drivers
+  // list; a driver that lists none is never asked for input.
+  std::vector<xe::hid::InputDeviceInfo> EnumerateDevices() override;
  private:
   uint32_t user_ = 0;
   std::mutex mutex_;

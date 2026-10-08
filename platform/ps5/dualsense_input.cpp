@@ -33,8 +33,24 @@ int16_t Axis(uint8_t value, bool invert = false) {
 }
 DualSenseInput::DualSenseInput(Rumble rumble, uint32_t user) : InputDriver(nullptr, 0), user_(user), rumble_(std::move(rumble)) {}
 X_STATUS DualSenseInput::Setup() { return X_STATUS_SUCCESS; }
-void DualSenseInput::Submit(const PadSample& sample) {
+std::vector<InputDeviceInfo> DualSenseInput::EnumerateDevices() {
   std::lock_guard<std::mutex> lock(mutex_);
+  // The first player's controller is listed even before its first sample, so
+  // it holds guest slot 0 from the start; other players' while connected.
+  if (!connected_ && user_ != 0) return {};
+  InputDeviceInfo info;
+  info.driver_slot = uint8_t(user_);
+  info.stable_id = "ps5-pad-" + std::to_string(user_);
+  info.display_name = "DualSense " + std::to_string(user_ + 1);
+  info.preferred_slot = int8_t(user_);
+  info.auto_bind = true;
+  return {info};
+}
+void DualSenseInput::Submit(const PadSample& sample) {
+  bool changed = false;
+  {
+  std::lock_guard<std::mutex> lock(mutex_);
+  changed = connected_ != sample.connected;
   X_INPUT_GAMEPAD next{};
   if (sample.connected) {
     uint16_t held = 0;
@@ -60,6 +76,9 @@ void DualSenseInput::Submit(const PadSample& sample) {
   } else keys_.clear();
   connected_ = sample.connected;
   state_.gamepad = next;
+  }
+  // Outside the lock: the input system lists the devices again.
+  if (changed) NotifyDevicesChanged();
 }
 X_RESULT DualSenseInput::GetState(uint32_t user, X_INPUT_STATE* out) {
   if (!out) return X_ERROR_BAD_ARGUMENTS;

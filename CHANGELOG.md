@@ -3,6 +3,14 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.5+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Fix the controller doing nothing in game (Start, and every other button): Xenia Edge only
+  passes input to a guest controller slot that is bound to a device its drivers list, and the
+  DualSense driver listed none, so no slot was ever bound to it. It now lists the pad (player
+  1's from the start, the others while connected) and asks Edge to bind again when a pad
+  connects or disconnects.
+
 ## 0.2-alpha.4+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Fix the console freezing when a disc image game starts ("LOAD classify source" was the last
