@@ -1,0 +1,83 @@
+From 9815beb0057fa2ec9d77347351c0b5463ec05c5b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 12:02:12 +0000
+Subject: [PATCH] [GPU] Flush pending work in WAIT_REG_MEM with VSync off,
+ report stuck waits
+
+With emulated VSync off a WAIT_REG_MEM that did not match spun without
+PrepareForWait, so reports and resolves the guest waits on were never
+submitted and the wait could not end. Flush and return from the wait as
+Xenia Edge does; only the sleep depends on VSync. A wait still unmatched
+after 3 s is logged once with its address, value, mask and reference.
+---
+ .../gpu/pm4_command_processor_implement.h     | 40 ++++++++++++++++---
+ 1 file changed, 34 insertions(+), 6 deletions(-)
+
+diff --git a/src/xenia/gpu/pm4_command_processor_implement.h b/src/xenia/gpu/pm4_command_processor_implement.h
+index 930f8eafd..07cbd9125 100644
+--- a/src/xenia/gpu/pm4_command_processor_implement.h
++++ b/src/xenia/gpu/pm4_command_processor_implement.h
+@@ -716,6 +716,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+                 : register_file_->values[poll_reg_addr];
+ 
+   bool matched = false;
++  // PS5X360E: a wait that never ends hangs the title with no trace of what it
++  // waits for; report it once after a few seconds.
++  std::chrono::steady_clock::time_point wait_started{};
++  bool wait_reported = false;
+ 
+   do {
+     uint32_t value = value_ref;
+@@ -733,22 +737,46 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+     matched = MatchValueAndRef(value & mask, ref, wait_info);
+ 
+     if (!matched) {
++      if (!wait_reported) {
++        const auto now = std::chrono::steady_clock::now();
++        if (wait_started == std::chrono::steady_clock::time_point{}) {
++          wait_started = now;
++        } else if (now - wait_started > std::chrono::seconds(3)) {
++          wait_reported = true;
++          XELOGW(
++              "GPU: WAIT_REG_MEM still waiting after 3 s: {} 0x{:08X}, "
++              "(value 0x{:08X} & mask 0x{:08X}) vs ref 0x{:08X}, function {}, "
++              "wait 0x{:X}, vsync {}, ZPD mode {}",
++              is_memory ? "memory" : "register", poll_reg_addr, value, mask,
++              ref, wait_info & 0x7, wait, cvars::vsync ? 1 : 0,
++              static_cast<int>(zpd_mode_));
++          if (is_memory) {
++            const uint32_t* around = reinterpret_cast<const uint32_t*>(
++                memory_->TranslatePhysical((poll_reg_addr & ~uint32_t(0x1F))));
++            XELOGW("GPU: memory at 0x{:08X}: {:08X} {:08X} {:08X} {:08X} "
++                   "{:08X} {:08X} {:08X} {:08X}",
++                   poll_reg_addr & ~uint32_t(0x1F), around[0], around[1],
++                   around[2], around[3], around[4], around[5], around[6],
++                   around[7]);
++          }
++        }
++      }
+       // Wait.
+       if (wait >= 0x100) {
++        // PS5X360E (as Xenia Edge): pending work is flushed and the wait ended
++        // the same way with emulated VSync off; only the sleep is left out.
++        // Skipping PrepareForWait left reports and resolves the guest waits on
++        // unsubmitted, so the wait could never end.
+         PrepareForWait();
+-        if (!cvars::vsync) {
+-          // User wants it fast and dangerous.
+-          // do nothing
+-        } else {
++        if (cvars::vsync) {
+           xe::threading::Sleep(std::chrono::milliseconds(wait / 0x100));
+-          ReturnFromWait();
+         }
++        ReturnFromWait();
+ 
+         if (!worker_running_) {
+           // Short-circuited exit.
+           return false;
+         }
+-      } else {
+       }
+     }
+   } while (!matched);

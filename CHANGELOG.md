@@ -3,6 +3,14 @@
 PS5X360E versions are `0.1-alpha.N+<PS5X360 base>`: an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.1-alpha.2+0.5.7-fix.1 (PS5X360E)
+
+- GPU WAIT_REG_MEM flushes pending work (occlusion query reports, resolves) on every wait, also with
+  emulated VSync off, as Xenia Edge does; only the sleep depends on VSync. A wait that never ends is
+  logged once with what it waits for. In NFS The Run the GPU sat in such a wait while a job thread
+  waited for the GPU.
+- Add tools/ps5x360e-symbolize.sh to turn eboot+0x... places in PS5 logs into function names.
+
 ## 0.1-alpha.1+0.5.7-fix.1 (PS5X360E)
 
 - Port Xenia Edge's lwarx/stwcx. reservation rework (generation counters per 128-byte granule,
