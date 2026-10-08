@@ -1104,6 +1104,14 @@ int main(int argc, char** argv) {
         input = player_inputs[0]; return drivers;
       });
     XELOGI("ENGINE SETUP {:08X}", status);
+    // PS5X360E: Xenia Edge's Setup no longer makes the graphics and audio
+    // systems or attaches the input drivers; SetupSubsystems does (Edge's own
+    // front end calls it at the first launch, after per-game settings). The
+    // launcher draws through the graphics system, so it is made here.
+    if (!status) {
+      status = emulator.SetupSubsystems();
+      XELOGI("ENGINE SUBSYSTEMS {:08X}", status);
+    }
     if (!status) {
       // PS5X360E: where the JIT put its code, for the samplers and crash reports.
       auto* code_cache = emulator.processor()->backend()->code_cache();

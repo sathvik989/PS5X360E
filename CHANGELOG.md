@@ -3,6 +3,14 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.3+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Fix the crash right after "emulator setup returned": Xenia Edge's Setup no longer creates the
+  graphics and audio systems or attaches the controllers (its SetupSubsystems does), so the
+  launcher found no graphics system. The PS5 title now calls SetupSubsystems after Setup.
+- tools/ps5x360e-symbolize.sh uses the new builder image and also prints the machine code and
+  source lines at a crash in the eboot.
+
 ## 0.2-alpha.2+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Fix the crash at start (before the window): two settings changed type in Xenia Edge.

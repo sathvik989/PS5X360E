@@ -15,7 +15,7 @@ ELF=PS5X360E/build/canary-game/llvm-pie.elf
 [[ -f $ELF ]] || { echo "No $ELF here: run this from the workspace folder after a build."; exit 1; }
 [[ -f $LOG ]] || { echo "No such log: $LOG"; exit 1; }
 sudo docker run --rm -i -v "$WS":/ws -w /ws --user "$(id -u):$(id -g)" \
-	-e LOG="$LOG" -e ELF="$ELF" ps5x360e-builder bash -s <<'INNER'
+	-e LOG="$LOG" -e ELF="$ELF" ps5x360e-builder:edge1 bash -s <<'INNER'
 set -euo pipefail
 python3 - "$LOG" "$ELF" <<'PY'
 import re, subprocess, sys
@@ -52,5 +52,16 @@ for l in session:
     stack = [names.get(int(x, 16), "?").split(" <- ")[-1].split(" (")[0]
              for x in re.findall(r"eboot\+0x([0-9a-fA-F]+)", l)]
     print(f"{m.group(1)} rip={m.group(2)}: " + " | ".join(stack[:10]))
+# The machine code at a crash in the eboot, with source lines.
+for l in session:
+    m = re.search(r"CRASH .*rip=eboot\+0x([0-9a-fA-F]+)", l)
+    if not m:
+        continue
+    at = int(m.group(1), 16)
+    print(f"\n== code at the crash, eboot+0x{at:x}")
+    dis = subprocess.run(["llvm-objdump-18", "-d", "-l", "-C", "--no-show-raw-insn",
+                          f"--start-address={hex(max(at - 0xc0, 0))}", f"--stop-address={hex(at + 0x20)}", elf],
+                         capture_output=True, text=True).stdout
+    print("\n".join(dis.splitlines()[4:]))
 PY
 INNER
