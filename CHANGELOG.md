@@ -3,6 +3,13 @@
 PS5X360E versions are `0.1-alpha.N+<PS5X360 base>`: an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.1-alpha.3+0.5.7-fix.1 (PS5X360E)
+
+- Port Xenia Edge's ring read pointer fix: the GPU publishes how far it has read the command ring
+  every RB_BLKSZ dwords instead of only when a whole burst is done. In NFS The Run (My Cars) the GPU
+  waited in WAIT_REG_MEM partway through a burst for a value a job thread writes, while that thread
+  waited for ring space the GPU had already read but not reported: a deadlock.
+
 ## 0.1-alpha.2+0.5.7-fix.1 (PS5X360E)
 
 - GPU WAIT_REG_MEM flushes pending work (occlusion query reports, resolves) on every wait, also with
