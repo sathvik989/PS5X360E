@@ -134,9 +134,16 @@ STAMP=$C/.git/ps5x360e-patches
 WANT=$( { echo "$CANARY_REV"; cat "$R/patches/canary/xbox360ps5.patch" "$R"/patches/ps5x360e/*.patch 2>/dev/null || true; } | sha256sum | cut -c1-64)
 if [[ -n $(gitc ls-files | head -1) && -f $STAMP && $(cat "$STAMP") == "$WANT" ]]; then
 	echo "   Xenia Canary ${CANARY_REV:0:12} already has the current patches"
+elif [[ -n $(gitc ls-files | head -1) && -f $STAMP && -f $R/tools/ps5x360e-sync-canary.py ]]; then
+	# Prepared before with other patches: rewrite only the files whose content
+	# changes, so only what the patch change touches is recompiled.
+	gitc cat-file -e "$CANARY_REV^{commit}" 2>/dev/null || gitc fetch -q origin "$CANARY_REV"
+	rm -f "$STAMP"
+	( cd "$R" && python3 tools/ps5x360e-sync-canary.py )
+	echo "$WANT" > "$STAMP"
 else
-	# prepare_canary.py fails on a re-run, because files a patch adds are left
-	# behind; start from a clean checkout of the pinned revision instead.
+	# First time: prepare_canary.py fails on a re-run, because files a patch
+	# adds are left behind; start from a clean checkout of the pinned revision.
 	gitc cat-file -e "$CANARY_REV^{commit}" 2>/dev/null || gitc fetch -q origin "$CANARY_REV"
 	echo "   resetting Xenia Canary to ${CANARY_REV:0:12} and applying the patches"
 	rm -f "$STAMP"
