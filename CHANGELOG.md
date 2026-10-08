@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.10+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- NFS The Run stops in the same state with VSync on (tested on alpha.8): the same marker word
+  (3 of 8) missing, the same eight-submission backlog. It is deterministic, not a timing race.
+- The 8-word marker block is the size of the GPU's eight scratch registers, which the command
+  processor can write back to memory. The stuck-wait report now prints the scratch write-back
+  address, mask and registers, records scratch register writes, and decodes the packets still
+  ahead of the wait in the current indirect buffer and in the primary ring (what the GPU would
+  run next, and where the missing write would come from).
+
 ## 0.2-alpha.9+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Fix VSync off making the emulated console's vblanks unlimited. Since 0.2-alpha.2 the VSync

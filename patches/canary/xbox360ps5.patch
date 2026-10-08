@@ -1526,7 +1526,7 @@ index ed9bb6b10..ac659d0f9 100644
    for (int i = 0; i < 32; i++) {
      crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
 diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
-index 4bfd8c3ec..30f6b5757 100644
+index 4bfd8c3ec..9a9cc6b77 100644
 --- a/src/xenia/gpu/command_processor.cc
 +++ b/src/xenia/gpu/command_processor.cc
 @@ -144,6 +144,12 @@ DEFINE_bool(
@@ -1554,7 +1554,7 @@ index 4bfd8c3ec..30f6b5757 100644
    if (!SetupContext()) {
      xe::FatalError("Unable to setup command processor internal state");
      return;
-@@ -553,6 +564,78 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -553,6 +564,140 @@ void CommandProcessor::WorkerThreadMain() {
    ShutdownContext();
  }
  
@@ -1572,7 +1572,67 @@ index 4bfd8c3ec..30f6b5757 100644
 +  }
 +}
 +
++void CommandProcessor::DiagWalk(const char* what, const uint8_t* buffer,
++                                uint32_t capacity, uint32_t read,
++                                uint32_t write) {
++  if (!buffer || !capacity) {
++    return;
++  }
++  auto at = [&](uint32_t offset) {
++    return xe::load_and_swap<uint32_t>(buffer + (offset % capacity));
++  };
++  const uint32_t available = (write + capacity - read) % capacity;
++  XELOGW("GPU: ahead in the {}: {} dwords", what, available / 4);
++  uint32_t offset = 0;
++  for (uint32_t n = 0; n < 48 && offset + 4 <= available; ++n) {
++    const uint32_t header = at(read + offset);
++    uint32_t count = 1;
++    switch (header >> 30) {
++      case 0:
++        count = ((header >> 16) & 0x3FFF) + 1;
++        XELOGW("GPU:   +{:04X} REGS 0x{:04X} n{} {:08X} {:08X}", offset / 4,
++               header & 0x7FFF, count, at(read + offset + 4),
++               count > 1 ? at(read + offset + 8) : 0);
++        break;
++      case 1:
++        count = 2;
++        XELOGW("GPU:   +{:04X} REG2 0x{:04X}={:08X} 0x{:04X}={:08X}",
++               offset / 4, header & 0x7FF, at(read + offset + 4),
++               (header >> 11) & 0x7FF, at(read + offset + 8));
++        break;
++      case 2:
++        count = 0;
++        XELOGW("GPU:   +{:04X} NOP", offset / 4);
++        break;
++      case 3:
++        count = ((header >> 16) & 0x3FFF) + 1;
++        XELOGW("GPU:   +{:04X} op {:02X} n{} {:08X} {:08X} {:08X}", offset / 4,
++               (header >> 8) & 0x7F, count, at(read + offset + 4),
++               count > 1 ? at(read + offset + 8) : 0,
++               count > 2 ? at(read + offset + 12) : 0);
++        break;
++    }
++    offset += (count + 1) * 4;
++  }
++}
++
 +void CommandProcessor::DiagDump() {
++  {
++    const RegisterFile& regs = *register_file_;
++    XELOGW(
++        "GPU: scratch write-back to 0x{:08X} mask {:02X}; registers {:08X} "
++        "{:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
++        regs.values[XE_GPU_REG_SCRATCH_ADDR],
++        regs.values[XE_GPU_REG_SCRATCH_UMSK],
++        regs.values[XE_GPU_REG_SCRATCH_REG0 + 0],
++        regs.values[XE_GPU_REG_SCRATCH_REG0 + 1],
++        regs.values[XE_GPU_REG_SCRATCH_REG0 + 2],
++        regs.values[XE_GPU_REG_SCRATCH_REG0 + 3],
++        regs.values[XE_GPU_REG_SCRATCH_REG0 + 4],
++        regs.values[XE_GPU_REG_SCRATCH_REG0 + 5],
++        regs.values[XE_GPU_REG_SCRATCH_REG0 + 6],
++        regs.values[XE_GPU_REG_SCRATCH_REG0 + 7]);
++  }
 +  auto name = [](uint32_t opcode) -> const char* {
 +    switch (opcode) {
 +      case xenos::PM4_INDIRECT_BUFFER:
@@ -1612,6 +1672,8 @@ index 4bfd8c3ec..30f6b5757 100644
 +        return "WAIT_BEGIN (addr value FFFFFFFF-words)";
 +      case 0x104:
 +        return "WAIT_DONE (addr microseconds)";
++      case 0x105:
++        return "SCRATCH (reg|enabled<<8 value address)";
 +      default:
 +        return "packet";
 +    }
@@ -1633,8 +1695,18 @@ index 4bfd8c3ec..30f6b5757 100644
  void CommandProcessor::Pause() {
    if (paused_) {
      return;
+@@ -742,6 +887,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
+       uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
+       uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
+       xe::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
++      DiagRecordWrite(0x105, scratch_reg | 0x100, value, mem_addr);
++    } else {
++      DiagRecordWrite(0x105, scratch_reg, value, 0);
+     }
+   } else {
+     switch (index) {
 diff --git a/src/xenia/gpu/command_processor.h b/src/xenia/gpu/command_processor.h
-index 96d842b84..b1d9edd17 100644
+index 96d842b84..7d7635fb0 100644
 --- a/src/xenia/gpu/command_processor.h
 +++ b/src/xenia/gpu/command_processor.h
 @@ -136,6 +136,12 @@ class CommandProcessor {
@@ -1659,7 +1731,7 @@ index 96d842b84..b1d9edd17 100644
  
    uint32_t primary_buffer_ptr_ = 0;
    uint32_t primary_buffer_size_ = 0;
-@@ -713,6 +721,27 @@ class CommandProcessor {
+@@ -713,6 +721,35 @@ class CommandProcessor {
    uint32_t read_ptr_update_freq_ = 0;
    uint32_t read_ptr_writeback_ptr_ = 0;
  
@@ -1683,6 +1755,14 @@ index 96d842b84..b1d9edd17 100644
 +                                                              c};
 +  }
 +  void DiagDump();
++  // Where the primary ring stood when the current indirect buffer was entered,
++  // and the packets ahead of a stuck wait, in the buffer and in the ring.
++  int diag_ib_depth_ = 0;
++  const uint8_t* diag_primary_buffer_ = nullptr;
++  uint32_t diag_primary_capacity_ = 0, diag_primary_read_ = 0,
++           diag_primary_write_ = 0;
++  void DiagWalk(const char* what, const uint8_t* buffer, uint32_t capacity,
++                uint32_t read, uint32_t write);
 +
    std::unique_ptr<xe::threading::Event> write_ptr_index_event_;
    std::atomic<uint32_t> write_ptr_index_;
@@ -1767,10 +1847,32 @@ index b10f87bba..f3f99ae88 100644
  #include "xenia/base/byte_stream.h"
  #include "xenia/base/clock.h"
 diff --git a/src/xenia/gpu/pm4_command_processor_implement.h b/src/xenia/gpu/pm4_command_processor_implement.h
-index b5b005966..b509e9627 100644
+index b5b005966..10de0d525 100644
 --- a/src/xenia/gpu/pm4_command_processor_implement.h
 +++ b/src/xenia/gpu/pm4_command_processor_implement.h
-@@ -494,6 +494,18 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
+@@ -86,6 +86,13 @@ void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
+   trace_writer_.WriteIndirectBufferStart(ptr, count * sizeof(uint32_t));
+   if (count != 0) {
+     RingBuffer old_reader = reader_;
++    // PS5X360E: for the report of a wait that never ends.
++    if (diag_ib_depth_++ == 0) {
++      diag_primary_buffer_ = old_reader.buffer();
++      diag_primary_capacity_ = uint32_t(old_reader.capacity());
++      diag_primary_read_ = uint32_t(old_reader.read_offset());
++      diag_primary_write_ = uint32_t(old_reader.write_offset());
++    }
+ 
+     // Execute commands!
+     new (&reader_)
+@@ -109,6 +116,7 @@ void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
+ 
+     trace_writer_.WriteIndirectBufferEnd();
+     reader_ = old_reader;
++    --diag_ib_depth_;
+   } else {
+     // rare, but i've seen it happen! (and then a division by 0 occurs)
+     return;
+@@ -494,6 +502,18 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
        }
      }
  
@@ -1789,7 +1891,7 @@ index b5b005966..b509e9627 100644
      bool result = false;
      switch (opcode) {
        case PM4_ME_INIT:
-@@ -754,6 +766,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_INTERRUPT(
+@@ -754,6 +774,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_INTERRUPT(
  
    // generate interrupt from the command stream
    uint32_t cpu_mask = reader_.ReadAndSwap<uint32_t>();
@@ -1797,7 +1899,7 @@ index b5b005966..b509e9627 100644
  
    if (COMMAND_PROCESSOR::debug_markers_enabled()) {
      COMMAND_PROCESSOR::InsertDebugMarker("PM4_INTERRUPT: cpu_mask=0x%02X",
-@@ -798,6 +811,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_XE_SWAP(uint32_t packet,
+@@ -798,6 +819,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_XE_SWAP(uint32_t packet,
                                           frontbuffer_height);
    }
  
@@ -1805,7 +1907,7 @@ index b5b005966..b509e9627 100644
    COMMAND_PROCESSOR::IssueSwap(frontbuffer_ptr, frontbuffer_width,
                                 frontbuffer_height);
  
-@@ -870,6 +884,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -870,6 +892,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
                  : register_file_->values[poll_reg_addr];
  
    bool matched = false;
@@ -1816,7 +1918,7 @@ index b5b005966..b509e9627 100644
  
    do {
      uint32_t value = value_ref;
-@@ -895,6 +913,45 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -895,6 +921,59 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
      matched = MatchValueAndRef(value & mask, ref, wait_info);
  
      if (!matched) {
@@ -1857,12 +1959,26 @@ index b5b005966..b509e9627 100644
 +                   around[7]);
 +          }
 +          DiagDump();
++          if (diag_ib_depth_) {
++            DiagWalk("indirect buffer", reader_.buffer(),
++                     uint32_t(reader_.capacity()),
++                     uint32_t(reader_.read_offset()),
++                     uint32_t(reader_.write_offset()));
++            DiagWalk("primary ring", diag_primary_buffer_,
++                     diag_primary_capacity_, diag_primary_read_,
++                     diag_primary_write_);
++          } else {
++            DiagWalk("primary ring", reader_.buffer(),
++                     uint32_t(reader_.capacity()),
++                     uint32_t(reader_.read_offset()),
++                     uint32_t(reader_.write_offset()));
++          }
 +        }
 +      }
        // Wait using the duration specified by the guest.
        if (wait >= 0x100) {
          PrepareForWait();
-@@ -921,6 +978,13 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -921,6 +1000,13 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
        }
      }
    } while (!matched);
@@ -1876,7 +1992,7 @@ index b5b005966..b509e9627 100644
  
    return true;
  }
-@@ -978,6 +1042,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
+@@ -978,6 +1064,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
  
    auto endianness = static_cast<xenos::Endian>(mem_addr & 0x3);
    mem_addr &= ~0x3;
@@ -1884,7 +2000,7 @@ index b5b005966..b509e9627 100644
    reg_val = GpuSwap(reg_val, endianness);
    xe::store(memory_->TranslatePhysical(mem_addr), reg_val);
    trace_writer_.WriteMemoryWrite(CpuToGpu(mem_addr), 4);
-@@ -997,6 +1062,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
+@@ -997,6 +1084,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
  
    for (uint32_t i = 0; i < count - 1; i++) {
      uint32_t write_data = reader_.ReadAndSwap<uint32_t>();
@@ -1894,7 +2010,7 @@ index b5b005966..b509e9627 100644
  
      auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
      auto addr = write_addr & ~0x3;
-@@ -1042,6 +1110,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
+@@ -1042,6 +1132,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
      value = register_file_->values[poll_reg_addr];
    }
    bool matched = MatchValueAndRef(value & mask, ref, wait_info);
@@ -1903,7 +2019,7 @@ index b5b005966..b509e9627 100644
  
    if (matched) {
      // Write.
-@@ -1081,7 +1151,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
+@@ -1081,7 +1173,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
      // Just an event flag? Where does this write?
    } else {
      // Write to an address.
@@ -1922,7 +2038,7 @@ index b5b005966..b509e9627 100644
      reader_.AdvanceRead((count - 1) * sizeof(uint32_t));
    }
    return true;
-@@ -1116,6 +1196,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
+@@ -1116,6 +1218,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
      // Write value.
      data_value = value;
    }
@@ -1930,7 +2046,7 @@ index b5b005966..b509e9627 100644
    auto endianness = static_cast<xenos::Endian>(address & 0x3);
    address &= ~0x3;
    data_value = GpuSwap(data_value, endianness);
-@@ -1359,10 +1440,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
+@@ -1359,10 +1462,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
        }
  
        if (!draw_succeeded) {
