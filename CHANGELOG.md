@@ -3,6 +3,17 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.7+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- NFS The Run now draws the garage (alpha.6's flush of GPU output before memory waits got it
+  past the first stuck wait), then stops at the next one. alpha.6's report shows no GPU packet
+  writes the 0xFFFFFFFF markers: the game's CPU code does, and a job thread is meanwhile waiting
+  for a GPU frame fence three frames ahead, behind the stuck wait.
+- More diagnostics for that: each memory wait that has to wait records the marker block as it
+  found it and, when it ends, how long it took; any copy of GPU output (resolve or memory
+  export read back) into guest RAM on the page of the marker block is logged, in case the
+  emulator overwrites markers the game had written.
+
 ## 0.2-alpha.6+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Need for Speed The Run still stops after Start (around My Cars) exactly as it did on the

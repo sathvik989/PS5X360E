@@ -1453,7 +1453,7 @@ index ed9bb6b10..ac659d0f9 100644
    for (int i = 0; i < 32; i++) {
      crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
 diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
-index 4bfd8c3ec..4caca7c33 100644
+index 4bfd8c3ec..30f6b5757 100644
 --- a/src/xenia/gpu/command_processor.cc
 +++ b/src/xenia/gpu/command_processor.cc
 @@ -144,6 +144,12 @@ DEFINE_bool(
@@ -1481,10 +1481,24 @@ index 4bfd8c3ec..4caca7c33 100644
    if (!SetupContext()) {
      xe::FatalError("Unable to setup command processor internal state");
      return;
-@@ -553,6 +564,60 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -553,6 +564,78 @@ void CommandProcessor::WorkerThreadMain() {
    ShutdownContext();
  }
  
++void CommandProcessor::DiagNoteCopyback(const char* what, uint32_t address,
++                                      uint32_t length) {
++  const uint32_t block = diag_wait_block_.load(std::memory_order_relaxed);
++  if (!block || !length || address >= ((block & ~0xFFFu) + 0x1000) ||
++      uint64_t(address) + length <= (block & ~0xFFFu)) {
++    return;
++  }
++  if (diag_copyback_logs_.fetch_add(1, std::memory_order_relaxed) < 32) {
++    XELOGW("GPU: {} 0x{:08X}+0x{:X} overwrites guest RAM in the page of the "
++           "WAIT_REG_MEM marker 0x{:08X}",
++           what, address, length, block);
++  }
++}
++
 +void CommandProcessor::DiagDump() {
 +  auto name = [](uint32_t opcode) -> const char* {
 +    switch (opcode) {
@@ -1521,6 +1535,10 @@ index 4bfd8c3ec..4caca7c33 100644
 +        return "RESOLVE";
 +      case 0x101:
 +        return "MEMEXPORT";
++      case 0x103:
++        return "WAIT_BEGIN (addr value FFFFFFFF-words)";
++      case 0x104:
++        return "WAIT_DONE (addr microseconds)";
 +      default:
 +        return "packet";
 +    }
@@ -1543,7 +1561,7 @@ index 4bfd8c3ec..4caca7c33 100644
    if (paused_) {
      return;
 diff --git a/src/xenia/gpu/command_processor.h b/src/xenia/gpu/command_processor.h
-index 96d842b84..863802274 100644
+index 96d842b84..b1d9edd17 100644
 --- a/src/xenia/gpu/command_processor.h
 +++ b/src/xenia/gpu/command_processor.h
 @@ -136,6 +136,12 @@ class CommandProcessor {
@@ -1568,7 +1586,7 @@ index 96d842b84..863802274 100644
  
    uint32_t primary_buffer_ptr_ = 0;
    uint32_t primary_buffer_size_ = 0;
-@@ -713,6 +721,22 @@ class CommandProcessor {
+@@ -713,6 +721,27 @@ class CommandProcessor {
    uint32_t read_ptr_update_freq_ = 0;
    uint32_t read_ptr_writeback_ptr_ = 0;
  
@@ -1582,6 +1600,11 @@ index 96d842b84..863802274 100644
 +  std::array<DiagPacket, 64> diag_writes_{};
 +  uint32_t diag_writes_pos_ = 0;
 +  uint32_t diag_event_write_addr_types_ = 0;
++  // The 32-byte block around the last memory WAIT_REG_MEM, and how many host
++  // copies of GPU output into guest RAM that hit its page were logged.
++  std::atomic<uint32_t> diag_wait_block_{0};
++  std::atomic<uint32_t> diag_copyback_logs_{0};
++  void DiagNoteCopyback(const char* what, uint32_t address, uint32_t length);
 +  void DiagRecordWrite(uint32_t opcode, uint32_t a, uint32_t b, uint32_t c) {
 +    diag_writes_[diag_writes_pos_++ % diag_writes_.size()] = {opcode, 0, a, b,
 +                                                              c};
@@ -1591,6 +1614,30 @@ index 96d842b84..863802274 100644
    std::unique_ptr<xe::threading::Event> write_ptr_index_event_;
    std::atomic<uint32_t> write_ptr_index_;
  
+diff --git a/src/xenia/gpu/command_processor_readback_staging.inc b/src/xenia/gpu/command_processor_readback_staging.inc
+index 484b6d2e1..452d8f4c2 100644
+--- a/src/xenia/gpu/command_processor_readback_staging.inc
++++ b/src/xenia/gpu/command_processor_readback_staging.inc
+@@ -113,6 +113,7 @@ void ReadbackStagingToGuestRam(const ReadbackStagingBuffer& buffer,
+   if (buffer.mapped == nullptr || !length) {
+     return;
+   }
++  DiagNoteCopyback("readback", address, length);
+   uint8_t* dest = memory_->TranslatePhysical(address);
+   uint8_t* source = static_cast<uint8_t*>(buffer.mapped) + source_offset;
+   // vastcpy's non-temporal stores need both pointers and the length to be
+diff --git a/src/xenia/gpu/command_processor_resolve_readwatch.inc b/src/xenia/gpu/command_processor_resolve_readwatch.inc
+index 8c2e6f64d..6a026fbd0 100644
+--- a/src/xenia/gpu/command_processor_resolve_readwatch.inc
++++ b/src/xenia/gpu/command_processor_resolve_readwatch.inc
+@@ -260,6 +260,7 @@ void CopyPackedRangesToGuestRam(
+     const std::vector<std::pair<uint32_t, uint32_t>>& ranges) {
+   const uint8_t* source_bytes = static_cast<const uint8_t*>(source);
+   for (const auto& range : ranges) {
++    DiagNoteCopyback("resolve copy-back", range.first, range.second);
+     std::memcpy(memory_->TranslatePhysical(range.first), source_bytes,
+                 range.second);
+     source_bytes += range.second;
 diff --git a/src/xenia/gpu/draw_util.cc b/src/xenia/gpu/draw_util.cc
 index 916814c86..a3bca419c 100644
 --- a/src/xenia/gpu/draw_util.cc
@@ -1647,7 +1694,7 @@ index b10f87bba..f3f99ae88 100644
  #include "xenia/base/byte_stream.h"
  #include "xenia/base/clock.h"
 diff --git a/src/xenia/gpu/pm4_command_processor_implement.h b/src/xenia/gpu/pm4_command_processor_implement.h
-index b5b005966..d4d6d731d 100644
+index b5b005966..b509e9627 100644
 --- a/src/xenia/gpu/pm4_command_processor_implement.h
 +++ b/src/xenia/gpu/pm4_command_processor_implement.h
 @@ -494,6 +494,18 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
@@ -1696,13 +1743,22 @@ index b5b005966..d4d6d731d 100644
  
    do {
      uint32_t value = value_ref;
-@@ -895,6 +913,36 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -895,6 +913,45 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
      matched = MatchValueAndRef(value & mask, ref, wait_info);
  
      if (!matched) {
 +      // PS5X360E: on the console, what earlier GPU work writes is there for the
 +      // CP to see; here export and resolve output may still be on the host GPU.
 +      if (is_memory && wait_started == std::chrono::steady_clock::time_point{}) {
++        const uint32_t block = poll_reg_addr & ~uint32_t(0x1F);
++        diag_wait_block_.store(block, std::memory_order_relaxed);
++        const uint32_t* words = reinterpret_cast<const uint32_t*>(
++            memory_->TranslatePhysical(block));
++        uint32_t set = 0;
++        for (uint32_t i = 0; i < 8; ++i) {
++          set |= (words[i] == 0xFFFFFFFFu ? 1u : 0u) << i;
++        }
++        DiagRecordWrite(0x103, poll_reg_addr, value, set);
 +        COMMAND_PROCESSOR::SubmitResolvesForGuestSync();
 +        COMMAND_PROCESSOR::AwaitMemexportForFence();
 +      }
@@ -1733,7 +1789,21 @@ index b5b005966..d4d6d731d 100644
        // Wait using the duration specified by the guest.
        if (wait >= 0x100) {
          PrepareForWait();
-@@ -978,6 +1026,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
+@@ -921,6 +978,13 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+       }
+     }
+   } while (!matched);
++  if (is_memory && wait_started != std::chrono::steady_clock::time_point{}) {
++    DiagRecordWrite(0x104, poll_reg_addr,
++                    uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(
++                                 std::chrono::steady_clock::now() - wait_started)
++                                 .count()),
++                    0);
++  }
+ 
+   return true;
+ }
+@@ -978,6 +1042,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
  
    auto endianness = static_cast<xenos::Endian>(mem_addr & 0x3);
    mem_addr &= ~0x3;
@@ -1741,7 +1811,7 @@ index b5b005966..d4d6d731d 100644
    reg_val = GpuSwap(reg_val, endianness);
    xe::store(memory_->TranslatePhysical(mem_addr), reg_val);
    trace_writer_.WriteMemoryWrite(CpuToGpu(mem_addr), 4);
-@@ -997,6 +1046,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
+@@ -997,6 +1062,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
  
    for (uint32_t i = 0; i < count - 1; i++) {
      uint32_t write_data = reader_.ReadAndSwap<uint32_t>();
@@ -1751,7 +1821,7 @@ index b5b005966..d4d6d731d 100644
  
      auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
      auto addr = write_addr & ~0x3;
-@@ -1042,6 +1094,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
+@@ -1042,6 +1110,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
      value = register_file_->values[poll_reg_addr];
    }
    bool matched = MatchValueAndRef(value & mask, ref, wait_info);
@@ -1760,7 +1830,7 @@ index b5b005966..d4d6d731d 100644
  
    if (matched) {
      // Write.
-@@ -1081,7 +1135,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
+@@ -1081,7 +1151,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
      // Just an event flag? Where does this write?
    } else {
      // Write to an address.
@@ -1779,7 +1849,7 @@ index b5b005966..d4d6d731d 100644
      reader_.AdvanceRead((count - 1) * sizeof(uint32_t));
    }
    return true;
-@@ -1116,6 +1180,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
+@@ -1116,6 +1196,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
      // Write value.
      data_value = value;
    }
@@ -1787,7 +1857,7 @@ index b5b005966..d4d6d731d 100644
    auto endianness = static_cast<xenos::Endian>(address & 0x3);
    address &= ~0x3;
    data_value = GpuSwap(data_value, endianness);
-@@ -1359,10 +1424,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
+@@ -1359,10 +1440,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
        }
  
        if (!draw_succeeded) {
