@@ -5,7 +5,7 @@
 # build that made the eboot.bin the log came from:
 #     bash PS5X360E/tools/ps5x360e-symbolize.sh boot.log            (copied from the logs zip)
 #     bash PS5X360E/tools/ps5x360e-symbolize.sh boot.log > places.txt
-# Only the last session in the log is read (from the last "BOOT main entered").
+# The session with the last crash is read, or the last session if none crashed.
 # The names come from PS5X360E/build/canary-game/llvm-pie.elf, so a log from an
 # older eboot.bin gives wrong names.
 set -euo pipefail
@@ -21,8 +21,16 @@ python3 - "$LOG" "$ELF" <<'PY'
 import re, subprocess, sys
 log, elf = sys.argv[1], sys.argv[2]
 lines = open(log, errors="replace").read().split("\n")
-start = max((i for i, l in enumerate(lines) if "BOOT main entered" in l), default=0)
-session = lines[start:]
+# The session with the last crash (the title restarts after one, so it is
+# usually not the last session), else the last session.
+crash = max((i for i, l in enumerate(lines) if "CRASH " in l), default=None)
+boots = [i for i, l in enumerate(lines) if "BOOT main entered" in l]
+if crash is not None:
+    start = max((i for i in boots if i < crash), default=0)
+    end = min((i for i in boots if i > crash), default=len(lines))
+else:
+    start, end = (boots[-1] if boots else 0), len(lines)
+session = lines[start:end]
 # The guide's "Measure performance" lines (game log): eboot offsets in their
 # title and system-from parts, written as hex keys before ':' or '<'.
 def measure_parts(l):
