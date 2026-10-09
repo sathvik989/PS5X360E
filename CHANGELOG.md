@@ -3,6 +3,13 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.14+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Need for Speed: The Run's recommended settings add Fast locks, Video memory optimized and the
+  alternative fast visibility queries. With them races run at 27-30 FPS (the game's own 30 on
+  the Xbox 360) instead of 12-20: the guide's measurement had shown its threads waiting on the
+  core's global lock, as in GTA IV; the visibility mode fixed its collision sparks.
+
 ## 0.2-alpha.13+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - NFS The Run plays (races at 11-25 FPS on alpha.10 with readback on).

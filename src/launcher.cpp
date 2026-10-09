@@ -322,7 +322,10 @@ GameOverrides GamePreset(const std::string& title_id) {
       // Need for Speed: The Run: without the readback it stops in the garage
       // after Start, its GPU waiting on a job that never finishes (every build
       // up to 0.2-alpha.10); with it the game runs (user, 0.2-alpha.10).
-      {"4541094A", {{"readback", 1}}},
+      // Fast locks and the video-memory changes took races from 12-20 to
+      // 27-30 FPS, the game's own 30 (0.2-alpha.13, user's measurements); the
+      // alternative fast visibility queries fixed its collision sparks.
+      {"4541094A", {{"readback", 1}, {"fast_locks", 1}, {"memory_boost", 1}, {"occlusion", 2}}},
   };
   GameOverrides preset;
   for (const auto& [id, values] : built_in) if (Lower(title_id) == Lower(id)) preset = values;
