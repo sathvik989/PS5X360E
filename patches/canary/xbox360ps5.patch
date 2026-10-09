@@ -2802,6 +2802,25 @@ index 2fd3a0c49..4bf1d7546 100644
  
    bool EnsureHostGpuMemoryAllocated(uint32_t start, uint32_t length);
    uint32_t host_gpu_memory_sparse_granularity_log2_ = UINT32_MAX;
+diff --git a/src/xenia/gpu/spirv_shader_translator_fetch.cc b/src/xenia/gpu/spirv_shader_translator_fetch.cc
+index 372cbebfb..3adaf6caa 100644
+--- a/src/xenia/gpu/spirv_shader_translator_fetch.cc
++++ b/src/xenia/gpu/spirv_shader_translator_fetch.cc
+@@ -2085,9 +2085,12 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+             case xenos::FetchOpDimension::k2D: {
+               if (instr.attributes.use_register_gradients) {
+                 for (uint32_t i = 0; i < 2; ++i) {
++                  // PS5X360E (from PS5X360 0.5.9): i selects the vertical
++                  // gradient below, so it loads the vertical register (the 3D
++                  // and cube paths load them unswapped).
+                   spv::Id register_gradient_3d =
+-                      builder_->createLoad(i ? var_main_tfetch_gradients_h_
+-                                             : var_main_tfetch_gradients_v_,
++                      builder_->createLoad(i ? var_main_tfetch_gradients_v_
++                                             : var_main_tfetch_gradients_h_,
+                                            spv::NoPrecision);
+                   spv::Id register_gradient_x =
+                       builder_->createCompositeExtract(register_gradient_3d,
 diff --git a/src/xenia/gpu/texture_cache.cc b/src/xenia/gpu/texture_cache.cc
 index c6a2f0850..181f6facd 100644
 --- a/src/xenia/gpu/texture_cache.cc
@@ -2949,7 +2968,7 @@ index c6a2f0850..181f6facd 100644
    return true;
  }
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index 76fc1a45f..d337c506e 100644
+index 76fc1a45f..00ba9df9b 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,6 +8,9 @@
@@ -2992,7 +3011,23 @@ index 76fc1a45f..d337c506e 100644
        frontbuffer_width_scaled, frontbuffer_height_scaled, aspect.first,
        aspect.second,
        [this, frontbuffer_width_scaled, frontbuffer_height_scaled,
-@@ -2577,6 +2594,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2200,7 +2217,14 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+         uint32_t& gamma_ramp_frame_index_ref =
+             use_pwl_gamma_ramp ? gamma_ramp_pwl_current_frame_
+                                : gamma_ramp_256_entry_table_current_frame_;
+-        if (gamma_ramp_frame_index_ref == UINT32_MAX) {
++        // PS5X360E (from PS5X360 0.5.9's color investigation): with the
++        // per-frame mapped ramps, a ramp left in an older frame's slot may be
++        // rewritten when that slot comes round again while frames sampling it
++        // are still in flight (only the current slot's fence was awaited), so
++        // the ramp is copied into the current slot whenever it is elsewhere.
++        if (gamma_ramp_frame_index_ref == UINT32_MAX ||
++            (gamma_ramp_upload_buffer_memory_ == VK_NULL_HANDLE &&
++             gamma_ramp_frame_index_ref != swap_frame_index)) {
+           constexpr uint32_t kGammaRampSize256EntryTable =
+               sizeof(uint32_t) * 256;
+           constexpr uint32_t kGammaRampSizePWL = sizeof(uint16_t) * 2 * 3 * 128;
+@@ -2577,6 +2601,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
  
    // End the frame even if did not present for any reason (the image refresher
    // was not called), to prevent leaking per-frame resources.
@@ -3003,7 +3038,7 @@ index 76fc1a45f..d337c506e 100644
    EndSubmission(true);
  }
  
-@@ -4262,6 +4283,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4262,6 +4290,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
    }
  
    if (!memexport_ranges_.empty()) {
@@ -3014,7 +3049,7 @@ index 76fc1a45f..d337c506e 100644
      if (route_to_host) {
        // Producer draw: output landed in host_buffer_ (guest RAM), already CPU
        // coherent, so no readback. Just record the written pages. Consumers then
-@@ -4765,6 +4790,35 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4765,6 +4797,35 @@ bool VulkanCommandProcessor::IssueCopy() {
      return false;
    }
    ++submission_in_progress_.resolve_count;
@@ -3050,7 +3085,7 @@ index 76fc1a45f..d337c506e 100644
  
    // The resolve wrote the device buffer. Drop any stale memexport marks so the
    // output isn't overwritten with guest RAM by a later texture load.
-@@ -4782,6 +4836,11 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4782,6 +4843,11 @@ bool VulkanCommandProcessor::IssueCopy() {
          is_scaled = false;
          written_length = mirrored_length;
        }
@@ -3062,7 +3097,7 @@ index 76fc1a45f..d337c506e 100644
      }
      NoteResolveForReadback(written_address, written_length, is_scaled);
    }
-@@ -5145,6 +5204,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+@@ -5145,6 +5211,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
  bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                 uint64_t wait_for_submission) {
    assert_not_zero(wait_for_submission);
@@ -3075,7 +3110,7 @@ index 76fc1a45f..d337c506e 100644
  
    // The resolve is still in the open submission. Pipelines being created
    // asynchronously have to finish before it can be executed.
-@@ -5158,6 +5223,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5158,6 +5230,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
              "ZPD/Async: Draining Vulkan async pipeline creation for strict "
              "retirement");
        }
@@ -3083,7 +3118,7 @@ index 76fc1a45f..d337c506e 100644
        pipeline_cache_->AwaitPipelineCompletion();
      }
      EndRenderPass();
-@@ -5167,6 +5233,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5167,6 +5240,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
    }
  
    if (wait_for_submission > GetCompletedSubmission()) {

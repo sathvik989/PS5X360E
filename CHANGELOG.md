@@ -3,6 +3,17 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.29+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- From PS5X360 0.5.9 (BrinooTk), whose source archive only ships as overlays on 0.5.7-fix.1:
+  two graphics fixes that apply to Edge as well. The gamma ramp read by in-flight frames is no
+  longer rewritten under them (PS5X360's Forza Horizon brightness investigation), and textures
+  sampled with explicit register gradients no longer get their horizontal and vertical
+  gradients swapped. The rest of 0.5.9 is multi-disc switching, phone Kinect, MW3 socket
+  fixes, cache changes Edge already covers, and diagnostics.
+- NFS The Run's fog and smoke: the shader-maths test (no contraction), direct host resolves and
+  the multiple render target range clamp made no difference.
+
 ## 0.2-alpha.28+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - alpha.27 fixed the 2x white-out; 2x now looks like 1x. The 1x flicker remains, still every
