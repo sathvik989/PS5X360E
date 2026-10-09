@@ -941,6 +941,9 @@ int main(int argc, char** argv) {
     }
   }
   settings.Apply();
+  // PS5X360E: a start straight into a game takes its game config now, before
+  // the GPU is set up: some of it (the draw resolution scale) is read only then.
+  if (!settings_title.empty()) xbox360ps5::LoadGameConfigs(settings_title);
   {
     std::error_code once_error;
     if (std::filesystem::remove("/app0/detailed-once.txt", once_error)) {
@@ -1462,9 +1465,13 @@ int main(int argc, char** argv) {
         settings_title = log_id;
         overrides = xbox360ps5::LoadGameOverrides(settings_title);
         settings = xbox360ps5::ForGame(global, settings_title, overrides);
-        if (!switched && xbox360ps5::StartOptionsDiffer(settings, started)) {
+        // PS5X360E: a game config may hold such options too, so a game that has
+        // one is always started straight into (once_title: this start was).
+        const bool config_start = xbox360ps5::HasGameConfig(settings_title) && once_title != settings_title;
+        if (!switched && (xbox360ps5::StartOptionsDiffer(settings, started) || config_start)) {
           // Some are only read as the emulator starts: start again, straight into this game.
-          XELOGW("Settings: {} has start options of its own; restarting into it", chosen.name);
+          XELOGW("Settings: {} has start options of its own{}; restarting into it", chosen.name,
+                 config_start ? " (game config)" : "");
           std::ofstream(storage / "launch-once.txt", std::ios::trunc) << game.string() << "\n" << settings_title << "\n";
           restart = true;
           break;

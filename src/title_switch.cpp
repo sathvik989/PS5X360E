@@ -76,6 +76,25 @@ void SetModuleOverride(const std::string& module) { module_override = module; }
 
 std::string TakeModuleOverride() { return std::exchange(module_override, std::string()); }
 
+namespace {
+std::vector<fs::path> GameConfigFiles(const std::string& title_id) {
+#if XE_PLATFORM_PS5
+  const fs::path folders[] = {"/app0/assets/game-configs", "/download0/xbox360ps5/game-configs"};
+#else
+  const fs::path folders[] = {"dist/PPSA50011/assets/game-configs"};
+#endif
+  std::vector<fs::path> files;
+  for (const auto& folder : folders) {
+    std::error_code error;
+    const fs::path file = folder / (title_id + ".config.toml");
+    if (fs::is_regular_file(file, error)) files.push_back(file);
+  }
+  return files;
+}
+}
+bool HasGameConfig(const std::string& title_id) {
+  return !title_id.empty() && !GameConfigFiles(title_id).empty();
+}
 void LoadGameConfigs(const std::string& title_id) {
 #if XE_PLATFORM_PS5
   const fs::path folders[] = {"/app0/assets/game-configs", "/download0/xbox360ps5/game-configs"};

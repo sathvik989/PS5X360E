@@ -31,4 +31,6 @@ std::string TakeModuleOverride();
 // such as GPU.readback_resolve): first the ones shipped with the title in
 // assets/game-configs, then the user's in /download0/xbox360ps5/game-configs.
 void LoadGameConfigs(const std::string& title_id);
+// Whether a game-configs folder holds <title id>.config.toml.
+bool HasGameConfig(const std::string& title_id);
 }

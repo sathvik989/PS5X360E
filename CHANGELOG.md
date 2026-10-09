@@ -3,6 +3,14 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.16+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Game config options that are only read as the emulator starts now take effect, such as the
+  draw resolution scale (`[GPU]` `draw_resolution_scale_x/_y = 2`). A game with a config file is
+  started the way games with start-time settings already were: the title restarts straight into
+  it and applies the file before the GPU is set up. In alpha.15 the file was read, but only after
+  the GPU had been set up at 1x.
+
 ## 0.2-alpha.15+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - The "120 Hz (test)" video clock works again: guest vblanks come at 120 Hz (new core option
