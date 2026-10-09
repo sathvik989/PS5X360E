@@ -1526,7 +1526,7 @@ index ed9bb6b10..ac659d0f9 100644
    for (int i = 0; i < 32; i++) {
      crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
 diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
-index 4bfd8c3ec..9a9cc6b77 100644
+index 4bfd8c3ec..516192125 100644
 --- a/src/xenia/gpu/command_processor.cc
 +++ b/src/xenia/gpu/command_processor.cc
 @@ -144,6 +144,12 @@ DEFINE_bool(
@@ -1554,7 +1554,39 @@ index 4bfd8c3ec..9a9cc6b77 100644
    if (!SetupContext()) {
      xe::FatalError("Unable to setup command processor internal state");
      return;
-@@ -553,6 +564,140 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -506,6 +517,7 @@ void CommandProcessor::WorkerThreadMain() {
+       // We've run out of commands to execute.
+       // We spin here waiting for new ones, as the overhead of waiting on our
+       // event is too high.
++      DiagSetPhase(DiagPhase::kIdle);
+       PrepareForWait();
+       uint32_t loop_count = 0;
+       do {
+@@ -518,6 +530,15 @@ void CommandProcessor::WorkerThreadMain() {
+           // nothing left in the ring.
+           if (zpd_mode_ == ZPDMode::kStrict && zpd_awaited_report_count_) {
+             PrepareForWait();
++          } else if (zpd_mode_ == ZPDMode::kStrict && !zpd_reports_.empty()) {
++            // PS5X360E: a report the guest polls without the pending sentinel
++            // (so not counted as awaited) is still only written when its
++            // queries resolve, and with the ring empty nothing would ever end
++            // the submission holding them: NFS The Run froze in strict mode
++            // with the main thread polling and the GPU idle. Resolve what is
++            // queued once the GPU has been idle for a moment.
++            diag_strict_backstops_.fetch_add(1, std::memory_order_relaxed);
++            PrepareZPDForWait(true);
+           }
+         } else {
+           xe::threading::MaybeYield();
+@@ -528,6 +549,7 @@ void CommandProcessor::WorkerThreadMain() {
+                (write_ptr_index == 0xBAADF00D ||
+                 read_ptr_index_ == write_ptr_index));
+       ReturnFromWait();
++      DiagSetPhase(DiagPhase::kRing);
+       if (!worker_running_ || !pending_fns_.empty()) {
+         continue;
+       }
+@@ -553,6 +575,183 @@ void CommandProcessor::WorkerThreadMain() {
    ShutdownContext();
  }
  
@@ -1614,6 +1646,49 @@ index 4bfd8c3ec..9a9cc6b77 100644
 +    }
 +    offset += (count + 1) * 4;
 +  }
++}
++
++void CommandProcessor::DiagSetPhase(DiagPhase phase) {
++  if (diag_phase_.load(std::memory_order_relaxed) == uint32_t(phase)) {
++    return;
++  }
++  diag_phase_.store(uint32_t(phase), std::memory_order_relaxed);
++  diag_phase_since_ms_.store(Clock::QueryHostUptimeMillis(),
++                             std::memory_order_relaxed);
++}
++
++void CommandProcessor::DiagStallReport() {
++  // Read from another thread while the GPU thread may be running: the values
++  // are approximate, which is enough to tell where it stands.
++  static const char* const kPhaseNames[] = {
++      "executing guest commands", "idle (ring empty)",
++      "strict occlusion: waiting for query results",
++      "waiting for background pipelines",
++      "waiting for the GPU to finish a submission", "guest WAIT_REG_MEM"};
++  const uint32_t phase = diag_phase_.load(std::memory_order_relaxed);
++  const uint64_t since = diag_phase_since_ms_.load(std::memory_order_relaxed);
++  XELOGW(
++      "STALL GPU thread: {} for {} ms; ring read {} write {}; submission "
++      "completed {}",
++      phase < uint32_t(DiagPhase::kCount) ? kPhaseNames[phase] : "?",
++      since ? Clock::QueryHostUptimeMillis() - since : 0, read_ptr_index_,
++      write_ptr_index_.load(), GetCompletedSubmission());
++  const char* mode = zpd_mode_ == ZPDMode::kStrict    ? "strict"
++                     : zpd_mode_ == ZPDMode::kFastAlt ? "fast-alt"
++                     : zpd_mode_ == ZPDMode::kFast    ? "fast"
++                                                      : "fake";
++  XELOGW(
++      "STALL occlusion {}{}: {} reports queued ({} awaited), front pending "
++      "{}; totals queued {} retired {} abandoned {} corrections {} pool "
++      "exhausted {} failed {}; idle resolves {}",
++      mode, zpd_force_fake_fallback_ ? " (fell back to fake)" : "",
++      zpd_reports_.size(), zpd_awaited_report_count_,
++      zpd_reports_.empty() ? 0u : zpd_reports_.front().pending_segments,
++      zpd_stats_.reports_queued, zpd_stats_.reports_retired,
++      zpd_stats_.retires_abandoned, zpd_stats_.speculative_corrections,
++      zpd_stats_.pool_exhausted, zpd_stats_.failed,
++      diag_strict_backstops_.load(std::memory_order_relaxed));
++  xe::FlushLog();
 +}
 +
 +void CommandProcessor::DiagDump() {
@@ -1695,7 +1770,7 @@ index 4bfd8c3ec..9a9cc6b77 100644
  void CommandProcessor::Pause() {
    if (paused_) {
      return;
-@@ -742,6 +887,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
+@@ -742,6 +941,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
        uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
        uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
        xe::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
@@ -1705,11 +1780,55 @@ index 4bfd8c3ec..9a9cc6b77 100644
      }
    } else {
      switch (index) {
+@@ -1279,6 +1481,8 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+     WriteZPDReport(report_address, report.speculative_value);
+   }
+   zpd_awaited_report_count_ += report.awaited;
++  report.queued_frame =
++      refreshed_output_count_.load(std::memory_order_relaxed);
+   zpd_reports_.push_back(report);
+   zpd_stats_.reports_queued++;
+ 
+@@ -1476,10 +1680,10 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
+   return nullptr;
+ }
+ 
+-void CommandProcessor::PrepareZPDForWait() {
++void CommandProcessor::PrepareZPDForWait(bool any_report) {
+   ReportHandle awaited_handle = kInvalidReportHandle;
+   for (const ZPDReport& report : zpd_reports_) {
+-    if (report.awaited) {
++    if (report.awaited || any_report) {
+       awaited_handle = report.handle;
+       break;
+     }
+@@ -1547,6 +1751,21 @@ void CommandProcessor::PumpPendingRetire() {
+     zpd_pending_retire_start_ms_ = 0;
+ 
+     zpd_sample_counter_ += front.delta;
++    // PS5X360E: a compact per-report trace (address, real and guessed
++    // visible samples, frames from queue to retire) to study flicker.
++    if (cvars::occlusion_query_log && diag_zpd_trace_lines_ < 6000) {
++      ++diag_zpd_trace_lines_;
++      XELOGW(
++          "ZPDT {} {:08X} pass {} fail {} guess {} awaited {} frames {} "
++          "queue {}",
++          front.queued_frame, front.address, front.delta.z_pass,
++          front.delta.z_fail,
++          front.speculative ? int64_t(front.speculative_delta.z_pass) : -1,
++          int(front.awaited),
++          refreshed_output_count_.load(std::memory_order_relaxed) -
++              front.queued_frame,
++          zpd_reports_.size());
++    }
+     if (front.speculative) {
+       if (fast_zpd_report_cached_deltas_.size() >= kFastZPDCacheMaxEntries &&
+           !fast_zpd_report_cached_deltas_.count(front.address)) {
 diff --git a/src/xenia/gpu/command_processor.h b/src/xenia/gpu/command_processor.h
-index 96d842b84..7d7635fb0 100644
+index 96d842b84..a6b254282 100644
 --- a/src/xenia/gpu/command_processor.h
 +++ b/src/xenia/gpu/command_processor.h
-@@ -136,6 +136,12 @@ class CommandProcessor {
+@@ -136,7 +136,25 @@ class CommandProcessor {
                     kernel::KernelState* kernel_state);
    virtual ~CommandProcessor();
    uint32_t counter() const { return counter_; }
@@ -1720,9 +1839,40 @@ index 96d842b84..7d7635fb0 100644
 +    return refreshed_output_count_.load(std::memory_order_relaxed);
 +  }
    void increment_counter() { counter_++; }
++  // PS5X360E: what the GPU thread is doing right now, for the stall report.
++  enum class DiagPhase : uint32_t {
++    kRing,             // executing guest commands
++    kIdle,             // ring empty, waiting for the guest
++    kZPDResolve,       // strict occlusion: waiting for query results
++    kPipelines,        // waiting for background pipeline creation
++    kGPUSubmission,    // waiting for the host GPU to finish a submission
++    kWaitRegMem,       // a guest WAIT_REG_MEM
++    kCount
++  };
++  void DiagSetPhase(DiagPhase phase);
++  void DiagStallReport();
  
    Shader* active_vertex_shader() const { return active_vertex_shader_; }
-@@ -705,6 +711,8 @@ class CommandProcessor {
+   Shader* active_pixel_shader() const { return active_pixel_shader_; }
+@@ -393,6 +411,8 @@ class CommandProcessor {
+     // For strict, when a report holds the D3D sentinel.
+     // Only these are worth blocking a wait for.
+     bool awaited = false;
++    // PS5X360E: output frame when queued, for the occlusion_query_log trace.
++    uint64_t queued_frame = 0;
+   };
+ 
+   static constexpr uint64_t kInvalidVIZGeneration = 0;
+@@ -491,7 +511,7 @@ class CommandProcessor {
+   // order, so the queue is indexed by the front handle.
+   ZPDReport* FindZPDReport(ReportHandle report_handle);
+   // Handles a strict report the guest is waiting on while the ring is empty.
+-  void PrepareZPDForWait();
++  void PrepareZPDForWait(bool any_report = false);
+   // Called from PrepareForWait and submission boundaries so retired reports
+   // reach the guest before it loops again. Fast modes give up on a stuck front
+   // report after kFastZPDRetireDeadlineMs.
+@@ -705,6 +725,8 @@ class CommandProcessor {
    std::vector<uint32_t> me_bin_;
  
    uint32_t counter_ = 0;
@@ -1731,7 +1881,7 @@ index 96d842b84..7d7635fb0 100644
  
    uint32_t primary_buffer_ptr_ = 0;
    uint32_t primary_buffer_size_ = 0;
-@@ -713,6 +721,35 @@ class CommandProcessor {
+@@ -713,6 +735,39 @@ class CommandProcessor {
    uint32_t read_ptr_update_freq_ = 0;
    uint32_t read_ptr_writeback_ptr_ = 0;
  
@@ -1755,6 +1905,10 @@ index 96d842b84..7d7635fb0 100644
 +                                                              c};
 +  }
 +  void DiagDump();
++  std::atomic<uint32_t> diag_phase_{0};
++  std::atomic<uint64_t> diag_phase_since_ms_{0};
++  std::atomic<uint64_t> diag_strict_backstops_{0};
++  uint32_t diag_zpd_trace_lines_ = 0;
 +  // Where the primary ring stood when the current indirect buffer was entered,
 +  // and the packets ahead of a stuck wait, in the buffer and in the ring.
 +  int diag_ib_depth_ = 0;
@@ -1895,7 +2049,7 @@ index b10f87bba..f3f99ae88 100644
  #include "xenia/base/byte_stream.h"
  #include "xenia/base/clock.h"
 diff --git a/src/xenia/gpu/pm4_command_processor_implement.h b/src/xenia/gpu/pm4_command_processor_implement.h
-index b5b005966..10de0d525 100644
+index b5b005966..0574dd782 100644
 --- a/src/xenia/gpu/pm4_command_processor_implement.h
 +++ b/src/xenia/gpu/pm4_command_processor_implement.h
 @@ -86,6 +86,13 @@ void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
@@ -1966,7 +2120,7 @@ index b5b005966..10de0d525 100644
  
    do {
      uint32_t value = value_ref;
-@@ -895,6 +921,59 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -895,6 +921,60 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
      matched = MatchValueAndRef(value & mask, ref, wait_info);
  
      if (!matched) {
@@ -1989,6 +2143,7 @@ index b5b005966..10de0d525 100644
 +        const auto now = std::chrono::steady_clock::now();
 +        if (wait_started == std::chrono::steady_clock::time_point{}) {
 +          wait_started = now;
++          COMMAND_PROCESSOR::DiagSetPhase(DiagPhase::kWaitRegMem);
 +        } else if (now - wait_started > std::chrono::seconds(3)) {
 +          wait_reported = true;
 +          XELOGW(
@@ -2026,10 +2181,13 @@ index b5b005966..10de0d525 100644
        // Wait using the duration specified by the guest.
        if (wait >= 0x100) {
          PrepareForWait();
-@@ -921,6 +1000,13 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -921,6 +1001,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
        }
      }
    } while (!matched);
++  if (wait_started != std::chrono::steady_clock::time_point{}) {
++    COMMAND_PROCESSOR::DiagSetPhase(DiagPhase::kRing);
++  }
 +  if (is_memory && wait_started != std::chrono::steady_clock::time_point{}) {
 +    DiagRecordWrite(0x104, poll_reg_addr,
 +                    uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(
@@ -2040,7 +2198,7 @@ index b5b005966..10de0d525 100644
  
    return true;
  }
-@@ -978,6 +1064,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
+@@ -978,6 +1068,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
  
    auto endianness = static_cast<xenos::Endian>(mem_addr & 0x3);
    mem_addr &= ~0x3;
@@ -2048,7 +2206,7 @@ index b5b005966..10de0d525 100644
    reg_val = GpuSwap(reg_val, endianness);
    xe::store(memory_->TranslatePhysical(mem_addr), reg_val);
    trace_writer_.WriteMemoryWrite(CpuToGpu(mem_addr), 4);
-@@ -997,6 +1084,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
+@@ -997,6 +1088,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
  
    for (uint32_t i = 0; i < count - 1; i++) {
      uint32_t write_data = reader_.ReadAndSwap<uint32_t>();
@@ -2058,7 +2216,7 @@ index b5b005966..10de0d525 100644
  
      auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
      auto addr = write_addr & ~0x3;
-@@ -1042,6 +1132,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
+@@ -1042,6 +1136,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
      value = register_file_->values[poll_reg_addr];
    }
    bool matched = MatchValueAndRef(value & mask, ref, wait_info);
@@ -2067,7 +2225,7 @@ index b5b005966..10de0d525 100644
  
    if (matched) {
      // Write.
-@@ -1081,7 +1173,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
+@@ -1081,7 +1177,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
      // Just an event flag? Where does this write?
    } else {
      // Write to an address.
@@ -2086,7 +2244,7 @@ index b5b005966..10de0d525 100644
      reader_.AdvanceRead((count - 1) * sizeof(uint32_t));
    }
    return true;
-@@ -1116,6 +1218,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
+@@ -1116,6 +1222,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
      // Write value.
      data_value = value;
    }
@@ -2094,7 +2252,7 @@ index b5b005966..10de0d525 100644
    auto endianness = static_cast<xenos::Endian>(address & 0x3);
    address &= ~0x3;
    data_value = GpuSwap(data_value, endianness);
-@@ -1359,10 +1462,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
+@@ -1359,10 +1466,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
        }
  
        if (!draw_succeeded) {
@@ -2257,7 +2415,7 @@ index c6a2f0850..a0507e83a 100644
        "{} {} {}{}x{}x{} {} {} texture with {} {}packed mip level{}, "
        "base at 0x{:08X} (pitch {}, size 0x{:08X}), mips at 0x{:08X} (size "
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index 76fc1a45f..65293c8af 100644
+index 76fc1a45f..453251730 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,6 +8,9 @@
@@ -2309,6 +2467,35 @@ index 76fc1a45f..65293c8af 100644
  
    // The resolve wrote the device buffer. Drop any stale memexport marks so the
    // output isn't overwritten with guest RAM by a later texture load.
+@@ -5145,6 +5157,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+                                                uint64_t wait_for_submission) {
+   assert_not_zero(wait_for_submission);
++  // PS5X360E: name the wait for the stall report, then put the phase back.
++  struct PhaseRestore {
++    VulkanCommandProcessor* processor;
++    DiagPhase phase;
++    ~PhaseRestore() { processor->DiagSetPhase(phase); }
++  } phase_restore{this, DiagPhase(diag_phase_.load(std::memory_order_relaxed))};
+ 
+   // The resolve is still in the open submission. Pipelines being created
+   // asynchronously have to finish before it can be executed.
+@@ -5158,6 +5176,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+             "ZPD/Async: Draining Vulkan async pipeline creation for strict "
+             "retirement");
+       }
++      DiagSetPhase(DiagPhase::kPipelines);
+       pipeline_cache_->AwaitPipelineCompletion();
+     }
+     EndRenderPass();
+@@ -5167,6 +5186,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+   }
+ 
+   if (wait_for_submission > GetCompletedSubmission()) {
++    DiagSetPhase(DiagPhase::kGPUSubmission);
+     completion_timeline_.AwaitSubmissionAndUpdateCompleted(wait_for_submission);
+   }
+ 
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.h b/src/xenia/gpu/vulkan/vulkan_command_processor.h
 index 5fdd9173a..d1b855e78 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.h

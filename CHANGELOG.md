@@ -3,6 +3,17 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.20+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Visibility queries set to Strict froze NFS The Run after about 80 s (the screen said Xenia
+  crashed; the log shows a stall, no crash): the main thread polled a query result while the GPU
+  sat idle. Edge's strict mode only forced results the game marked as pending; it now also
+  resolves whatever is queued once the GPU has been idle for a moment.
+- The stall report now says what the GPU thread is waiting on (guest commands, idle, query
+  results, pipelines, the host GPU, a WAIT_REG_MEM) and the occlusion query counts.
+- `[GPU] occlusion_query_log = true` in a game config prints one short `ZPDT` line per query
+  (first 6000), to study the distant smoke and fog flicker.
+
 ## 0.2-alpha.19+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Rendering at a scale above 1 no longer crashes NFS The Run: alpha.18's log named a quad list

@@ -509,6 +509,8 @@ void DumpStallCode(xe::Emulator& emulator) {
 void ReportStall(xe::Emulator& emulator, int pass) {
   const auto threads = emulator.kernel_state()->object_table()->GetObjectsByType<xe::kernel::XThread>();
   XELOGW("STALL pass {}: {} threads", pass, threads.size());
+  // Where the GPU thread stands, and the occlusion queries it may owe the game.
+  emulator.graphics_system()->command_processor()->DiagStallReport();
   for (const auto& thread : threads) {
     if (!thread->thread_state()) continue;
     const auto* context = thread->thread_state()->context();
