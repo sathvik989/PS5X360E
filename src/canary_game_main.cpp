@@ -67,6 +67,7 @@ DECLARE_bool(guest_display_refresh_cap);
 DECLARE_bool(use_50Hz_mode);
 DECLARE_int32(log_level);
 DECLARE_bool(headless);
+DECLARE_bool(frame_trace_on_measure);
 // The launcher's language setting. Canary declares this variable in its kernel
 // without defining it (the language comes from the signed-in profile there).
 // PS5X360E: Xenia Edge has no mute setting; the PS5 audio output reads this one.
@@ -542,10 +543,14 @@ void ReportStall(xe::Emulator& emulator, int pass) {
 // commonest places of each. Offsets are symbolized afterwards with the build's
 // kept ELF. The picture freezes meanwhile; the game keeps running.
 void MeasurePerformance(xe::Emulator& emulator, float fps) {
-  // Also trace the GPU's next 9 frames (resolves and texture loads), to compare
-  // frames of an effect that changes every few frames.
-  xe::gpu::frame_trace_lines.store(0, std::memory_order_relaxed);
-  xe::gpu::frame_trace_frames_left.store(9, std::memory_order_relaxed);
+  // On request, also trace the GPU's next 9 frames (resolves, texture loads,
+  // float render output), to compare frames of an effect that changes every
+  // few frames. Off by default: reading render output back stalls the GPU,
+  // which would distort the measurement.
+  if (cvars::frame_trace_on_measure) {
+    xe::gpu::frame_trace_lines.store(0, std::memory_order_relaxed);
+    xe::gpu::frame_trace_frames_left.store(9, std::memory_order_relaxed);
+  }
   struct Place { uint64_t key; uint32_t count; };
   struct Tally {
     // PS5X360E: a guest or emulator thread, or one of the guest scheduler's
@@ -1792,6 +1797,12 @@ int main(int argc, char** argv) {
                 XELOGW("Performance: watch arming {:.0f}/s for CPU writes, {:.0f}/s for CPU reads of GPU output",
                        double(w - write_arms) / summary_samples, double(r - read_arms) / summary_samples);
                 write_arms = w; read_arms = r;
+              }
+              // GPU busy time, submissions and waits over the same period.
+              {
+                const std::string gpu =
+                    emulator.graphics_system()->command_processor()->TakePerformanceSummary();
+                if (!gpu.empty()) XELOGW("Performance: {}", gpu);
               }
               // Draws made while their shader was still being compiled show
               // a stand-in: brief gaps in a frame, lasting ones in what a game

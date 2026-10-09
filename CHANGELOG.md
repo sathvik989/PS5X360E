@@ -3,6 +3,21 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.35+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- The NFS The Run fog and smoke flicker is fixed (alpha.34, confirmed on the PS5).
+- The performance line every 30 s now also shows how busy the PS5's GPU is, how many times a
+  second work is handed to it and why (frame end, guest command buffer end, render output the
+  game is about to read, occlusion queries, waits), and how long the emulator waits for it
+  (occlusion query results, render output the CPU reads, other).
+- "Measure performance" no longer traces GPU frames: reading render output back stalled the GPU
+  and skewed the figures. `frame_trace_on_measure = true` under [GPU] brings the trace back.
+- From PS5X360 0.5.9: rewriting a shader constant with the same value no longer forces the
+  constants to be uploaded again (`vulkan_skip_redundant_constants`), and used constants are
+  copied in runs (`vulkan_coalesce_float_constant_copies`). The shader cache file is checked
+  (size, read errors, driver header) before it is used, and the save when a game closes writes
+  a temporary file first and syncs it, so an interrupted save keeps the previous cache.
+
 ## 0.2-alpha.34+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Fix attempt for the NFS The Run fog and smoke flicker. The fog buffers are rendered on the GPU
