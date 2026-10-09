@@ -3,6 +3,13 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.38+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Fixed a hang in NFS The Run on My Cars caused by alpha.37's fewer submissions: the GPU waited
+  for the CPU while the CPU waited to read render output the GPU had not been handed yet. When
+  the game makes the GPU wait on memory, all pending render output is now handed over, as
+  before, and a CPU read that finds output not yet handed over makes it go at the next chance.
+
 ## 0.2-alpha.37+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - The shader cache was thrown away on every launch since alpha.35: the header check ported from

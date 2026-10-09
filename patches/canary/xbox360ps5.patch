@@ -1861,7 +1861,7 @@ index 4bfd8c3ec..e3477bb1b 100644
        if (fast_zpd_report_cached_deltas_.size() >= kFastZPDCacheMaxEntries &&
            !fast_zpd_report_cached_deltas_.count(front.address)) {
 diff --git a/src/xenia/gpu/command_processor.h b/src/xenia/gpu/command_processor.h
-index 96d842b84..d200416f3 100644
+index 96d842b84..510be533d 100644
 --- a/src/xenia/gpu/command_processor.h
 +++ b/src/xenia/gpu/command_processor.h
 @@ -136,7 +136,25 @@ class CommandProcessor {
@@ -1901,7 +1901,17 @@ index 96d842b84..d200416f3 100644
    virtual void BeginTracing(const std::filesystem::path& root_path);
    virtual void EndTracing();
    // Safe from any thread, the writer is closed on the next swap.
-@@ -393,6 +415,8 @@ class CommandProcessor {
+@@ -216,6 +238,9 @@ class CommandProcessor {
+   // register write-back - by backends that must have submitted what the guest
+   // may then touch (see command_processor_resolve_readwatch.inc).
+   virtual void SubmitResolvesForGuestSync() {}
++  // PS5X360E: the same for a guest wait that did not end at once - every
++  // recorded resolve, read recently or not.
++  virtual void SubmitAllResolvesForGuestWait() {}
+ 
+   void RestoreRegisters(uint32_t first_register,
+                         const uint32_t* register_values,
+@@ -393,6 +418,8 @@ class CommandProcessor {
      // For strict, when a report holds the D3D sentinel.
      // Only these are worth blocking a wait for.
      bool awaited = false;
@@ -1910,7 +1920,7 @@ index 96d842b84..d200416f3 100644
    };
  
    static constexpr uint64_t kInvalidVIZGeneration = 0;
-@@ -491,7 +515,7 @@ class CommandProcessor {
+@@ -491,7 +518,7 @@ class CommandProcessor {
    // order, so the queue is indexed by the front handle.
    ZPDReport* FindZPDReport(ReportHandle report_handle);
    // Handles a strict report the guest is waiting on while the ring is empty.
@@ -1919,7 +1929,7 @@ index 96d842b84..d200416f3 100644
    // Called from PrepareForWait and submission boundaries so retired reports
    // reach the guest before it loops again. Fast modes give up on a stuck front
    // report after kFastZPDRetireDeadlineMs.
-@@ -705,6 +729,8 @@ class CommandProcessor {
+@@ -705,6 +732,8 @@ class CommandProcessor {
    std::vector<uint32_t> me_bin_;
  
    uint32_t counter_ = 0;
@@ -1928,7 +1938,7 @@ index 96d842b84..d200416f3 100644
  
    uint32_t primary_buffer_ptr_ = 0;
    uint32_t primary_buffer_size_ = 0;
-@@ -713,6 +739,39 @@ class CommandProcessor {
+@@ -713,6 +742,39 @@ class CommandProcessor {
    uint32_t read_ptr_update_freq_ = 0;
    uint32_t read_ptr_writeback_ptr_ = 0;
  
@@ -1981,7 +1991,7 @@ index 484b6d2e1..452d8f4c2 100644
    uint8_t* source = static_cast<uint8_t*>(buffer.mapped) + source_offset;
    // vastcpy's non-temporal stores need both pointers and the length to be
 diff --git a/src/xenia/gpu/command_processor_resolve_readwatch.inc b/src/xenia/gpu/command_processor_resolve_readwatch.inc
-index 8c2e6f64d..f861136b4 100644
+index 8c2e6f64d..6e6b15a8f 100644
 --- a/src/xenia/gpu/command_processor_resolve_readwatch.inc
 +++ b/src/xenia/gpu/command_processor_resolve_readwatch.inc
 @@ -83,6 +83,11 @@ void MarkResolvePagesRead(uint32_t physical_address, uint32_t length) {
@@ -2079,16 +2089,22 @@ index 8c2e6f64d..f861136b4 100644
    {
      std::lock_guard<std::mutex> lock(resolve_read_mutex_);
      if (resolve_rearm_ranges_.empty()) {
-@@ -419,7 +463,7 @@ void OnResolveSubmissionEnded() {
+@@ -419,6 +463,14 @@ void OnResolveSubmissionEnded() {
  // Before the guest can learn the GPU got past a resolve, the resolve has to be
  // submitted, so ProvideResolveOutput can copy its output from the fault.
  void SubmitResolvesForGuestSync() override {
--  if (resolve_unsubmitted_owner_) {
-+  if (resolve_unsubmitted_watched_) {
++  if (resolve_unsubmitted_watched_ ||
++      (resolve_unsubmitted_owner_ &&
++       resolve_read_raced_.exchange(false, std::memory_order_acq_rel))) {
++    EndResolveSubmission();
++  }
++}
++
++void SubmitAllResolvesForGuestWait() override {
+   if (resolve_unsubmitted_owner_) {
      EndResolveSubmission();
    }
- }
-@@ -495,9 +539,9 @@ bool GetScaledResolveReadbackInfo(uint32_t address, uint32_t length,
+@@ -495,9 +547,9 @@ bool GetScaledResolveReadbackInfo(uint32_t address, uint32_t length,
    // RB_COPY_DEST_INFO, for depth the register can hold a different size.
    uint32_t pixel_size_log2 =
        draw_util::GetResolveDownscalePixelSizeLog2(copy_dest_info);
@@ -2101,7 +2117,7 @@ index 8c2e6f64d..f861136b4 100644
      XELOGGPU(
          "Skipping readback of a resolution-scaled resolve to a 128bpp "
          "destination - not supported by the downscale shader");
-@@ -574,7 +618,9 @@ void ResetResolveReadWatch() {
+@@ -574,7 +626,9 @@ void ResetResolveReadWatch() {
      resolve_read_keys_.clear();
      resolve_owners_.clear();
    }
@@ -2111,7 +2127,18 @@ index 8c2e6f64d..f861136b4 100644
    resolve_submit_requested_ = false;
    resolve_rearm_ranges_.clear();
    resolve_read_frames_.clear();
-@@ -639,12 +685,19 @@ std::vector<std::pair<uint32_t, uint32_t>> resolve_rearming_ranges_;
+@@ -610,6 +664,10 @@ std::unordered_map<uint64_t, ResolveOwner> resolve_owners_;
+ static constexpr size_t kMaxResolveOwners = 4096;
+ // Under resolve_read_mutex_.
+ void RearmResolveAfterSubmission(ResolveOwner& owner) {
++  // The CPU read output not submitted yet: the next guest sync point submits
++  // even if the destination had gone unwatched (resolve_sync_only_watched),
++  // or a CPU spinning on it while the GPU waits for the CPU never gets it.
++  resolve_read_raced_.store(true, std::memory_order_release);
+   if (!owner.rearm_pending) {
+     owner.rearm_pending = true;
+     resolve_rearm_ranges_.emplace_back(owner.address, owner.length);
+@@ -639,12 +697,21 @@ std::vector<std::pair<uint32_t, uint32_t>> resolve_rearming_ranges_;
  // Frame the CPU last read each destination's output, by resolve key. GPU thread
  // only.
  std::unordered_map<uint64_t, uint32_t> resolve_read_frames_;
@@ -2128,6 +2155,8 @@ index 8c2e6f64d..f861136b4 100644
  bool resolve_unsubmitted_owner_ = false;
 +// Of those, one the CPU may read (its destination is watched).
 +bool resolve_unsubmitted_watched_ = false;
++// A CPU read found output that was not submitted yet. Set by faulting threads.
++std::atomic<bool> resolve_read_raced_{false};
  bool resolve_submit_requested_ = false;
  uint32_t resolve_frame_index_ = 0;
  // Handle from RegisterPhysicalMemoryReadCallback, or null when not armed.
@@ -2330,7 +2359,7 @@ index b10f87bba..f3f99ae88 100644
  #include "xenia/base/byte_stream.h"
  #include "xenia/base/clock.h"
 diff --git a/src/xenia/gpu/pm4_command_processor_implement.h b/src/xenia/gpu/pm4_command_processor_implement.h
-index b5b005966..0574dd782 100644
+index b5b005966..218cdd1b5 100644
 --- a/src/xenia/gpu/pm4_command_processor_implement.h
 +++ b/src/xenia/gpu/pm4_command_processor_implement.h
 @@ -86,6 +86,13 @@ void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
@@ -2401,7 +2430,7 @@ index b5b005966..0574dd782 100644
  
    do {
      uint32_t value = value_ref;
-@@ -895,6 +921,60 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -895,6 +921,66 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
      matched = MatchValueAndRef(value & mask, ref, wait_info);
  
      if (!matched) {
@@ -2419,6 +2448,12 @@ index b5b005966..0574dd782 100644
 +        DiagRecordWrite(0x103, poll_reg_addr, value, set);
 +        COMMAND_PROCESSOR::SubmitResolvesForGuestSync();
 +        COMMAND_PROCESSOR::AwaitMemexportForFence();
++      } else if (is_memory) {
++        // PS5X360E: a wait that did not end at once may be for a CPU that
++        // reads render output first, including output that had gone unwatched
++        // (resolve_sync_only_watched): submit all of it, as before alpha.37.
++        // A check of a flag when nothing is pending.
++        COMMAND_PROCESSOR::SubmitAllResolvesForGuestWait();
 +      }
 +      if (!wait_reported) {
 +        const auto now = std::chrono::steady_clock::now();
@@ -2462,7 +2497,7 @@ index b5b005966..0574dd782 100644
        // Wait using the duration specified by the guest.
        if (wait >= 0x100) {
          PrepareForWait();
-@@ -921,6 +1001,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -921,6 +1007,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
        }
      }
    } while (!matched);
@@ -2479,7 +2514,7 @@ index b5b005966..0574dd782 100644
  
    return true;
  }
-@@ -978,6 +1068,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
+@@ -978,6 +1074,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
  
    auto endianness = static_cast<xenos::Endian>(mem_addr & 0x3);
    mem_addr &= ~0x3;
@@ -2487,7 +2522,7 @@ index b5b005966..0574dd782 100644
    reg_val = GpuSwap(reg_val, endianness);
    xe::store(memory_->TranslatePhysical(mem_addr), reg_val);
    trace_writer_.WriteMemoryWrite(CpuToGpu(mem_addr), 4);
-@@ -997,6 +1088,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
+@@ -997,6 +1094,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
  
    for (uint32_t i = 0; i < count - 1; i++) {
      uint32_t write_data = reader_.ReadAndSwap<uint32_t>();
@@ -2497,7 +2532,7 @@ index b5b005966..0574dd782 100644
  
      auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
      auto addr = write_addr & ~0x3;
-@@ -1042,6 +1136,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
+@@ -1042,6 +1142,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
      value = register_file_->values[poll_reg_addr];
    }
    bool matched = MatchValueAndRef(value & mask, ref, wait_info);
@@ -2506,7 +2541,7 @@ index b5b005966..0574dd782 100644
  
    if (matched) {
      // Write.
-@@ -1081,7 +1177,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
+@@ -1081,7 +1183,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
      // Just an event flag? Where does this write?
    } else {
      // Write to an address.
@@ -2525,7 +2560,7 @@ index b5b005966..0574dd782 100644
      reader_.AdvanceRead((count - 1) * sizeof(uint32_t));
    }
    return true;
-@@ -1116,6 +1222,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
+@@ -1116,6 +1228,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
      // Write value.
      data_value = value;
    }
@@ -2533,7 +2568,7 @@ index b5b005966..0574dd782 100644
    auto endianness = static_cast<xenos::Endian>(address & 0x3);
    address &= ~0x3;
    data_value = GpuSwap(data_value, endianness);
-@@ -1359,10 +1466,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
+@@ -1359,10 +1472,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
        }
  
        if (!draw_succeeded) {
