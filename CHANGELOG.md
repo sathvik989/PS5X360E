@@ -3,6 +3,18 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.21+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Distant fog and smoke flickering in NFS The Run: alpha.20 showed it is not the visibility
+  queries (Strict gives steady sun results and the flicker stays; Strict also no longer
+  freezes). A capture of the flicker shows every third game frame with the fog darker and the
+  buildings behind it magenta. Cause, PS5-only: the GPU's copy of guest memory was tracked in
+  16 KiB host pages, four 4 KiB guest pages each, so a CPU write to one guest page threw away
+  render output in the other three and uploaded stale guest RAM over it. Tracking is now per
+  4 KiB page; output the write did not touch is kept, and checked against a hash of its guest RAM
+  before the GPU uses it again. `[GPU] guest_page_gpu_output_tracking = false` turns it off.
+- The log notes every 30 s how many pages that kept.
+
 ## 0.2-alpha.20+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Visibility queries set to Strict froze NFS The Run after about 80 s (the screen said Xenia

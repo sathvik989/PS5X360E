@@ -2273,11 +2273,273 @@ index b5b005966..0574dd782 100644
        }
      }
    }
+diff --git a/src/xenia/gpu/shared_memory.cc b/src/xenia/gpu/shared_memory.cc
+index 6aaeb76bd..b0b3a874d 100644
+--- a/src/xenia/gpu/shared_memory.cc
++++ b/src/xenia/gpu/shared_memory.cc
+@@ -13,12 +13,28 @@
+ #include "xenia/base/bit_range.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/base/profiling.h"
++#include "xenia/base/cvar.h"
++#include "xenia/base/xxhash.h"
++
++// PS5X360E
++DEFINE_bool(
++    guest_page_gpu_output_tracking, true,
++    "Where host pages are larger than the guest's 4 KiB (16 KiB on the PS5), "
++    "track GPU output in guest pages, so a CPU write to one guest page does "
++    "not throw away render output in the other three of its host page "
++    "(stale guest RAM was uploaded over it: every third frame of distant fog "
++    "in NFS The Run). Read when the GPU starts.",
++    "GPU");
+ 
+ namespace xe {
+ namespace gpu {
+ 
+ SharedMemory::SharedMemory(Memory& memory) : memory_(memory) {
+   page_size_log2_ = xe::log2_ceil(uint32_t(xe::memory::page_size()));
++  host_page_size_log2_ = page_size_log2_;
++  if (cvars::guest_page_gpu_output_tracking && page_size_log2_ > 12) {
++    page_size_log2_ = 12;
++  }
+ }
+ 
+ SharedMemory::~SharedMemory() { ShutdownCommon(); }
+@@ -113,6 +129,8 @@ void SharedMemory::ShutdownCommon() {
+ 
+ void SharedMemory::InvalidateAllPages() {
+   auto global_lock = global_critical_region_.Acquire();
++  kept_pages_.clear();
++  kept_page_count_.store(0, std::memory_order_relaxed);
+ 
+   std::memset(system_page_flags_valid_, 0,
+               num_system_page_flags_ * sizeof(uint64_t));
+@@ -367,6 +385,8 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length,
+ 
+   {
+     auto global_lock = global_critical_region_.Acquire();
++    // Now current, and watched again below.
++    DropKeptPages(valid_page_first, valid_page_last);
+ 
+     for (uint32_t i = valid_block_first; i <= valid_block_last; ++i) {
+       uint64_t valid_bits = UINT64_MAX;
+@@ -442,6 +462,9 @@ bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
+   unsigned int current_upload_range = 0;
+   uint32_t page_first = start >> page_size_log2_;
+   uint32_t page_last = (start + length - 1) >> page_size_log2_;
++  if (kept_page_count_.load(std::memory_order_relaxed)) {
++    VerifyKeptGpuWrittenPages(page_first, page_last);
++  }
+ 
+   uint32_t block_first = page_first >> 6;
+   uint32_t block_last = page_last >> 6;
+@@ -635,6 +658,24 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+ 
+   auto global_lock = global_critical_region_.Acquire();
+ 
++  // PS5X360E: the range is whole host pages. Guest pages in it holding GPU
++  // output the write did not touch stay valid: on a 4 KiB host they would not
++  // have been invalidated at all, and their guest RAM is older than the GPU
++  // copy (resolve output is copied back only when the CPU reads it), so
++  // reuploading it would replace render output with stale data. The host page
++  // is unwatched now, so they are checked against a hash of their guest RAM
++  // before the GPU next uses them, or at the end of the frame.
++  const uint32_t keep_page_first = page_first, keep_page_last = page_last;
++  uint32_t write_page_first = 1, write_page_last = 0;
++  if (host_page_size_log2_ > page_size_log2_ &&
++      physical_write_in_flight.valid && physical_write_in_flight.length) {
++    write_page_first = physical_write_in_flight.start >> page_size_log2_;
++    write_page_last = (physical_write_in_flight.start +
++                       physical_write_in_flight.length - 1) >>
++                      page_size_log2_;
++  }
++  const bool keep_untouched = write_page_first <= write_page_last;
++
+   if (!exact_range) {
+     // Check if a somewhat wider range (up to 256 KB with 4 KB pages) can be
+     // invalidated - if no GPU-written data nearby that was not intended to be
+@@ -660,7 +701,22 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+     }
+   }
+ 
++  // Pages range [first, last] within block i, as a mask.
++  auto range_mask = [](uint32_t i, uint32_t first, uint32_t last) {
++    if (first > last || (last >> 6) < i || (first >> 6) > i) {
++      return uint64_t(0);
++    }
++    uint64_t mask = UINT64_MAX;
++    if ((first >> 6) == i) {
++      mask &= ~((uint64_t(1) << (first & 63)) - 1);
++    }
++    if ((last >> 6) == i && (last & 63) != 63) {
++      mask &= (uint64_t(1) << ((last & 63) + 1)) - 1;
++    }
++    return mask;
++  };
+   uint32_t dirty_blocks_mask = 0;
++  bool any_kept = false;
+   for (uint32_t i = block_first; i <= block_last; ++i) {
+     uint64_t invalidate_bits = UINT64_MAX;
+     if (i == block_first) {
+@@ -669,6 +725,29 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+     if (i == block_last && (page_last & 63) != 63) {
+       invalidate_bits &= (uint64_t(1) << ((page_last & 63) + 1)) - 1;
+     }
++    if (keep_untouched) {
++      uint64_t keep_bits = system_page_flags_valid_and_gpu_written_[i] &
++                           invalidate_bits &
++                           range_mask(i, keep_page_first, keep_page_last) &
++                           ~range_mask(i, write_page_first, write_page_last);
++      invalidate_bits &= ~keep_bits;
++      while (keep_bits) {
++        uint32_t bit = xe::tzcnt(keep_bits);
++        keep_bits &= keep_bits - 1;
++        uint32_t page = (i << 6) + bit;
++        const void* guest = memory_.TranslatePhysical(page << page_size_log2_);
++        // Kept already: the first hash is the one to compare with.
++        if (kept_pages_
++                .try_emplace(page, guest ? XXH3_64bits(
++                                               guest, size_t(1)
++                                                          << page_size_log2_)
++                                         : 0)
++                .second) {
++          ++kept_pages_total_;
++        }
++        any_kept = true;
++      }
++    }
+     system_page_flags_valid_[i] &= ~invalidate_bits;
+     system_page_flags_valid_and_gpu_written_[i] &= ~invalidate_bits;
+     // Track which chunks changed for partial copying.
+@@ -679,12 +758,96 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+   gpu_written_data_dirty_ = true;
+   dirty_blocks_ |= dirty_blocks_mask;
+ 
+-  FireWatches(page_first, page_last, false);
++  if (!any_kept) {
++    FireWatches(page_first, page_last, false);
++  } else {
++    kept_page_count_.store(uint32_t(kept_pages_.size()),
++                           std::memory_order_relaxed);
++    // Not over the kept pages: what was made from them is still current.
++    uint32_t run_first = page_first;
++    for (uint32_t page = page_first; page <= page_last; ++page) {
++      if (kept_pages_.count(page)) {
++        if (run_first < page) {
++          FireWatches(run_first, page - 1, false);
++        }
++        run_first = page + 1;
++      }
++    }
++    if (run_first <= page_last) {
++      FireWatches(run_first, page_last, false);
++    }
++  }
+ 
+   return std::make_pair(page_first << page_size_log2_,
+                         (page_last - page_first + 1) << page_size_log2_);
+ }
+ 
++void SharedMemory::DropKeptPages(uint32_t page_first, uint32_t page_last) {
++  if (kept_pages_.empty()) {
++    return;
++  }
++  for (auto it = kept_pages_.begin(); it != kept_pages_.end();) {
++    if (it->first >= page_first && it->first <= page_last) {
++      it = kept_pages_.erase(it);
++    } else {
++      ++it;
++    }
++  }
++  kept_page_count_.store(uint32_t(kept_pages_.size()),
++                         std::memory_order_relaxed);
++}
++
++void SharedMemory::VerifyKeptGpuWrittenPages() {
++  if (kept_page_count_.load(std::memory_order_relaxed)) {
++    VerifyKeptGpuWrittenPages(0, UINT32_MAX);
++  }
++  static uint32_t frames = 0;
++  if (++frames % 1800 == 0 && kept_pages_total_) {
++    XELOGW(
++        "Shared memory: {} guest pages of GPU output kept through CPU writes "
++        "elsewhere in their 16 KiB host page, {} of them later written by the "
++        "CPU",
++        kept_pages_total_, kept_pages_written_);
++  }
++}
++
++void SharedMemory::VerifyKeptGpuWrittenPages(uint32_t page_first,
++                                             uint32_t page_last) {
++  std::vector<uint32_t> rewatch;
++  {
++    auto global_lock = global_critical_region_.Acquire();
++    for (auto it = kept_pages_.begin(); it != kept_pages_.end();) {
++      const uint32_t page = it->first;
++      if (page < page_first || page > page_last) {
++        ++it;
++        continue;
++      }
++      const void* guest = memory_.TranslatePhysical(page << page_size_log2_);
++      const uint64_t hash =
++          guest ? XXH3_64bits(guest, size_t(1) << page_size_log2_) : 0;
++      if (hash != it->second) {
++        // The CPU wrote it while unwatched: guest RAM is current.
++        const uint64_t bit = uint64_t(1) << (page & 63);
++        system_page_flags_valid_[page >> 6] &= ~bit;
++        system_page_flags_valid_and_gpu_written_[page >> 6] &= ~bit;
++        gpu_written_data_dirty_ = true;
++        dirty_blocks_ |= 1u << ((page >> 6) >> 6);
++        FireWatches(page, page, false);
++        ++kept_pages_written_;
++      } else {
++        rewatch.push_back(page);
++      }
++      it = kept_pages_.erase(it);
++    }
++    kept_page_count_.store(uint32_t(kept_pages_.size()),
++                           std::memory_order_relaxed);
++  }
++  for (uint32_t page : rewatch) {
++    memory().EnablePhysicalMemoryAccessCallbacks(
++        page << page_size_log2_, uint32_t(1) << page_size_log2_, true, false);
++  }
++}
++
+ void SharedMemory::PrepareForTraceDownload() {
+   ReleaseTraceDownloadRanges();
+   assert_true(trace_download_ranges_.empty());
 diff --git a/src/xenia/gpu/shared_memory.h b/src/xenia/gpu/shared_memory.h
-index 2fd3a0c49..e6c8ee159 100644
+index 2fd3a0c49..4bf1d7546 100644
 --- a/src/xenia/gpu/shared_memory.h
 +++ b/src/xenia/gpu/shared_memory.h
-@@ -111,6 +111,9 @@ class SharedMemory {
+@@ -10,6 +10,9 @@
+ #ifndef XENIA_GPU_SHARED_MEMORY_H_
+ #define XENIA_GPU_SHARED_MEMORY_H_
+ 
++#include <atomic>
++#include <unordered_map>
++
+ #include "xenia/memory.h"
+ 
+ namespace xe {
+@@ -74,6 +77,14 @@ class SharedMemory {
+   // ensures the host GPU memory backing the range are resident. Returns true if
+   // the range has been fully updated and is usable.
+   bool RequestRange(uint32_t start, uint32_t length);
++  // PS5X360E: checks guest pages kept valid when a CPU write elsewhere in
++  // their host page dropped its watch (see MemoryInvalidationCallback):
++  // invalidates those the CPU has written since, watches the rest again.
++  // Once a frame, and before any request touching one.
++  void VerifyKeptGpuWrittenPages();
++  // Counts for the log: kept, later found written, re-watched.
++  uint64_t kept_pages_total() const { return kept_pages_total_; }
++  uint64_t kept_pages_written() const { return kept_pages_written_; }
+   // Returns whether every page in the range is currently valid in the host GPU
+   // memory copy. Hold the global critical region if relying on this for state
+   // transitions such as watch installation.
+@@ -111,6 +122,9 @@ class SharedMemory {
    void RangeWrittenByGpu(uint32_t start, uint32_t length,
                           bool written_to_buffer = true);
  
@@ -2287,6 +2549,22 @@ index 2fd3a0c49..e6c8ee159 100644
   protected:
    SharedMemory(Memory& memory);
    // Call in implementation-specific initialization.
+@@ -180,6 +194,15 @@ class SharedMemory {
+   // on it is not hard - the access callback takes a range as an argument, and
+   // touched pages of the buffer of this size will be invalidated).
+   uint32_t page_size_log2_;
++  // PS5X360E: log2 of the host page, when the pages above are smaller.
++  uint32_t host_page_size_log2_;
++  // Guest pages holding GPU output kept valid after a CPU write elsewhere in
++  // their host page unwatched them, with a hash of their guest RAM then.
++  std::unordered_map<uint32_t, uint64_t> kept_pages_;
++  std::atomic<uint32_t> kept_page_count_{0};
++  uint64_t kept_pages_total_ = 0, kept_pages_written_ = 0;
++  void VerifyKeptGpuWrittenPages(uint32_t page_first, uint32_t page_last);
++  void DropKeptPages(uint32_t page_first, uint32_t page_last);
+ 
+   bool EnsureHostGpuMemoryAllocated(uint32_t start, uint32_t length);
+   uint32_t host_gpu_memory_sparse_granularity_log2_ = UINT32_MAX;
 diff --git a/src/xenia/gpu/texture_cache.cc b/src/xenia/gpu/texture_cache.cc
 index c6a2f0850..a0507e83a 100644
 --- a/src/xenia/gpu/texture_cache.cc
@@ -2415,7 +2693,7 @@ index c6a2f0850..a0507e83a 100644
        "{} {} {}{}x{}x{} {} {} texture with {} {}packed mip level{}, "
        "base at 0x{:08X} (pitch {}, size 0x{:08X}), mips at 0x{:08X} (size "
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index 76fc1a45f..453251730 100644
+index 76fc1a45f..04c31b3dd 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,6 +8,9 @@
@@ -2428,7 +2706,16 @@ index 76fc1a45f..453251730 100644
  
  #include <cstdarg>
  #include <cstdint>
-@@ -2019,7 +2022,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -1973,6 +1976,8 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+   // Before the presenter check, so the paths that return early end the frame
+   // too.
+   NoteResolveFrame();
++  // PS5X360E: GPU output kept through neighbouring CPU writes this frame.
++  shared_memory_->VerifyKeptGpuWrittenPages();
+ 
+   CollectCompletedGpuTimeQueries();
+   static constexpr uint32_t kRenderPassWindowFrames = 60;
+@@ -2019,7 +2024,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
  
    auto aspect = graphics_system_->GetScaledAspectRatio();
  
@@ -2437,7 +2724,7 @@ index 76fc1a45f..453251730 100644
        frontbuffer_width_scaled, frontbuffer_height_scaled, aspect.first,
        aspect.second,
        [this, frontbuffer_width_scaled, frontbuffer_height_scaled,
-@@ -2577,6 +2580,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2577,6 +2582,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
  
    // End the frame even if did not present for any reason (the image refresher
    // was not called), to prevent leaking per-frame resources.
@@ -2448,7 +2735,7 @@ index 76fc1a45f..453251730 100644
    EndSubmission(true);
  }
  
-@@ -4262,6 +4269,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4262,6 +4271,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
    }
  
    if (!memexport_ranges_.empty()) {
@@ -2459,7 +2746,7 @@ index 76fc1a45f..453251730 100644
      if (route_to_host) {
        // Producer draw: output landed in host_buffer_ (guest RAM), already CPU
        // coherent, so no readback. Just record the written pages. Consumers then
-@@ -4765,6 +4776,7 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4765,6 +4778,7 @@ bool VulkanCommandProcessor::IssueCopy() {
      return false;
    }
    ++submission_in_progress_.resolve_count;
@@ -2467,7 +2754,7 @@ index 76fc1a45f..453251730 100644
  
    // The resolve wrote the device buffer. Drop any stale memexport marks so the
    // output isn't overwritten with guest RAM by a later texture load.
-@@ -5145,6 +5157,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+@@ -5145,6 +5159,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
  bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                 uint64_t wait_for_submission) {
    assert_not_zero(wait_for_submission);
@@ -2480,7 +2767,7 @@ index 76fc1a45f..453251730 100644
  
    // The resolve is still in the open submission. Pipelines being created
    // asynchronously have to finish before it can be executed.
-@@ -5158,6 +5176,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5158,6 +5178,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
              "ZPD/Async: Draining Vulkan async pipeline creation for strict "
              "retirement");
        }
@@ -2488,7 +2775,7 @@ index 76fc1a45f..453251730 100644
        pipeline_cache_->AwaitPipelineCompletion();
      }
      EndRenderPass();
-@@ -5167,6 +5186,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5167,6 +5188,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
    }
  
    if (wait_for_submission > GetCompletedSubmission()) {
@@ -5475,7 +5762,7 @@ index d6d79c1a8..9a194dcb6 100644
    // When the cooperative scheduler is active, the guest thread runs on this
    // fiber instead of its own host thread (cpu::Thread::thread_).
 diff --git a/src/xenia/memory.cc b/src/xenia/memory.cc
-index bc5da3752..06367f05c 100644
+index bc5da3752..75d131160 100644
 --- a/src/xenia/memory.cc
 +++ b/src/xenia/memory.cc
 @@ -30,6 +30,9 @@
@@ -5601,7 +5888,26 @@ index bc5da3752..06367f05c 100644
              << system_page_shift_,
          protect_access);
    }
-@@ -3655,6 +3699,28 @@ bool PhysicalHeap::TriggerCallbacks(
+@@ -3492,6 +3536,10 @@ bool PhysicalHeap::TriggerCallbacks(
+       heap_size_ - (physical_address_start - physical_address_offset));
+   uint32_t unwatch_first = 0;
+   uint32_t unwatch_last = UINT32_MAX;
++  physical_write_in_flight.start =
++      physical_address_offset + heap_relative_address;
++  physical_write_in_flight.length = length;
++  physical_write_in_flight.valid = true;
+   for (auto invalidation_callback :
+        memory_->physical_memory_invalidation_callbacks_) {
+     std::pair<uint32_t, uint32_t> callback_unwatch_range =
+@@ -3507,6 +3555,7 @@ bool PhysicalHeap::TriggerCallbacks(
+               std::max(callback_unwatch_range.second, uint32_t(1)) - 1));
+     }
+   }
++  physical_write_in_flight.valid = false;
+   if (!unwatch_exact_range) {
+     // Always unwatch at least the requested pages.
+     unwatch_first = std::min(unwatch_first, physical_address_start);
+@@ -3655,6 +3704,28 @@ bool PhysicalHeap::TriggerCallbacks(
    return true;
  }
  
@@ -5631,10 +5937,28 @@ index bc5da3752..06367f05c 100644
    assert_true(address >= heap_base_);
    address -= heap_base_;
 diff --git a/src/xenia/memory.h b/src/xenia/memory.h
-index 03003e563..869a0d5d6 100644
+index 03003e563..14a5950d2 100644
 --- a/src/xenia/memory.h
 +++ b/src/xenia/memory.h
-@@ -259,6 +259,18 @@ class BaseHeap {
+@@ -33,6 +33,17 @@ namespace xe {
+ 
+ class Memory;
+ 
++// PS5X360E: the exact physical range a write that triggers invalidation
++// callbacks touched, while the callbacks run on this thread. Callbacks are
++// handed whole host pages (16 KiB on the PS5), four guest pages each; this
++// lets one keep the guest pages the write did not touch.
++struct PhysicalWriteInFlight {
++  uint32_t start = 0;
++  uint32_t length = 0;
++  bool valid = false;
++};
++inline thread_local PhysicalWriteInFlight physical_write_in_flight;
++
+ enum SystemHeapFlag : uint32_t {
+   kSystemHeapVirtual = 1 << 0,
+   kSystemHeapPhysical = 1 << 1,
+@@ -259,6 +270,18 @@ class BaseHeap {
      return access;
    }
  
@@ -5653,7 +5977,7 @@ index 03003e563..869a0d5d6 100644
    // Queries the currently strictest readability and writability for the entire
    // range.
    xe::memory::PageAccess QueryRangeAccess(uint32_t low_address,
-@@ -404,6 +416,9 @@ class PhysicalHeap : public BaseHeap {
+@@ -404,6 +427,9 @@ class PhysicalHeap : public BaseHeap {
    // The 0-512mb heap every physical allocation is recorded in.
    BaseHeap* parent_heap() const { return parent_heap_; }
  
