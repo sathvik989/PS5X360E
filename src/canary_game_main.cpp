@@ -322,8 +322,12 @@ void ApplyPicture(const xbox360ps5::Settings& settings, xe::ui::Presenter* prese
   config.SetCasAdditionalSharpness(kCasSharpness[sharpness]);
   config.SetFsrSharpnessReduction(kFsrReduction[sharpness]);
   config.SetDither(settings.dither != 0);
-  // SMAA on the game's picture, then the filter (FSR upscales, its RCAS pass sharpens).
-  config.SetSmaa(settings.antialiasing != 0);
+  // 0 off, 1 SMAA, 2 SMAA then FXAA, 3 FXAA, 4 SMAA's edges in place of the
+  // picture (a check). Then the filter (FSR upscales, its RCAS pass sharpens).
+  const int aa = settings.antialiasing;
+  config.SetSmaa(aa == 1 || aa == 2 || aa == 4);
+  config.SetFxaa(aa == 2 || aa == 3);
+  config.SetSmaaShowEdges(aa == 4);
   presenter->SetGuestOutputPaintConfigFromUIThread(config);
 }
 // What the settings page shows, as JSON: the options with the general values,
@@ -538,6 +542,10 @@ void ReportStall(xe::Emulator& emulator, int pass) {
 // commonest places of each. Offsets are symbolized afterwards with the build's
 // kept ELF. The picture freezes meanwhile; the game keeps running.
 void MeasurePerformance(xe::Emulator& emulator, float fps) {
+  // Also trace the GPU's next 9 frames (resolves and texture loads), to compare
+  // frames of an effect that changes every few frames.
+  xe::gpu::frame_trace_lines.store(0, std::memory_order_relaxed);
+  xe::gpu::frame_trace_frames_left.store(9, std::memory_order_relaxed);
   struct Place { uint64_t key; uint32_t count; };
   struct Tally {
     // PS5X360E: a guest or emulator thread, or one of the guest scheduler's

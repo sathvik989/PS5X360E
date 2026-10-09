@@ -2021,10 +2021,32 @@ index 7a9a87356..183a9e4c3 100644
  DEFINE_bool(
      gpu_debug_markers, false,
 diff --git a/src/xenia/gpu/gpu_flags.h b/src/xenia/gpu/gpu_flags.h
-index be4eb2e2c..e837bc4d8 100644
+index be4eb2e2c..1be719af7 100644
 --- a/src/xenia/gpu/gpu_flags.h
 +++ b/src/xenia/gpu/gpu_flags.h
-@@ -49,6 +49,8 @@ DECLARE_bool(occlusion_query_full_counters);
+@@ -11,6 +11,21 @@
+ #define XENIA_GPU_GPU_FLAGS_H_
+ #include "xenia/base/cvar.h"
+ 
++#include <atomic>
++#include <cstdint>
++
++namespace xe::gpu {
++// PS5X360E: frames left to trace (resolves and texture loads, one line each),
++// armed by the guide's performance measurement; and the frame being traced.
++inline std::atomic<uint32_t> frame_trace_frames_left{0};
++inline std::atomic<uint32_t> frame_trace_frame{0};
++inline std::atomic<uint32_t> frame_trace_lines{0};
++inline bool FrameTraceLine() {
++  return frame_trace_frames_left.load(std::memory_order_relaxed) &&
++         frame_trace_lines.fetch_add(1, std::memory_order_relaxed) < 6000;
++}
++}  // namespace xe::gpu
++
+ DECLARE_path(trace_gpu_prefix);
+ DECLARE_bool(trace_gpu_stream);
+ 
+@@ -49,6 +64,8 @@ DECLARE_bool(occlusion_query_full_counters);
  
  DECLARE_bool(occlusion_query_viz);
  
@@ -2566,7 +2588,7 @@ index 2fd3a0c49..4bf1d7546 100644
    bool EnsureHostGpuMemoryAllocated(uint32_t start, uint32_t length);
    uint32_t host_gpu_memory_sparse_granularity_log2_ = UINT32_MAX;
 diff --git a/src/xenia/gpu/texture_cache.cc b/src/xenia/gpu/texture_cache.cc
-index c6a2f0850..a0507e83a 100644
+index c6a2f0850..181f6facd 100644
 --- a/src/xenia/gpu/texture_cache.cc
 +++ b/src/xenia/gpu/texture_cache.cc
 @@ -9,6 +9,8 @@
@@ -2692,8 +2714,27 @@ index c6a2f0850..a0507e83a 100644
    XELOGGPU(
        "{} {} {}{}x{}x{} {} {} texture with {} {}packed mip level{}, "
        "base at 0x{:08X} (pitch {}, size 0x{:08X}), mips at 0x{:08X} (size "
+@@ -1140,6 +1235,18 @@ bool TextureCache::LoadTextureData(Texture& texture) {
+   }
+ 
+   texture.LogAction("Loaded");
++  if (FrameTraceLine()) {
++    XELOGW(
++        "FT {} T {:08X} mip {:08X} {}x{}x{} fmt {} tiled {} pitch {} base {} "
++        "mips {} scaled {}",
++        frame_trace_frame.load(std::memory_order_relaxed),
++        texture_key.base_page << 12, texture_key.mip_page << 12,
++        texture_key.width_minus_1 + 1, texture_key.height_minus_1 + 1,
++        texture_key.depth_or_array_size_minus_1 + 1,
++        uint32_t(texture_key.format), uint32_t(texture_key.tiled),
++        uint32_t(texture_key.pitch), int(base_outdated), int(mips_outdated),
++        uint32_t(texture_key.scaled_resolve));
++  }
+ 
+   return true;
+ }
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index 76fc1a45f..64f03d0bc 100644
+index 76fc1a45f..a0f9fba40 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,6 +8,9 @@
@@ -2706,17 +2747,28 @@ index 76fc1a45f..64f03d0bc 100644
  
  #include <cstdarg>
  #include <cstdint>
-@@ -1973,6 +1976,9 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -1973,6 +1976,20 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
    // Before the presenter check, so the paths that return early end the frame
    // too.
    NoteResolveFrame();
 +  // PS5X360E: GPU output kept through neighbouring CPU writes this frame.
 +  shared_memory_->VerifyKeptGpuWrittenPages();
++  {
++    const uint32_t left =
++        frame_trace_frames_left.load(std::memory_order_relaxed);
++    if (left) {
++      XELOGW("FT {} SWAP {:08X} {}x{}",
++             frame_trace_frame.load(std::memory_order_relaxed),
++             frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
++      frame_trace_frame.fetch_add(1, std::memory_order_relaxed);
++      frame_trace_frames_left.store(left - 1, std::memory_order_relaxed);
++    }
++  }
 +  pipeline_cache_->MaybeSavePipelineCache();
  
    CollectCompletedGpuTimeQueries();
    static constexpr uint32_t kRenderPassWindowFrames = 60;
-@@ -2019,7 +2025,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2019,7 +2036,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
  
    auto aspect = graphics_system_->GetScaledAspectRatio();
  
@@ -2725,7 +2777,7 @@ index 76fc1a45f..64f03d0bc 100644
        frontbuffer_width_scaled, frontbuffer_height_scaled, aspect.first,
        aspect.second,
        [this, frontbuffer_width_scaled, frontbuffer_height_scaled,
-@@ -2577,6 +2583,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2577,6 +2594,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
  
    // End the frame even if did not present for any reason (the image refresher
    // was not called), to prevent leaking per-frame resources.
@@ -2736,7 +2788,7 @@ index 76fc1a45f..64f03d0bc 100644
    EndSubmission(true);
  }
  
-@@ -4262,6 +4272,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4262,6 +4283,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
    }
  
    if (!memexport_ranges_.empty()) {
@@ -2747,15 +2799,28 @@ index 76fc1a45f..64f03d0bc 100644
      if (route_to_host) {
        // Producer draw: output landed in host_buffer_ (guest RAM), already CPU
        // coherent, so no readback. Just record the written pages. Consumers then
-@@ -4765,6 +4779,7 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4765,6 +4790,20 @@ bool VulkanCommandProcessor::IssueCopy() {
      return false;
    }
    ++submission_in_progress_.resolve_count;
 +  DiagRecordWrite(0x100, written_address, written_length, is_scaled);
++  if (FrameTraceLine()) {
++    const RegisterFile& regs = *register_file_;
++    XELOGW(
++        "FT {} R {:08X} {} dest_info {:08X} pitch {:08X} control {:08X} "
++        "surface {:08X} color0 {:08X} depth {:08X} scaled {}",
++        frame_trace_frame.load(std::memory_order_relaxed), written_address,
++        written_length, copy_dest_info.value,
++        regs.values[XE_GPU_REG_RB_COPY_DEST_PITCH],
++        regs.values[XE_GPU_REG_RB_COPY_CONTROL],
++        regs.values[XE_GPU_REG_RB_SURFACE_INFO],
++        regs.values[XE_GPU_REG_RB_COLOR_INFO],
++        regs.values[XE_GPU_REG_RB_DEPTH_INFO], int(is_scaled));
++  }
  
    // The resolve wrote the device buffer. Drop any stale memexport marks so the
    // output isn't overwritten with guest RAM by a later texture load.
-@@ -5145,6 +5160,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+@@ -5145,6 +5184,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
  bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                 uint64_t wait_for_submission) {
    assert_not_zero(wait_for_submission);
@@ -2768,7 +2833,7 @@ index 76fc1a45f..64f03d0bc 100644
  
    // The resolve is still in the open submission. Pipelines being created
    // asynchronously have to finish before it can be executed.
-@@ -5158,6 +5179,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5158,6 +5203,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
              "ZPD/Async: Draining Vulkan async pipeline creation for strict "
              "retirement");
        }
@@ -2776,7 +2841,7 @@ index 76fc1a45f..64f03d0bc 100644
        pipeline_cache_->AwaitPipelineCompletion();
      }
      EndRenderPass();
-@@ -5167,6 +5189,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5167,6 +5213,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
    }
  
    if (wait_for_submission > GetCompletedSubmission()) {
@@ -6175,10 +6240,10 @@ index 23fa67211..16153831b 100644
    FcConfig* config = FcInitLoadConfigAndFonts();
    if (!config) {
 diff --git a/src/xenia/ui/presenter.h b/src/xenia/ui/presenter.h
-index 93f9250e6..7c27fdfdd 100644
+index 93f9250e6..6e89a8981 100644
 --- a/src/xenia/ui/presenter.h
 +++ b/src/xenia/ui/presenter.h
-@@ -271,7 +271,13 @@ class Presenter {
+@@ -271,7 +271,21 @@ class Presenter {
      bool GetDither() const { return dither_; }
      void SetDither(bool new_dither) { dither_ = new_dither; }
  
@@ -6186,12 +6251,71 @@ index 93f9250e6..7c27fdfdd 100644
 +    // presenter only; others ignore it).
 +    bool GetSmaa() const { return smaa_; }
 +    void SetSmaa(bool new_smaa) { smaa_ = new_smaa; }
++    // PS5X360E: FXAA (highest quality) after SMAA, before the effect above.
++    bool GetFxaa() const { return fxaa_; }
++    void SetFxaa(bool new_fxaa) { fxaa_ = new_fxaa; }
++    // Shows SMAA's detected edges in place of the picture (a check).
++    bool GetSmaaShowEdges() const { return smaa_show_edges_; }
++    void SetSmaaShowEdges(bool new_show) { smaa_show_edges_ = new_show; }
 +
     private:
 +    bool smaa_ = false;
++    bool smaa_show_edges_ = false;
++    bool fxaa_ = false;
      // Tools, rather than the emulator itself, must not allow overscan cutoff
      // and must use the kBilinear effect as the image must be as close to the
      // original front buffer as possible.
+diff --git a/src/xenia/ui/shaders/post_fxaa.ps.slang b/src/xenia/ui/shaders/post_fxaa.ps.slang
+new file mode 100644
+index 000000000..74595c091
+--- /dev/null
++++ b/src/xenia/ui/shaders/post_fxaa.ps.slang
+@@ -0,0 +1,45 @@
++// PS5X360E: FXAA 3.11 (NVIDIA, third_party/fxaa), the highest quality preset,
++// on the guest output after SMAA and before the scaling and sharpening
++// effects. Uses the SMAA passes' descriptor set layout: binding 0 the source,
++// 3 a linear clamping sampler. Push constant: 1 / width, 1 / height, width,
++// height.
++
++[[vk::push_constant]] cbuffer XeFxaaConstants {
++  float4 xe_fxaa_rt_metrics;
++};
++
++[[vk::binding(0, 0)]] Texture2D<float4> xe_fxaa_source;
++[[vk::binding(3, 0)]] SamplerState xe_fxaa_linear_sampler;
++
++#define FXAA_PC 1
++#define FXAA_HLSL_5 1
++#define FXAA_QUALITY__PRESET 39
++// The source has no luma in alpha; green is close enough.
++#define FXAA_GREEN_AS_LUMA 1
++#include "../../../../third_party/fxaa/FXAA3_11.h"
++
++struct XeFxaaPixelInput {
++  float4 position : SV_Position;
++};
++
++[shader("fragment")]
++float4 main(XeFxaaPixelInput input) : SV_Target0 {
++  float2 size_inv = xe_fxaa_rt_metrics.xy;
++  FxaaTex fxaa_texture;
++  fxaa_texture.smpl = xe_fxaa_linear_sampler;
++  fxaa_texture.tex = xe_fxaa_source;
++  float2 texcoord = input.position.xy * size_inv;
++  float2 pixel = floor(input.position.xy);
++  return float4(
++      FxaaPixelShader(
++          texcoord, (pixel.xyxy + float2(0.0, 1.0).xxyy) * size_inv.xyxy,
++          fxaa_texture, fxaa_texture, fxaa_texture, size_inv,
++          float2(-0.5, 0.5).xxyy * size_inv.xyxy,
++          float2(-2.0, 2.0).xxyy * size_inv.xyxy,
++          float2(8.0, -4.0).xxyy * size_inv.xyxy,
++          // Subpixel 1.0, edge thresholds as Xenia's FXAA (extreme).
++          1.0, 0.063, 0.0312, 8.0, 0.125, 0.05,
++          float4(1.0, -1.0, 0.25, -0.25))
++          .rgb,
++      1.0);
++}
 diff --git a/src/xenia/ui/shaders/smaa.hlsli b/src/xenia/ui/shaders/smaa.hlsli
 new file mode 100644
 index 000000000..075cac9a5
@@ -22946,7 +23070,7 @@ index fd3e34d1c..ec38ab067 100644
      bool ext_KHR_xcb_surface = false;  // #6
  #endif
 diff --git a/src/xenia/ui/vulkan/vulkan_presenter.cc b/src/xenia/ui/vulkan/vulkan_presenter.cc
-index 9cf803fd6..e255d1863 100644
+index 9cf803fd6..571452d02 100644
 --- a/src/xenia/ui/vulkan/vulkan_presenter.cc
 +++ b/src/xenia/ui/vulkan/vulkan_presenter.cc
 @@ -17,6 +17,10 @@
@@ -22960,10 +23084,11 @@ index 9cf803fd6..e255d1863 100644
  
  #if XE_PLATFORM_ANDROID
  #include "xenia/ui/surface_android.h"
-@@ -73,6 +77,12 @@ namespace shaders {
+@@ -73,6 +77,13 @@ namespace shaders {
  #include "xenia/ui/shaders/bytecode/vulkan_spirv/guest_output_ffx_fsr_rcas_dither_ps.h"
  #include "xenia/ui/shaders/bytecode/vulkan_spirv/guest_output_ffx_fsr_rcas_ps.h"
  #include "xenia/ui/shaders/bytecode/vulkan_spirv/guest_output_triangle_strip_rect_vs.h"
++#include "xenia/ui/shaders/bytecode/vulkan_spirv/post_fxaa_ps.h"
 +#include "xenia/ui/shaders/bytecode/vulkan_spirv/smaa_blend_ps.h"
 +#include "xenia/ui/shaders/bytecode/vulkan_spirv/smaa_edges_ps.h"
 +#include "xenia/ui/shaders/bytecode/vulkan_spirv/smaa_fullscreen_vs.h"
@@ -22973,7 +23098,7 @@ index 9cf803fd6..e255d1863 100644
  }  // namespace shaders
  
  VulkanPresenter::PaintContext::Submission::~Submission() {
-@@ -183,6 +193,7 @@ VulkanPresenter::~VulkanPresenter() {
+@@ -183,6 +194,7 @@ VulkanPresenter::~VulkanPresenter() {
          guest_output_paint_pipeline.intermediate_pipeline);
    }
  
@@ -22981,7 +23106,7 @@ index 9cf803fd6..e255d1863 100644
    util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device,
                               guest_output_intermediate_render_pass_);
    for (VkShaderModule& shader_module : guest_output_paint_fs_) {
-@@ -206,6 +217,11 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
+@@ -206,6 +218,11 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
      return 0;
    }
    Surface::TypeFlags type_flags = 0;
@@ -22993,7 +23118,7 @@ index 9cf803fd6..e255d1863 100644
  #if XE_PLATFORM_ANDROID
    if (instance_extensions.ext_KHR_android_surface) {
      type_flags |= Surface::kTypeFlag_AndroidNativeWindow;
-@@ -594,6 +610,26 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
+@@ -594,6 +611,26 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
      }
      VkResult vulkan_surface_create_result = VK_ERROR_UNKNOWN;
      switch (surface_type) {
@@ -23020,7 +23145,7 @@ index 9cf803fd6..e255d1863 100644
  #if XE_PLATFORM_ANDROID
        case Surface::kTypeIndex_AndroidNativeWindow: {
          auto& android_native_window_surface =
-@@ -1358,7 +1394,7 @@ VkSwapchainKHR VulkanPresenter::PaintContext::PrepareForSwapchainRetirement() {
+@@ -1358,7 +1395,7 @@ VkSwapchainKHR VulkanPresenter::PaintContext::PrepareForSwapchainRetirement() {
      if (present_queue_family != UINT32_MAX) {
        const VulkanDevice::Queue::Acquisition queue_acquisition =
            vulkan_device->AcquireQueue(present_queue_family, 0);
@@ -23029,7 +23154,7 @@ index 9cf803fd6..e255d1863 100644
      }
    }
    const VulkanDevice::Functions& dfn = vulkan_device->functions();
-@@ -1600,6 +1636,41 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1600,6 +1637,41 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
          guest_output_properties, paint_context_.swapchain_extent.width,
          paint_context_.swapchain_extent.height, max_framebuffer_extent.width,
          max_framebuffer_extent.height, guest_output_paint_config);
@@ -23071,7 +23196,7 @@ index 9cf803fd6..e255d1863 100644
      if (guest_output_flow.effect_count) {
        // Store the main target reference to the guest output image so it's not
        // destroyed while it's still potentially in use by main target painting
-@@ -1653,6 +1724,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1653,6 +1725,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
          paint_context_
              .guest_output_image_paint_refs[guest_output_image_paint_ref_index] =
              std::make_pair(uint64_t(0), guest_output_image);
@@ -23079,33 +23204,35 @@ index 9cf803fd6..e255d1863 100644
          // Create the descriptors of the new image.
          VkDescriptorImageInfo guest_output_image_descriptor_image_info;
          guest_output_image_descriptor_image_info.sampler = VK_NULL_HANDLE;
-@@ -1855,6 +1927,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1855,6 +1928,14 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
            paint_context_.guest_output_intermediate_image_last_submission =
                current_paint_submission_index;
          }
-+        // PS5X360E: SMAA first, outside any render pass; the first effect then
-+        // takes its output in place of the guest output.
-+        const bool smaa_used =
-+            guest_output_paint_config.GetSmaa() &&
-+            PaintSmaa(draw_command_buffer, guest_output_image_paint_ref_index,
-+                      *guest_output_image, current_paint_submission_index);
++        // PS5X360E: SMAA and / or FXAA first, outside any render pass; the
++        // first effect then takes their output in place of the guest output.
++        const VkDescriptorSet anti_aliased_set = PaintSmaa(
++            draw_command_buffer, guest_output_image_paint_ref_index,
++            *guest_output_image, current_paint_submission_index,
++            guest_output_paint_config.GetSmaa(),
++            guest_output_paint_config.GetFxaa(),
++            guest_output_paint_config.GetSmaaShowEdges());
          for (size_t i = 0; i < guest_output_flow.effect_count; ++i) {
            bool is_final_effect = i + 1 >= guest_output_flow.effect_count;
  
-@@ -1939,8 +2017,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1939,8 +2020,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
            dfn.vkCmdBindDescriptorSets(
                draw_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                guest_output_paint_pipeline_layout, 0, 1,
 -              &paint_context_
 -                   .guest_output_descriptor_sets[effect_src_descriptor_set],
-+              (!i && smaa_used)
-+                  ? &smaa_.output_set
++              (!i && anti_aliased_set != VK_NULL_HANDLE)
++                  ? &anti_aliased_set
 +                  : &paint_context_.guest_output_descriptor_sets
 +                         [effect_src_descriptor_set],
                0, nullptr);
  
            GuestOutputPaintRectangleConstants effect_rect_constants;
-@@ -2196,7 +2276,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -2196,7 +2279,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
      const VulkanDevice::Queue::Acquisition queue_acquisition =
          vulkan_device_->AcquireQueue(paint_context_.present_queue_family, 0);
      present_result =
@@ -23114,7 +23241,7 @@ index 9cf803fd6..e255d1863 100644
    }
    switch (present_result) {
      case VK_SUCCESS:
-@@ -2680,6 +2760,545 @@ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(
+@@ -2680,6 +2763,588 @@ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(
    return pipeline;
  }
  
@@ -23180,13 +23307,13 @@ index 9cf803fd6..e255d1863 100644
 +      VK_SUCCESS) {
 +    return fail("the vertex shader");
 +  }
-+  const uint32_t* const fs_code[3] = {shaders::smaa_edges_ps,
-+                                      shaders::smaa_weights_ps,
-+                                      shaders::smaa_blend_ps};
-+  const size_t fs_size[3] = {sizeof(shaders::smaa_edges_ps),
-+                             sizeof(shaders::smaa_weights_ps),
-+                             sizeof(shaders::smaa_blend_ps)};
-+  for (size_t i = 0; i < 3; ++i) {
++  const uint32_t* const fs_code[4] = {
++      shaders::smaa_edges_ps, shaders::smaa_weights_ps, shaders::smaa_blend_ps,
++      shaders::post_fxaa_ps};
++  const size_t fs_size[4] = {
++      sizeof(shaders::smaa_edges_ps), sizeof(shaders::smaa_weights_ps),
++      sizeof(shaders::smaa_blend_ps), sizeof(shaders::post_fxaa_ps)};
++  for (size_t i = 0; i < 4; ++i) {
 +    module_info.codeSize = fs_size[i];
 +    module_info.pCode = fs_code[i];
 +    if (dfn.vkCreateShaderModule(device, &module_info, nullptr,
@@ -23239,7 +23366,7 @@ index 9cf803fd6..e255d1863 100644
 +  }
 +
 +  // Pipelines.
-+  for (size_t i = 0; i < 3; ++i) {
++  for (size_t i = 0; i < 4; ++i) {
 +    VkPipelineShaderStageCreateInfo stages[2] = {};
 +    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 +    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -23360,13 +23487,16 @@ index 9cf803fd6..e255d1863 100644
 +
 +  // Descriptors: edges and blend per paint reference, weights, and the output
 +  // for the effects.
-+  const uint32_t own_sets = 2 * uint32_t(kGuestOutputMailboxSize) + 1;
++  // Then FXAA's from the SMAA output and per paint reference.
++  const uint32_t own_sets = 3 * uint32_t(kGuestOutputMailboxSize) + 2;
++  // Output sets for the effects: SMAA's, the edges, FXAA's.
++  const uint32_t paint_sets = 3;
 +  VkDescriptorPoolSize pool_sizes[2] = {
-+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, own_sets * 3 + 1},
-+      {VK_DESCRIPTOR_TYPE_SAMPLER, own_sets * 2 + 1}};
++      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, own_sets * 3 + paint_sets},
++      {VK_DESCRIPTOR_TYPE_SAMPLER, own_sets * 2 + paint_sets}};
 +  VkDescriptorPoolCreateInfo pool_info = {
 +      VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-+  pool_info.maxSets = own_sets + 1;
++  pool_info.maxSets = own_sets + paint_sets;
 +  pool_info.poolSizeCount = 2;
 +  pool_info.pPoolSizes = pool_sizes;
 +  if (dfn.vkCreateDescriptorPool(device, &pool_info, nullptr, &smaa_.pool) !=
@@ -23374,7 +23504,9 @@ index 9cf803fd6..e255d1863 100644
 +    return fail("the descriptor pool");
 +  }
 +  std::vector<VkDescriptorSetLayout> layouts(own_sets, smaa_.set_layout);
-+  layouts.push_back(guest_output_paint_image_descriptor_set_layout_);
++  for (uint32_t i = 0; i < paint_sets; ++i) {
++    layouts.push_back(guest_output_paint_image_descriptor_set_layout_);
++  }
 +  std::vector<VkDescriptorSet> sets(layouts.size());
 +  VkDescriptorSetAllocateInfo allocate_info = {
 +      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -23391,7 +23523,13 @@ index 9cf803fd6..e255d1863 100644
 +    smaa_.ref_dirty[i] = true;
 +  }
 +  smaa_.weights_set = sets[2 * kGuestOutputMailboxSize];
++  smaa_.fxaa_from_smaa_set = sets[2 * kGuestOutputMailboxSize + 1];
++  for (size_t i = 0; i < kGuestOutputMailboxSize; ++i) {
++    smaa_.fxaa_from_guest_sets[i] = sets[2 * kGuestOutputMailboxSize + 2 + i];
++  }
 +  smaa_.output_set = sets[own_sets];
++  smaa_.edges_output_set = sets[own_sets + 1];
++  smaa_.fxaa_output_set = sets[own_sets + 2];
 +
 +  smaa_.ready = true;
 +  XELOGW("SMAA: ready (high preset)");
@@ -23407,6 +23545,8 @@ index 9cf803fd6..e255d1863 100644
 +                             smaa_.weights_framebuffer);
 +  util::DestroyAndNullHandle(dfn.vkDestroyFramebuffer, device,
 +                             smaa_.output_framebuffer);
++  util::DestroyAndNullHandle(dfn.vkDestroyFramebuffer, device,
++                             smaa_.fxaa_framebuffer);
 +  util::DestroyAndNullHandle(dfn.vkDestroyImageView, device, smaa_.edges_view);
 +  util::DestroyAndNullHandle(dfn.vkDestroyImageView, device,
 +                             smaa_.weights_view);
@@ -23415,6 +23555,7 @@ index 9cf803fd6..e255d1863 100644
 +  util::DestroyAndNullHandle(dfn.vkFreeMemory, device, smaa_.edges_memory);
 +  util::DestroyAndNullHandle(dfn.vkFreeMemory, device, smaa_.weights_memory);
 +  smaa_.output.reset();
++  smaa_.fxaa_output.reset();
 +  smaa_.extent = {};
 +}
 +
@@ -23447,13 +23588,14 @@ index 9cf803fd6..e255d1863 100644
 +  smaa_ = Smaa();
 +}
 +
-+bool VulkanPresenter::PaintSmaa(VkCommandBuffer command_buffer,
-+                                size_t paint_ref_index,
-+                                const GuestOutputImage& guest_output_image,
-+                                uint64_t submission_index) {
-+  if (!InitializeSmaa()) {
-+    return false;
++VkDescriptorSet VulkanPresenter::PaintSmaa(
++    VkCommandBuffer command_buffer, size_t paint_ref_index,
++    const GuestOutputImage& guest_output_image, uint64_t submission_index,
++    bool smaa, bool fxaa, bool show_edges) {
++  if ((!smaa && !fxaa) || !InitializeSmaa()) {
++    return VK_NULL_HANDLE;
 +  }
++  show_edges = show_edges && smaa;
 +  const VulkanDevice::Functions& dfn = vulkan_device_->functions();
 +  const VkDevice device = vulkan_device_->device();
 +  const VkExtent2D extent = guest_output_image.extent();
@@ -23516,15 +23658,20 @@ index 9cf803fd6..e255d1863 100644
 +        !create_framebuffer(smaa_.pass_rgba8, smaa_.weights_view,
 +                            smaa_.weights_framebuffer) ||
 +        !create_framebuffer(guest_output_intermediate_render_pass_,
-+                            smaa_.output->view(), smaa_.output_framebuffer)) {
++                            smaa_.output->view(), smaa_.output_framebuffer) ||
++        !(smaa_.fxaa_output = GuestOutputImage::Create(
++              vulkan_device_, extent.width, extent.height)) ||
++        !create_framebuffer(guest_output_intermediate_render_pass_,
++                            smaa_.fxaa_output->view(),
++                            smaa_.fxaa_framebuffer)) {
 +      XELOGE("SMAA: failed to create the {}x{} images", extent.width,
 +             extent.height);
 +      DestroySmaaSized();
-+      return false;
++      return VK_NULL_HANDLE;
 +    }
 +    smaa_.extent = extent;
 +    // Everything referring to the sized images: none is in use after the wait.
-+    VkDescriptorImageInfo images[4] = {};
++    VkDescriptorImageInfo images[5] = {};
 +    for (VkDescriptorImageInfo& image : images) {
 +      image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 +    }
@@ -23532,6 +23679,7 @@ index 9cf803fd6..e255d1863 100644
 +    images[1].imageView = smaa_.area_view;
 +    images[2].imageView = smaa_.search_view;
 +    images[3].imageView = smaa_.output->view();
++    images[4].imageView = smaa_.fxaa_output->view();
 +    std::vector<VkWriteDescriptorSet> writes;
 +    VkWriteDescriptorSet write = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
 +    write.descriptorCount = 3;
@@ -23543,6 +23691,15 @@ index 9cf803fd6..e255d1863 100644
 +    write.descriptorCount = 1;
 +    write.dstSet = smaa_.output_set;
 +    write.pImageInfo = &images[3];
++    writes.push_back(write);
++    write.dstSet = smaa_.edges_output_set;
++    write.pImageInfo = &images[0];
++    writes.push_back(write);
++    write.dstSet = smaa_.fxaa_from_smaa_set;
++    write.pImageInfo = &images[3];
++    writes.push_back(write);
++    write.dstSet = smaa_.fxaa_output_set;
++    write.pImageInfo = &images[4];
 +    writes.push_back(write);
 +    dfn.vkUpdateDescriptorSets(device, uint32_t(writes.size()), writes.data(),
 +                               0, nullptr);
@@ -23563,8 +23720,8 @@ index 9cf803fd6..e255d1863 100644
 +    blend_images[0].imageView = guest_output_image.view();
 +    blend_images[1].imageView = smaa_.weights_view;
 +    blend_images[2].imageView = smaa_.search_view;
-+    VkWriteDescriptorSet writes[2] = {};
-+    for (size_t i = 0; i < 2; ++i) {
++    VkWriteDescriptorSet writes[3] = {};
++    for (size_t i = 0; i < 3; ++i) {
 +      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 +      writes[i].descriptorCount = 3;
 +      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -23573,7 +23730,11 @@ index 9cf803fd6..e255d1863 100644
 +    writes[0].pImageInfo = edges_images;
 +    writes[1].dstSet = smaa_.blend_sets[paint_ref_index];
 +    writes[1].pImageInfo = blend_images;
-+    dfn.vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
++    // FXAA reads binding 0 only.
++    writes[2].dstSet = smaa_.fxaa_from_guest_sets[paint_ref_index];
++    writes[2].descriptorCount = 1;
++    writes[2].pImageInfo = edges_images;
++    dfn.vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
 +  }
 +
 +  // The lookup textures, once.
@@ -23624,13 +23785,19 @@ index 9cf803fd6..e255d1863 100644
 +                         float(extent.height), 0.0f, 1.0f};
 +  VkRect2D scissor = {{0, 0}, extent};
 +  VkClearValue clear = {};
-+  const VkFramebuffer framebuffers[3] = {smaa_.edges_framebuffer,
-+                                         smaa_.weights_framebuffer,
-+                                         smaa_.output_framebuffer};
-+  const VkDescriptorSet sets[3] = {smaa_.edges_sets[paint_ref_index],
-+                                   smaa_.weights_set,
-+                                   smaa_.blend_sets[paint_ref_index]};
-+  for (size_t i = 0; i < 3; ++i) {
++  const VkFramebuffer framebuffers[4] = {
++      smaa_.edges_framebuffer, smaa_.weights_framebuffer,
++      smaa_.output_framebuffer, smaa_.fxaa_framebuffer};
++  const VkDescriptorSet sets[4] = {
++      smaa_.edges_sets[paint_ref_index], smaa_.weights_set,
++      smaa_.blend_sets[paint_ref_index],
++      smaa ? smaa_.fxaa_from_smaa_set
++           : smaa_.fxaa_from_guest_sets[paint_ref_index]};
++  // SMAA's passes (edges only, to show them), then FXAA.
++  for (size_t i = smaa ? 0 : 3; i < 4; ++i) {
++    if (i < 3 ? (i == 2 && show_edges) : (!fxaa || show_edges)) {
++      continue;
++    }
 +    VkRenderPassBeginInfo begin = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
 +    begin.renderPass =
 +        i < 2 ? smaa_.pass_rgba8 : guest_output_intermediate_render_pass_;
@@ -23654,17 +23821,20 @@ index 9cf803fd6..e255d1863 100644
 +    dfn.vkCmdEndRenderPass(command_buffer);
 +  }
 +  smaa_.last_submission = submission_index;
-+  return true;
++  if (smaa && show_edges) {
++    return smaa_.edges_output_set;
++  }
++  return fxaa ? smaa_.fxaa_output_set : smaa_.output_set;
 +}
 +
  }  // namespace vulkan
  }  // namespace ui
  }  // namespace xe
 diff --git a/src/xenia/ui/vulkan/vulkan_presenter.h b/src/xenia/ui/vulkan/vulkan_presenter.h
-index fa151fb4c..4ee2c9437 100644
+index fa151fb4c..2880f68af 100644
 --- a/src/xenia/ui/vulkan/vulkan_presenter.h
 +++ b/src/xenia/ui/vulkan/vulkan_presenter.h
-@@ -501,6 +501,57 @@ class VulkanPresenter final : public Presenter {
+@@ -501,6 +501,73 @@ class VulkanPresenter final : public Presenter {
    // DisconnectPaintingFromSurfaceFromUIThreadImpl) by the thread doing it, as
    // well as by presenter initialization and shutdown.
    PaintContext paint_context_;
@@ -23677,11 +23847,13 @@ index fa151fb4c..4ee2c9437 100644
 +    VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
 +    VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
 +    VkShaderModule vs = VK_NULL_HANDLE;
-+    std::array<VkShaderModule, 3> fs = {};
++    // Edges, weights, blend, FXAA.
++    std::array<VkShaderModule, 4> fs = {};
 +    // R8G8B8A8 cleared (edges, weights).
 +    VkRenderPass pass_rgba8 = VK_NULL_HANDLE;
-+    // Edges, weights, blend (the last into the intermediate render pass).
-+    std::array<VkPipeline, 3> pipelines = {};
++    // Edges, weights, blend, FXAA (the last two into the intermediate render
++    // pass).
++    std::array<VkPipeline, 4> pipelines = {};
 +    VkImage area_image = VK_NULL_HANDLE, search_image = VK_NULL_HANDLE;
 +    VkDeviceMemory area_memory = VK_NULL_HANDLE,
 +                   search_memory = VK_NULL_HANDLE;
@@ -23698,6 +23870,14 @@ index fa151fb4c..4ee2c9437 100644
 +    VkDescriptorSet weights_set = VK_NULL_HANDLE;
 +    // In guest_output_paint_image_descriptor_set_layout_, for the first effect.
 +    VkDescriptorSet output_set = VK_NULL_HANDLE;
++    // The same, of the edges, to show them.
++    VkDescriptorSet edges_output_set = VK_NULL_HANDLE;
++    // FXAA's source, the SMAA output or the guest output of a paint
++    // reference, and its output for the effects.
++    VkDescriptorSet fxaa_from_smaa_set = VK_NULL_HANDLE;
++    std::array<VkDescriptorSet, kGuestOutputMailboxSize> fxaa_from_guest_sets =
++        {};
++    VkDescriptorSet fxaa_output_set = VK_NULL_HANDLE;
 +    // Sized like the guest output.
 +    VkExtent2D extent = {};
 +    VkImage edges_image = VK_NULL_HANDLE, weights_image = VK_NULL_HANDLE;
@@ -23705,6 +23885,8 @@ index fa151fb4c..4ee2c9437 100644
 +                   weights_memory = VK_NULL_HANDLE;
 +    VkImageView edges_view = VK_NULL_HANDLE, weights_view = VK_NULL_HANDLE;
 +    std::unique_ptr<GuestOutputImage> output;
++    std::unique_ptr<GuestOutputImage> fxaa_output;
++    VkFramebuffer fxaa_framebuffer = VK_NULL_HANDLE;
 +    VkFramebuffer edges_framebuffer = VK_NULL_HANDLE,
 +                  weights_framebuffer = VK_NULL_HANDLE,
 +                  output_framebuffer = VK_NULL_HANDLE;
@@ -23714,11 +23896,15 @@ index fa151fb4c..4ee2c9437 100644
 +  bool InitializeSmaa();
 +  void DestroySmaaSized();
 +  void DestroySmaa();
-+  // Records the three passes for the guest output in the paint reference slot;
-+  // false if SMAA can't be used (the effects then take the guest output).
-+  bool PaintSmaa(VkCommandBuffer command_buffer, size_t paint_ref_index,
-+                 const GuestOutputImage& guest_output_image,
-+                 uint64_t submission_index);
++  // Records SMAA's three passes and / or FXAA for the guest output in the
++  // paint reference slot. Returns the descriptor set (in the paint image
++  // layout) the first effect takes in place of the guest output, or null if
++  // neither can be used.
++  VkDescriptorSet PaintSmaa(VkCommandBuffer command_buffer,
++                            size_t paint_ref_index,
++                            const GuestOutputImage& guest_output_image,
++                            uint64_t submission_index, bool smaa, bool fxaa,
++                            bool show_edges);
  };
  
  }  // namespace vulkan

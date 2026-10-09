@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.23+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Anti-aliasing now offers Off / SMAA / SMAA + FXAA / FXAA / SMAA (show edges). FXAA runs at its
+  highest quality preset after SMAA; both run on the game's own picture, before the Image filter
+  (FSR upscales, then sharpens). Show edges paints the edges SMAA found red and green, to check it
+  is working on a game that already smooths its edges.
+- The fog flicker in NFS The Run is still there with alpha.22, so the 16 KiB page fix (kept, it
+  is correct) was not its cause. "Measure performance (5 s)" in the guide now also records 9
+  frames of the GPU's resolves and texture loads, to compare a dark frame with the normal ones.
+
 ## 0.2-alpha.22+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - New Video setting Anti-aliasing: Off / SMAA. SMAA smooths jagged edges on the game's picture
