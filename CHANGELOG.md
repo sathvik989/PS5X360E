@@ -3,6 +3,22 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.30+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Reviewed everything PS5X360 changed from 0.5.7-fix.1 to 0.5.9 (the 0.5.8 series is only in
+  0.5.9's source archive). Ported what applies to Edge: swapchain format selection (a single
+  advertised format was ignored), faster and stricter package reads (GoD/STFS/SVOD seek straight
+  to the block, short reads fail instead of handing the game partial data), race-free texture
+  outdated flags. Also an Edge bug found in the review: the network byte count (FIONREAD) was
+  returned byte-swapped, and a game asking for its next disc crashed (no file picker on the
+  PS5); it now fails cleanly until multi-disc support is ported.
+- Not ported: Kinect/phone camera, OpenGL renderer, Canary readback and thread-suspend fixes
+  that Edge's own code already covers, diagnostics. Still to port: multi-disc switching, the
+  on-screen keyboard, shader constant upload speed-ups, cache file hardening.
+- The frame trace (guide: Measure performance) now records what NFS The Run's float render
+  output contains each frame (min, max, mean, zeros, NaN, infinities per channel), to find the
+  frame whose fog data is wrong.
+
 ## 0.2-alpha.29+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - From PS5X360 0.5.9 (BrinooTk), whose source archive only ships as overlays on 0.5.7-fix.1:

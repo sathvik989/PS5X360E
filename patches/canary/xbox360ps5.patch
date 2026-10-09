@@ -1326,7 +1326,7 @@ index 36156c80c..6c120eda9 100644
  
  struct XexInfoCache {
 diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
-index ed9bb6b10..ac659d0f9 100644
+index ed9bb6b10..5ed344e73 100644
 --- a/src/xenia/emulator.cc
 +++ b/src/xenia/emulator.cc
 @@ -13,6 +13,19 @@
@@ -1466,7 +1466,20 @@ index ed9bb6b10..ac659d0f9 100644
    switch (GetFileSignature(path)) {
      case FileSignatureType::XEX0:
      case FileSignatureType::XEXQ:
-@@ -2032,6 +2056,58 @@ bool Emulator::ExceptionCallback(Exception* ex) {
+@@ -1814,6 +1838,12 @@ const std::filesystem::path Emulator::GetNewDiscPath(
+   if (use_file_picker && display_window_) {
+     display_window_->app_context().CallInUIThreadSynchronous([&]() {
+       auto file_picker = xe::ui::FilePicker::Create();
++      // PS5X360E: platforms without a file picker (the PS5) return none; the
++      // disc swap then fails instead of crashing.
++      if (!file_picker) {
++        XELOGE("Cannot show file picker: none on this platform");
++        return;
++      }
+       file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+       file_picker->set_type(ui::FilePicker::Type::kFile);
+       file_picker->set_multi_selection(false);
+@@ -2032,6 +2062,58 @@ bool Emulator::ExceptionCallback(Exception* ex) {
    } else if (ex->code() == Exception::Code::kIllegalInstruction) {
      crash_msg.append("Illegal Instruction\n");
    }
@@ -2967,8 +2980,26 @@ index c6a2f0850..181f6facd 100644
  
    return true;
  }
+diff --git a/src/xenia/gpu/texture_cache.h b/src/xenia/gpu/texture_cache.h
+index e6b7d535c..0f0eb959b 100644
+--- a/src/xenia/gpu/texture_cache.h
++++ b/src/xenia/gpu/texture_cache.h
+@@ -362,9 +362,11 @@ class TextureCache {
+     // These are to be accessed within the global critical region to synchronize
+     // with shared memory.
+     // Whether the recent base level data needs reloading from the memory.
+-    bool base_outdated_ = false;
++    // PS5X360E (from PS5X360 0.5.9): atomic, as the lockless accessors read
++    // them on the draw thread while write faults set them.
++    std::atomic<bool> base_outdated_{false};
+     // Whether the recent mip data needs reloading from the memory.
+-    bool mips_outdated_ = false;
++    std::atomic<bool> mips_outdated_{false};
+     // Watch handles for the memory ranges.
+     SharedMemory::WatchHandle base_watch_handle_ = nullptr;
+     SharedMemory::WatchHandle mips_watch_handle_ = nullptr;
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index 76fc1a45f..00ba9df9b 100644
+index 76fc1a45f..a358c7c99 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,6 +8,9 @@
@@ -3097,7 +3128,127 @@ index 76fc1a45f..00ba9df9b 100644
      }
      NoteResolveForReadback(written_address, written_length, is_scaled);
    }
-@@ -5145,6 +5211,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+@@ -4793,9 +4859,119 @@ bool VulkanCommandProcessor::IssueCopy() {
+ 
+   SubmitRequestedResolve();
+ 
++  // PS5X360E: while tracing, what float render output actually holds, to find
++  // the frame of a ring whose data is wrong (NaN, zeros, huge values).
++  if (frame_trace_frames_left.load(std::memory_order_relaxed) && !is_scaled &&
++      written_length && written_length <= (512u << 10)) {
++    const uint32_t format = uint32_t(copy_dest_info.copy_dest_format);
++    // 32_32_32_32_FLOAT, 16_16_16_16_FLOAT, 32_FLOAT.
++    if ((format == 38 || format == 32 || format == 36) &&
++        FrameTraceLine()) {
++      TraceFloatResolveData(written_address, written_length, format,
++                            uint32_t(copy_dest_info.copy_dest_endian));
++    }
++  }
++
+   return true;
+ }
+ 
++void VulkanCommandProcessor::TraceFloatResolveData(uint32_t address,
++                                                   uint32_t length,
++                                                   uint32_t format,
++                                                   uint32_t endian) {
++  // The resolve has to have run: submit it, then copy its output to guest
++  // RAM synchronously (as a CPU read of it would).
++  if (submission_open_) {
++    EndRenderPass();
++    if (!EndSubmission(false)) {
++      return;
++    }
++  }
++  bool copied;
++  {
++    std::lock_guard<std::mutex> lock(resolve_read_mutex_);
++    copied = FaultCopyResolveToGuestRam({{address, length}});
++  }
++  if (!copied) {
++    XELOGW("FT {} DATA {:08X} copy failed",
++           frame_trace_frame.load(std::memory_order_relaxed), address);
++    return;
++  }
++  const uint8_t* bytes = memory_->TranslatePhysical<const uint8_t*>(address);
++  const bool half = format == 32;
++  const uint32_t channels = format == 36 ? 1 : 4;
++  const uint32_t element_size = half ? 2 : 4;
++  const uint32_t count = length / element_size;
++  auto load = [&](uint32_t i) -> float {
++    const uint8_t* p = bytes + size_t(i) * element_size;
++    uint32_t v;
++    if (half) {
++      // Read as big-endian halves (8in16), the common case; the log names
++      // the endian mode.
++      uint16_t h = uint16_t(uint16_t(p[0]) << 8 | p[1]);
++      uint32_t sign = uint32_t(h >> 15) << 31;
++      uint32_t exponent = (h >> 10) & 0x1F, mantissa = h & 0x3FF;
++      float f;
++      if (exponent == 0) {
++        f = std::ldexp(float(mantissa), -24);
++        std::memcpy(&v, &f, 4);
++        v |= sign;
++      } else if (exponent == 31) {
++        v = sign | 0x7F800000u | (mantissa << 13);
++      } else {
++        v = sign | ((exponent + 112) << 23) | (mantissa << 13);
++      }
++      std::memcpy(&f, &v, 4);
++      return f;
++    }
++    std::memcpy(&v, p, 4);
++    if (endian == 2) {
++      v = xe::byte_swap(v);
++    } else if (endian == 1) {
++      v = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
++    } else if (endian == 3) {
++      v = (v << 16) | (v >> 16);
++    }
++    float f;
++    std::memcpy(&f, &v, 4);
++    return f;
++  };
++  std::string summary;
++  uint64_t hash = 1469598103934665603ull;
++  for (uint32_t c = 0; c < channels; ++c) {
++    uint32_t nans = 0, infs = 0, zeros = 0, n = 0;
++    float lo = 0.0f, hi = 0.0f;
++    double sum = 0.0;
++    for (uint32_t i = c; i < count; i += channels) {
++      float f = load(i);
++      uint32_t bits;
++      std::memcpy(&bits, &f, 4);
++      hash = (hash ^ bits) * 1099511628211ull;
++      if (std::isnan(f)) {
++        ++nans;
++        continue;
++      }
++      if (std::isinf(f)) {
++        ++infs;
++        continue;
++      }
++      if (f == 0.0f) {
++        ++zeros;
++      }
++      lo = n ? std::min(lo, f) : f;
++      hi = n ? std::max(hi, f) : f;
++      sum += f;
++      ++n;
++    }
++    summary += fmt::format(" | c{} min {:.4g} max {:.4g} mean {:.4g} zero {} "
++                           "nan {} inf {}",
++                           c, lo, hi, n ? sum / n : 0.0, zeros, nans, infs);
++  }
++  XELOGW("FT {} DATA {:08X} {} fmt {} endian {} hash {:016X}{}",
++         frame_trace_frame.load(std::memory_order_relaxed), address, length,
++         format, endian, hash, summary);
++}
++
+ void VulkanCommandProcessor::EnsureQueryResources() {
+   // VIZ surveys need the pool even when ZPD reports are faked.
+   if ((zpd_mode_ == ZPDMode::kFake && !cvars::occlusion_query_viz) ||
+@@ -5145,6 +5321,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
  bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                 uint64_t wait_for_submission) {
    assert_not_zero(wait_for_submission);
@@ -3110,7 +3261,7 @@ index 76fc1a45f..00ba9df9b 100644
  
    // The resolve is still in the open submission. Pipelines being created
    // asynchronously have to finish before it can be executed.
-@@ -5158,6 +5230,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5158,6 +5340,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
              "ZPD/Async: Draining Vulkan async pipeline creation for strict "
              "retirement");
        }
@@ -3118,7 +3269,7 @@ index 76fc1a45f..00ba9df9b 100644
        pipeline_cache_->AwaitPipelineCompletion();
      }
      EndRenderPass();
-@@ -5167,6 +5240,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5167,6 +5350,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
    }
  
    if (wait_for_submission > GetCompletedSubmission()) {
@@ -3127,7 +3278,7 @@ index 76fc1a45f..00ba9df9b 100644
    }
  
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.h b/src/xenia/gpu/vulkan/vulkan_command_processor.h
-index 5fdd9173a..d1b855e78 100644
+index 5fdd9173a..94769a792 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.h
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.h
 @@ -394,6 +394,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
@@ -3138,6 +3289,16 @@ index 5fdd9173a..d1b855e78 100644
    void InitializeTrace() override;
    bool DumpEdramSnapshotToFile(const std::filesystem::path& path) override;
  
+@@ -1093,6 +1094,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
+   // .inc for ScaledResolveReadbackInfo.
+   bool DownscaleScaledResolve(uint32_t written_address,
+                               const ScaledResolveReadbackInfo& scaled_info);
++  // PS5X360E: frame trace statistics of float resolve output.
++  void TraceFloatResolveData(uint32_t address, uint32_t length,
++                             uint32_t format, uint32_t endian);
+   bool MirrorScaledResolveToSharedMemory(uint32_t written_address,
+                                          uint32_t written_length,
+                                          reg::RB_COPY_DEST_INFO copy_dest_info,
 diff --git a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc b/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
 index 505aac188..5f2249445 100644
 --- a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
@@ -5997,6 +6158,20 @@ index 27b8bf7f5..924072a35 100644
    X_KTHREAD* kthread = WaitEnter(wait_reason, processor_mode, alertable);
    const uint64_t deadline_ms =
        timeout_ms == std::chrono::milliseconds::max()
+diff --git a/src/xenia/kernel/xsocket.cc b/src/xenia/kernel/xsocket.cc
+index a8eac6cbe..773b9beb7 100644
+--- a/src/xenia/kernel/xsocket.cc
++++ b/src/xenia/kernel/xsocket.cc
+@@ -401,7 +401,8 @@ X_STATUS XSocket::IOControl(uint32_t cmd, uint8_t* arg_ptr) {
+       return X_STATUS_UNSUCCESSFUL;
+     }
+ 
+-    *reinterpret_cast<uint32_t*>(arg_ptr) = static_cast<uint32_t>(available);
++    // PS5X360E: guest memory is big-endian.
++    xe::store_and_swap<uint32_t>(arg_ptr, static_cast<uint32_t>(available));
+     return X_STATUS_SUCCESS;
+   }
+ 
 diff --git a/src/xenia/kernel/xthread.cc b/src/xenia/kernel/xthread.cc
 index ca42c30ee..33d5a32ce 100644
 --- a/src/xenia/kernel/xthread.cc
@@ -23375,7 +23550,7 @@ index fd3e34d1c..ec38ab067 100644
      bool ext_KHR_xcb_surface = false;  // #6
  #endif
 diff --git a/src/xenia/ui/vulkan/vulkan_presenter.cc b/src/xenia/ui/vulkan/vulkan_presenter.cc
-index 9cf803fd6..571452d02 100644
+index 9cf803fd6..851fd1fef 100644
 --- a/src/xenia/ui/vulkan/vulkan_presenter.cc
 +++ b/src/xenia/ui/vulkan/vulkan_presenter.cc
 @@ -17,6 +17,10 @@
@@ -23450,7 +23625,18 @@ index 9cf803fd6..571452d02 100644
  #if XE_PLATFORM_ANDROID
        case Surface::kTypeIndex_AndroidNativeWindow: {
          auto& android_native_window_surface =
-@@ -1358,7 +1395,7 @@ VkSwapchainKHR VulkanPresenter::PaintContext::PrepareForSwapchainRetirement() {
+@@ -1111,7 +1148,9 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+ #endif
+   VkSurfaceFormatKHR image_format;
+   if (surface_formats.empty() ||
+-      (surface_formats.size() == 1 ||
++      // PS5X360E (from PS5X360 0.5.9): only a single UNDEFINED entry leaves
++      // the choice free; a single concrete pair is the only one allowed.
++      (surface_formats.size() == 1 &&
+        surface_formats[0].format == VK_FORMAT_UNDEFINED)) {
+     // Can choose any format if the implementation specifies only UNDEFINED.
+     image_format.format = kFormat8888Primary;
+@@ -1358,7 +1397,7 @@ VkSwapchainKHR VulkanPresenter::PaintContext::PrepareForSwapchainRetirement() {
      if (present_queue_family != UINT32_MAX) {
        const VulkanDevice::Queue::Acquisition queue_acquisition =
            vulkan_device->AcquireQueue(present_queue_family, 0);
@@ -23459,7 +23645,7 @@ index 9cf803fd6..571452d02 100644
      }
    }
    const VulkanDevice::Functions& dfn = vulkan_device->functions();
-@@ -1600,6 +1637,41 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1600,6 +1639,41 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
          guest_output_properties, paint_context_.swapchain_extent.width,
          paint_context_.swapchain_extent.height, max_framebuffer_extent.width,
          max_framebuffer_extent.height, guest_output_paint_config);
@@ -23501,7 +23687,7 @@ index 9cf803fd6..571452d02 100644
      if (guest_output_flow.effect_count) {
        // Store the main target reference to the guest output image so it's not
        // destroyed while it's still potentially in use by main target painting
-@@ -1653,6 +1725,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1653,6 +1727,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
          paint_context_
              .guest_output_image_paint_refs[guest_output_image_paint_ref_index] =
              std::make_pair(uint64_t(0), guest_output_image);
@@ -23509,7 +23695,7 @@ index 9cf803fd6..571452d02 100644
          // Create the descriptors of the new image.
          VkDescriptorImageInfo guest_output_image_descriptor_image_info;
          guest_output_image_descriptor_image_info.sampler = VK_NULL_HANDLE;
-@@ -1855,6 +1928,14 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1855,6 +1930,14 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
            paint_context_.guest_output_intermediate_image_last_submission =
                current_paint_submission_index;
          }
@@ -23524,7 +23710,7 @@ index 9cf803fd6..571452d02 100644
          for (size_t i = 0; i < guest_output_flow.effect_count; ++i) {
            bool is_final_effect = i + 1 >= guest_output_flow.effect_count;
  
-@@ -1939,8 +2020,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1939,8 +2022,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
            dfn.vkCmdBindDescriptorSets(
                draw_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                guest_output_paint_pipeline_layout, 0, 1,
@@ -23537,7 +23723,7 @@ index 9cf803fd6..571452d02 100644
                0, nullptr);
  
            GuestOutputPaintRectangleConstants effect_rect_constants;
-@@ -2196,7 +2279,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -2196,7 +2281,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
      const VulkanDevice::Queue::Acquisition queue_acquisition =
          vulkan_device_->AcquireQueue(paint_context_.present_queue_family, 0);
      present_result =
@@ -23546,7 +23732,7 @@ index 9cf803fd6..571452d02 100644
    }
    switch (present_result) {
      case VK_SUCCESS:
-@@ -2680,6 +2763,588 @@ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(
+@@ -2680,6 +2765,588 @@ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(
    return pipeline;
  }
  
@@ -24533,6 +24719,89 @@ index d1db59d68..f8a6a94db 100644
    *out_bytes_read = real_length;
    return X_STATUS_SUCCESS;
  }
+diff --git a/src/xenia/vfs/devices/xcontent_container_file.cc b/src/xenia/vfs/devices/xcontent_container_file.cc
+index 15c4a7a8a..1434a1d41 100644
+--- a/src/xenia/vfs/devices/xcontent_container_file.cc
++++ b/src/xenia/vfs/devices/xcontent_container_file.cc
+@@ -15,7 +15,21 @@ namespace vfs {
+ 
+ XContentContainerFile::XContentContainerFile(uint32_t file_access,
+                                              XContentContainerEntry* entry)
+-    : File(file_access, entry), entry_(entry) {}
++    : File(file_access, entry), entry_(entry) {
++  // Validate once at open, not on every streaming read. Block lists are
++  // populated before the read-only container is exposed to guest code.
++  const auto& blocks = entry_->block_list();
++  if (!blocks.empty() && blocks.front().length) {
++    logical_block_size_ = blocks.front().length;
++    for (size_t i = 0; i < blocks.size(); ++i) {
++      if (blocks[i].length > logical_block_size_ ||
++          (i + 1 < blocks.size() && blocks[i].length != logical_block_size_)) {
++        logical_block_size_ = 0;
++        break;
++      }
++    }
++  }
++}
+ 
+ XContentContainerFile::~XContentContainerFile() = default;
+ 
+@@ -24,6 +38,7 @@ void XContentContainerFile::Destroy() { delete this; }
+ X_STATUS XContentContainerFile::ReadSync(std::span<uint8_t> buffer,
+                                          size_t byte_offset,
+                                          size_t* out_bytes_read) {
++  *out_bytes_read = 0;
+   if (byte_offset >= entry_->size()) {
+     return X_STATUS_END_OF_FILE;
+   }
+@@ -33,8 +48,13 @@ X_STATUS XContentContainerFile::ReadSync(std::span<uint8_t> buffer,
+   size_t remaining_length =
+       std::min(buffer.size(), entry_->size() - byte_offset);
+ 
+-  *out_bytes_read = 0;
+-  for (size_t i = 0; i < entry_->block_list().size(); i++) {
++  if (!remaining_length) return X_STATUS_SUCCESS;
++  // A read near the end of a large package previously visited every earlier
++  // block, even for a few bytes. Fixed-size layouts can seek directly.
++  const size_t first_block = logical_block_size_
++                                 ? byte_offset / logical_block_size_ : 0;
++  src_offset = logical_block_size_ ? first_block * logical_block_size_ : 0;
++  for (size_t i = first_block; i < entry_->block_list().size(); i++) {
+     auto& record = entry_->block_list()[i];
+     if (src_offset + record.length <= byte_offset) {
+       // Doesn't begin in this region. Skip it.
+@@ -51,6 +71,8 @@ X_STATUS XContentContainerFile::ReadSync(std::span<uint8_t> buffer,
+                          record.offset + read_offset, record.file);
+ 
+     *out_bytes_read += num_read;
++    // Do not hand guest code an incomplete payload with a success status.
++    if (num_read != read_length) return X_STATUS_UNSUCCESSFUL;
+     p += num_read;
+     src_offset += record.length;
+     remaining_length -= read_length;
+@@ -59,7 +81,7 @@ X_STATUS XContentContainerFile::ReadSync(std::span<uint8_t> buffer,
+     }
+   }
+ 
+-  return X_STATUS_SUCCESS;
++  return remaining_length ? X_STATUS_UNSUCCESSFUL : X_STATUS_SUCCESS;
+ }
+ 
+ }  // namespace vfs
+diff --git a/src/xenia/vfs/devices/xcontent_container_file.h b/src/xenia/vfs/devices/xcontent_container_file.h
+index 2e129e2a2..8777eee00 100644
+--- a/src/xenia/vfs/devices/xcontent_container_file.h
++++ b/src/xenia/vfs/devices/xcontent_container_file.h
+@@ -39,6 +39,9 @@ class XContentContainerFile : public File {
+                       size_t record_file) = 0;
+ 
+   XContentContainerEntry* entry_;
++  // Xbox360PS5: STFS and SVOD use fixed logical blocks (last may be short).
++  // Zero keeps the original scan for any non-uniform layout.
++  size_t logical_block_size_ = 0;
+ };
+ 
+ }  // namespace vfs
 diff --git a/src/xenia/vfs/devices/xcontent_devices/stfs_container_device.cc b/src/xenia/vfs/devices/xcontent_devices/stfs_container_device.cc
 index af35cefe6..f34f65193 100644
 --- a/src/xenia/vfs/devices/xcontent_devices/stfs_container_device.cc
