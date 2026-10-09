@@ -2322,7 +2322,7 @@ index 5fdd9173a..d1b855e78 100644
    bool DumpEdramSnapshotToFile(const std::filesystem::path& path) override;
  
 diff --git a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc b/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
-index 505aac188..7fd872f68 100644
+index 505aac188..1514401cf 100644
 --- a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
 @@ -8,6 +8,9 @@
@@ -2335,16 +2335,41 @@ index 505aac188..7fd872f68 100644
  
  #include <chrono>
  #include <cstdint>
-@@ -2309,7 +2312,7 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
+@@ -2308,8 +2311,32 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
+   if (profile) {
      pso_create_start = std::chrono::steady_clock::now();
    }
++  // PS5X360E: at a draw resolution scale above 1, the PS5's RADV crashed
++  // creating some pipeline with no vertex-stage shader of its own; name each
++  // one before the driver sees it, so the crash report's last line is it.
++  const bool log_pipeline = render_target_cache_.draw_resolution_scale_x() > 1 ||
++                            render_target_cache_.draw_resolution_scale_y() > 1;
++  if (log_pipeline) {
++    XELOGW(
++        "PIPELINE create {} VS {:016X} PS {:016X} stages {} tess {} GS {} "
++        "topology {} polygon {} vs-override {} fs-override {}",
++        creating_placeholder ? "placeholder" : "real",
++        creation_arguments.vertex_shader
++            ? creation_arguments.vertex_shader->shader().ucode_data_hash()
++            : 0,
++        creation_arguments.pixel_shader
++            ? creation_arguments.pixel_shader->shader().ucode_data_hash()
++            : 0,
++        shader_stage_count, is_tessellated ? 1 : 0,
++        creation_arguments.geometry_shader != VK_NULL_HANDLE ? 1 : 0,
++        uint32_t(input_assembly_state.topology),
++        uint32_t(rasterization_state.polygonMode),
++        vertex_shader_override != VK_NULL_HANDLE ? 1 : 0,
++        fragment_shader_override != VK_NULL_HANDLE ? 1 : 0);
++    xe::FlushLog();
++  }
    VkPipeline pipeline;
 -  VkResult result = dfn.vkCreateGraphicsPipelines(
 +  VkResult result = PS5X360_VK_CALL(pipeline, dfn.vkCreateGraphicsPipelines, 
        device, vk_pipeline_cache_, 1, &pipeline_create_info, nullptr, &pipeline);
    if (result == VK_SUCCESS && profile) {
      // Driver SPIR-V->ISA compile + link time.
-@@ -2548,17 +2551,34 @@ void VulkanPipelineCache::InitializeShaderStorage(
+@@ -2548,17 +2575,34 @@ void VulkanPipelineCache::InitializeShaderStorage(
            xe::filesystem::OpenFile(vk_pipeline_cache_path_, "rb")) {
      xe::filesystem::Seek(cache_file, 0, SEEK_END);
      int64_t cache_size = xe::filesystem::Tell(cache_file);
@@ -2379,7 +2404,7 @@ index 505aac188..7fd872f68 100644
    // Recreate the VkPipelineCache with the loaded data.
    if (vk_pipeline_cache_ != VK_NULL_HANDLE) {
      dfn.vkDestroyPipelineCache(device, vk_pipeline_cache_, nullptr);
-@@ -2800,6 +2820,12 @@ void VulkanPipelineCache::ShutdownShaderStorage() {
+@@ -2800,6 +2844,12 @@ void VulkanPipelineCache::ShutdownShaderStorage() {
        std::vector<uint8_t> cache_data(cache_size);
        if (dfn.vkGetPipelineCacheData(device, vk_pipeline_cache_, &cache_size,
                                       cache_data.data()) == VK_SUCCESS) {

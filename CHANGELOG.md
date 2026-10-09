@@ -3,6 +3,14 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.18+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- At 2x NFS The Run crashes inside the PS5's RADV (radv_pipeline_init_vertex_input_state: a
+  pipeline with no vertex-stage shader), also with background shaders off, so one particular
+  pipeline rather than concurrent creation. With a draw resolution scale above 1 each pipeline
+  is now logged (shader hashes, stages, geometry shader, topology) and the log flushed before the
+  driver gets it: the last such line before a crash names the one.
+
 ## 0.2-alpha.17+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - About 4 GiB more memory for games and the GPU. Xenia maps the guest's whole 4 GiB address
