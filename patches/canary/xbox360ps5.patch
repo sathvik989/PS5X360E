@@ -1539,10 +1539,10 @@ index ed9bb6b10..5ed344e73 100644
    for (int i = 0; i < 32; i++) {
      crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
 diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
-index 4bfd8c3ec..e3477bb1b 100644
+index 4bfd8c3ec..76ad7eff2 100644
 --- a/src/xenia/gpu/command_processor.cc
 +++ b/src/xenia/gpu/command_processor.cc
-@@ -109,6 +109,22 @@ DEFINE_bool(
+@@ -109,6 +109,24 @@ DEFINE_bool(
      "RAM without it, which breaks games that read it back.",
      "GPU");
  
@@ -1556,16 +1556,18 @@ index 4bfd8c3ec..e3477bb1b 100644
 +    "GPU");
 +
 +DEFINE_bool(
-+    resolve_sync_only_watched, true,
++    resolve_sync_only_watched, false,
 +    "Submit GPU work early at guest sync points only for render output the "
 +    "CPU may read (see readback_skip_unread_resolves), rather than after any "
-+    "resolve. Fewer, larger submissions.",
++    "resolve. Fewer, larger submissions, but in NFS The Run at 2x the CPU then "
++    "waited four times as long for the render output it reads (up to 270 ms "
++    "a second) and the frame rate dropped, so off by default.",
 +    "GPU");
 +
  DEFINE_bool(
      memexport_enable, true,
      "Make memory export output visible to the CPU. Needed by games that read "
-@@ -144,6 +160,12 @@ DEFINE_bool(
+@@ -144,6 +162,12 @@ DEFINE_bool(
      "Vulkan, SV_Barycentrics on Direct3D 12).",
      "GPU");
  
@@ -1578,7 +1580,7 @@ index 4bfd8c3ec..e3477bb1b 100644
  namespace xe {
  namespace gpu {
  
-@@ -488,6 +510,11 @@ void CommandProcessor::ThrottlePresentation() {
+@@ -488,6 +512,11 @@ void CommandProcessor::ThrottlePresentation() {
  }
  
  void CommandProcessor::WorkerThreadMain() {
@@ -1590,7 +1592,7 @@ index 4bfd8c3ec..e3477bb1b 100644
    if (!SetupContext()) {
      xe::FatalError("Unable to setup command processor internal state");
      return;
-@@ -506,6 +533,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -506,6 +535,7 @@ void CommandProcessor::WorkerThreadMain() {
        // We've run out of commands to execute.
        // We spin here waiting for new ones, as the overhead of waiting on our
        // event is too high.
@@ -1598,7 +1600,7 @@ index 4bfd8c3ec..e3477bb1b 100644
        PrepareForWait();
        uint32_t loop_count = 0;
        do {
-@@ -518,6 +546,15 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -518,6 +548,15 @@ void CommandProcessor::WorkerThreadMain() {
            // nothing left in the ring.
            if (zpd_mode_ == ZPDMode::kStrict && zpd_awaited_report_count_) {
              PrepareForWait();
@@ -1614,7 +1616,7 @@ index 4bfd8c3ec..e3477bb1b 100644
            }
          } else {
            xe::threading::MaybeYield();
-@@ -528,6 +565,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -528,6 +567,7 @@ void CommandProcessor::WorkerThreadMain() {
                 (write_ptr_index == 0xBAADF00D ||
                  read_ptr_index_ == write_ptr_index));
        ReturnFromWait();
@@ -1622,7 +1624,7 @@ index 4bfd8c3ec..e3477bb1b 100644
        if (!worker_running_ || !pending_fns_.empty()) {
          continue;
        }
-@@ -553,6 +591,183 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -553,6 +593,183 @@ void CommandProcessor::WorkerThreadMain() {
    ShutdownContext();
  }
  
@@ -1806,7 +1808,7 @@ index 4bfd8c3ec..e3477bb1b 100644
  void CommandProcessor::Pause() {
    if (paused_) {
      return;
-@@ -742,6 +957,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
+@@ -742,6 +959,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
        uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
        uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
        xe::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
@@ -1816,7 +1818,7 @@ index 4bfd8c3ec..e3477bb1b 100644
      }
    } else {
      switch (index) {
-@@ -1279,6 +1497,8 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1279,6 +1499,8 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
      WriteZPDReport(report_address, report.speculative_value);
    }
    zpd_awaited_report_count_ += report.awaited;
@@ -1825,7 +1827,7 @@ index 4bfd8c3ec..e3477bb1b 100644
    zpd_reports_.push_back(report);
    zpd_stats_.reports_queued++;
  
-@@ -1476,10 +1696,10 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
+@@ -1476,10 +1698,10 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
    return nullptr;
  }
  
@@ -1838,7 +1840,7 @@ index 4bfd8c3ec..e3477bb1b 100644
        awaited_handle = report.handle;
        break;
      }
-@@ -1547,6 +1767,21 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1547,6 +1769,21 @@ void CommandProcessor::PumpPendingRetire() {
      zpd_pending_retire_start_ms_ = 0;
  
      zpd_sample_counter_ += front.delta;

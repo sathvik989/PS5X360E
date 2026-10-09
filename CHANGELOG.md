@@ -3,6 +3,13 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.39+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Undid alpha.37's fewer GPU submissions by default (`resolve_sync_only_watched = false`). In NFS
+  The Run at 2x it halved the submissions (550 to 255 a second), but handing them over took as
+  long in total, and the game's reads of render output waited about four times longer (100-270 ms
+  a second instead of 30-50), so the frame rate dropped to 21-25 more often.
+
 ## 0.2-alpha.38+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Fixed a hang in NFS The Run on My Cars caused by alpha.37's fewer submissions: the GPU waited
