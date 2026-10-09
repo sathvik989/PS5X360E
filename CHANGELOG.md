@@ -3,6 +3,15 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.27+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- 2x: the copy of 2x output back to 1x (for the CPU and anything reading it at 1x) skipped
+  128-bit-per-pixel images. alpha.26's trace showed NFS The Run's three-buffer 256x32 float image
+  is exactly that, and its copy failed every frame at 2x; the 2x video shows the sky whiting out
+  every third frame and white smoke. Edge's downscale shader now handles 128-bit pixels.
+- The frame trace logs every GPU request of memory those 128-bit images were written to (USE),
+  to find what reads them at 1x.
+
 ## 0.2-alpha.26+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - 2x now runs NFS The Run at 26-30 FPS (was 21-24). Remaining at 2x: tyre smoke as white blobs

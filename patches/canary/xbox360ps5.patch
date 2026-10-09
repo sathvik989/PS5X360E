@@ -1934,7 +1934,7 @@ index 484b6d2e1..452d8f4c2 100644
    uint8_t* source = static_cast<uint8_t*>(buffer.mapped) + source_offset;
    // vastcpy's non-temporal stores need both pointers and the length to be
 diff --git a/src/xenia/gpu/command_processor_resolve_readwatch.inc b/src/xenia/gpu/command_processor_resolve_readwatch.inc
-index 8c2e6f64d..0054dd30e 100644
+index 8c2e6f64d..1482c3493 100644
 --- a/src/xenia/gpu/command_processor_resolve_readwatch.inc
 +++ b/src/xenia/gpu/command_processor_resolve_readwatch.inc
 @@ -83,6 +83,11 @@ void MarkResolvePagesRead(uint32_t physical_address, uint32_t length) {
@@ -1983,6 +1983,19 @@ index 8c2e6f64d..0054dd30e 100644
      std::memcpy(memory_->TranslatePhysical(range.first), source_bytes,
                  range.second);
      source_bytes += range.second;
+@@ -495,9 +513,9 @@ bool GetScaledResolveReadbackInfo(uint32_t address, uint32_t length,
+   // RB_COPY_DEST_INFO, for depth the register can hold a different size.
+   uint32_t pixel_size_log2 =
+       draw_util::GetResolveDownscalePixelSizeLog2(copy_dest_info);
+-  if (pixel_size_log2 > 3) {
+-    // 128bpp, which the downscale shader's tiled addressing reversal cannot
+-    // handle.
++  // PS5X360E: 128bpp too now (NFS The Run renders data for its smoke into a
++  // 128bpp target the CPU reads back).
++  if (pixel_size_log2 > 4) {
+     XELOGGPU(
+         "Skipping readback of a resolution-scaled resolve to a 128bpp "
+         "destination - not supported by the downscale shader");
 diff --git a/src/xenia/gpu/draw_util.cc b/src/xenia/gpu/draw_util.cc
 index 916814c86..a3bca419c 100644
 --- a/src/xenia/gpu/draw_util.cc
@@ -2059,13 +2072,14 @@ index 7a9a87356..183a9e4c3 100644
  DEFINE_bool(
      gpu_debug_markers, false,
 diff --git a/src/xenia/gpu/gpu_flags.h b/src/xenia/gpu/gpu_flags.h
-index be4eb2e2c..1be719af7 100644
+index be4eb2e2c..58b0bc146 100644
 --- a/src/xenia/gpu/gpu_flags.h
 +++ b/src/xenia/gpu/gpu_flags.h
-@@ -11,6 +11,21 @@
+@@ -11,6 +11,37 @@
  #define XENIA_GPU_GPU_FLAGS_H_
  #include "xenia/base/cvar.h"
  
++#include <algorithm>
 +#include <atomic>
 +#include <cstdint>
 +
@@ -2079,12 +2093,27 @@ index be4eb2e2c..1be719af7 100644
 +  return frame_trace_frames_left.load(std::memory_order_relaxed) &&
 +         frame_trace_lines.fetch_add(1, std::memory_order_relaxed) < 6000;
 +}
++// 128bpp resolve destinations seen while tracing, to log what reads them.
++inline std::atomic<uint32_t> frame_trace_wide_resolves[8];
++inline std::atomic<uint32_t> frame_trace_wide_resolve_count{0};
++inline bool FrameTraceWideResolve(uint32_t start, uint32_t length) {
++  const uint32_t count = std::min<uint32_t>(
++      frame_trace_wide_resolve_count.load(std::memory_order_relaxed), 8);
++  for (uint32_t i = 0; i < count; ++i) {
++    const uint32_t base =
++        frame_trace_wide_resolves[i].load(std::memory_order_relaxed);
++    if (start < base + 0x20000 && base < start + length) {
++      return true;
++    }
++  }
++  return false;
++}
 +}  // namespace xe::gpu
 +
  DECLARE_path(trace_gpu_prefix);
  DECLARE_bool(trace_gpu_stream);
  
-@@ -49,6 +64,8 @@ DECLARE_bool(occlusion_query_full_counters);
+@@ -49,6 +80,8 @@ DECLARE_bool(occlusion_query_full_counters);
  
  DECLARE_bool(occlusion_query_viz);
  
@@ -2333,8 +2362,63 @@ index b5b005966..0574dd782 100644
        }
      }
    }
+diff --git a/src/xenia/gpu/shaders/resolve_downscale.cs.slang b/src/xenia/gpu/shaders/resolve_downscale.cs.slang
+index f40494f5a..d3acca6b9 100644
+--- a/src/xenia/gpu/shaders/resolve_downscale.cs.slang
++++ b/src/xenia/gpu/shaders/resolve_downscale.cs.slang
+@@ -46,10 +46,15 @@ uint XeDownscaleScaledBlockByte(uint tile_src_base, uint tile_rel_bytes,
+     // 4bpp, group 16x2: bits X0 X1 Y0 X2 X3.
+     px = (block_index & 3u) | (((block_index >> 3u) & 3u) << 2u);
+     py = (block_index >> 2u) & 1u;
+-  } else {
++  } else if (pixel_size_log2 == 3u) {
+     // 8bpp, group 4x2: bits X0 Y0 X1.
+     px = (block_index & 1u) | (((block_index >> 2u) & 1u) << 1u);
+     py = (block_index >> 1u) & 1u;
++  } else {
++    // PS5X360E: 16bpp, group 2x2: bits Y0 X0 (the address bits above the
++    // 16-byte block, see texture_address.xesli).
++    px = (block_index >> 1u) & 1u;
++    py = block_index & 1u;
+   }
+ 
+   // Group dimensions in blocks (XeniaTextureResolutionScaledGroupBlocksLog2).
+@@ -76,7 +81,7 @@ uint XeDownscaleScaledBlockByte(uint tile_src_base, uint tile_rel_bytes,
+ push_const_begin_xe(b0, space0)
+   uint xe_downscale_scale_x;          // 1 to kMaxDrawResolutionScaleAlongAxis
+   uint xe_downscale_scale_y;          // 1 to kMaxDrawResolutionScaleAlongAxis
+-  uint xe_downscale_pixel_size_log2;  // 0=8bit, 1=16bit, 2=32bit, 3=64bit
++  uint xe_downscale_pixel_size_log2;  // 0=8bit ... 3=64bit, 4=128bit
+   uint xe_downscale_tile_count;       // Number of 32x32 tiles to process.
+   uint xe_downscale_source_offset_bytes;  // Byte offset into the source buffer.
+   // When non-zero, sample from (scale/2, scale/2) within each scaled block
+@@ -116,7 +121,7 @@ entry_inputs_end_code_begin_compute_xe
+   uint scale_xy = scale_x * scale_y;
+   uint tile_size_1x = (32u * 32u) << pixel_size_log2;
+   uint tile_size_scaled = tile_size_1x * scale_xy;
+-  // Number of output dwords in a 1x tile (256, 512, 1024 or 2048).
++  // Number of output dwords in a 1x tile (256 to 4096).
+   uint tile_dwords = tile_size_1x >> 2u;
+ 
+   // Supersample to keep within each block: top-left, or center when requested.
+@@ -146,6 +151,15 @@ entry_inputs_end_code_begin_compute_xe
+       byte_buffer_align4_store4_xe(
+           xe_resolve_dest, dst_dword_bytes,
+           byte_buffer_align4_load4_xe(xe_resolve_source, src_bytes));
++    } else if (pixel_size_log2 == 4u) {
++      // PS5X360E: 128bpp: one texel spans four contiguous output dwords.
++      uint src_bytes = XeDownscaleScaledBlockByte(
++                           tile_src_base, dword_rel_bytes, pixel_size_log2,
++                           scale_x, scale_y, sample_x, sample_y) +
++                       (dword_rel_bytes & 12u);
++      byte_buffer_align4_store4_xe(
++          xe_resolve_dest, dst_dword_bytes,
++          byte_buffer_align4_load4_xe(xe_resolve_source, src_bytes));
+     } else if (pixel_size_log2 == 3u) {
+       // 64bpp: one texel spans two contiguous output dwords.
+       uint src_bytes = XeDownscaleScaledBlockByte(
 diff --git a/src/xenia/gpu/shared_memory.cc b/src/xenia/gpu/shared_memory.cc
-index 6aaeb76bd..d9ff96798 100644
+index 6aaeb76bd..920ea76df 100644
 --- a/src/xenia/gpu/shared_memory.cc
 +++ b/src/xenia/gpu/shared_memory.cc
 @@ -8,17 +8,34 @@
@@ -2390,17 +2474,23 @@ index 6aaeb76bd..d9ff96798 100644
  
      for (uint32_t i = valid_block_first; i <= valid_block_last; ++i) {
        uint64_t valid_bits = UINT64_MAX;
-@@ -442,6 +463,9 @@ bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
+@@ -442,6 +463,15 @@ bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
    unsigned int current_upload_range = 0;
    uint32_t page_first = start >> page_size_log2_;
    uint32_t page_last = (start + length - 1) >> page_size_log2_;
 +  if (kept_page_count_.load(std::memory_order_relaxed)) {
 +    VerifyKeptGpuWrittenPages(page_first, page_last);
 +  }
++  if (frame_trace_frames_left.load(std::memory_order_relaxed) &&
++      FrameTraceWideResolve(start, length) && FrameTraceLine()) {
++    XELOGW("FT {} USE {:08X} {} valid {}",
++           frame_trace_frame.load(std::memory_order_relaxed), start, length,
++           int(IsRangeValid(start, length)));
++  }
  
    uint32_t block_first = page_first >> 6;
    uint32_t block_last = page_last >> 6;
-@@ -635,6 +659,24 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+@@ -635,6 +665,24 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
  
    auto global_lock = global_critical_region_.Acquire();
  
@@ -2425,7 +2515,7 @@ index 6aaeb76bd..d9ff96798 100644
    if (!exact_range) {
      // Check if a somewhat wider range (up to 256 KB with 4 KB pages) can be
      // invalidated - if no GPU-written data nearby that was not intended to be
-@@ -660,7 +702,22 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+@@ -660,7 +708,22 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
      }
    }
  
@@ -2448,7 +2538,7 @@ index 6aaeb76bd..d9ff96798 100644
    for (uint32_t i = block_first; i <= block_last; ++i) {
      uint64_t invalidate_bits = UINT64_MAX;
      if (i == block_first) {
-@@ -669,6 +726,29 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+@@ -669,6 +732,29 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
      if (i == block_last && (page_last & 63) != 63) {
        invalidate_bits &= (uint64_t(1) << ((page_last & 63) + 1)) - 1;
      }
@@ -2478,7 +2568,7 @@ index 6aaeb76bd..d9ff96798 100644
      system_page_flags_valid_[i] &= ~invalidate_bits;
      system_page_flags_valid_and_gpu_written_[i] &= ~invalidate_bits;
      // Track which chunks changed for partial copying.
-@@ -679,12 +759,102 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+@@ -679,12 +765,102 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
    gpu_written_data_dirty_ = true;
    dirty_blocks_ |= dirty_blocks_mask;
  
@@ -2784,7 +2874,7 @@ index c6a2f0850..181f6facd 100644
    return true;
  }
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index 76fc1a45f..31593eb2b 100644
+index 76fc1a45f..d337c506e 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,6 +8,9 @@
@@ -2849,7 +2939,7 @@ index 76fc1a45f..31593eb2b 100644
      if (route_to_host) {
        // Producer draw: output landed in host_buffer_ (guest RAM), already CPU
        // coherent, so no readback. Just record the written pages. Consumers then
-@@ -4765,6 +4790,20 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4765,6 +4790,35 @@ bool VulkanCommandProcessor::IssueCopy() {
      return false;
    }
    ++submission_in_progress_.resolve_count;
@@ -2866,11 +2956,26 @@ index 76fc1a45f..31593eb2b 100644
 +        regs.values[XE_GPU_REG_RB_SURFACE_INFO],
 +        regs.values[XE_GPU_REG_RB_COLOR_INFO],
 +        regs.values[XE_GPU_REG_RB_DEPTH_INFO], int(is_scaled));
++    if (draw_util::GetResolveDownscalePixelSizeLog2(copy_dest_info) == 4) {
++      bool known = false;
++      const uint32_t count = std::min<uint32_t>(
++          frame_trace_wide_resolve_count.load(std::memory_order_relaxed), 8);
++      for (uint32_t i = 0; i < count; ++i) {
++        known = known || frame_trace_wide_resolves[i].load(
++                             std::memory_order_relaxed) == written_address;
++      }
++      if (!known && count < 8) {
++        frame_trace_wide_resolves[count].store(written_address,
++                                               std::memory_order_relaxed);
++        frame_trace_wide_resolve_count.store(count + 1,
++                                             std::memory_order_relaxed);
++      }
++    }
 +  }
  
    // The resolve wrote the device buffer. Drop any stale memexport marks so the
    // output isn't overwritten with guest RAM by a later texture load.
-@@ -4782,6 +4821,11 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4782,6 +4836,11 @@ bool VulkanCommandProcessor::IssueCopy() {
          is_scaled = false;
          written_length = mirrored_length;
        }
@@ -2882,7 +2987,7 @@ index 76fc1a45f..31593eb2b 100644
      }
      NoteResolveForReadback(written_address, written_length, is_scaled);
    }
-@@ -5145,6 +5189,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+@@ -5145,6 +5204,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
  bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                 uint64_t wait_for_submission) {
    assert_not_zero(wait_for_submission);
@@ -2895,7 +3000,7 @@ index 76fc1a45f..31593eb2b 100644
  
    // The resolve is still in the open submission. Pipelines being created
    // asynchronously have to finish before it can be executed.
-@@ -5158,6 +5208,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5158,6 +5223,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
              "ZPD/Async: Draining Vulkan async pipeline creation for strict "
              "retirement");
        }
@@ -2903,7 +3008,7 @@ index 76fc1a45f..31593eb2b 100644
        pipeline_cache_->AwaitPipelineCompletion();
      }
      EndRenderPass();
-@@ -5167,6 +5218,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5167,6 +5233,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
    }
  
    if (wait_for_submission > GetCompletedSubmission()) {
