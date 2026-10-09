@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.32+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Narrowed the NFS The Run fog flicker. Each fog buffer is computed from the previous one, itself,
+  and the two 128 KiB objects after it. For the two good buffers the trace shows all four being
+  refreshed; for the dark one (0A680000) the object at +0x40000 never is. The other two get it
+  refreshed only by accident, because a CPU write right after it shares a 16 KiB PS5 page with it.
+  The trace now logs every draw that reads or writes around the buffers (textures, vertex buffers,
+  memory exports, and a hash of guest RAM there), and in its second half it reloads those inputs
+  from guest RAM. If the dark buffer comes out right in that half, the cause is a stale copy.
+
 ## 0.2-alpha.31+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Found the bad fog data in NFS The Run. Of the three 256x32 float buffers the fog is computed
