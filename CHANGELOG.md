@@ -3,6 +3,13 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.13+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- NFS The Run plays (races at 11-25 FPS on alpha.10 with readback on).
+- The guide's "Measure performance (5 s)" samples the guest scheduler's six dispatch threads
+  ("Guest CPU 0".."Guest CPU 5"), where all guest code runs since alpha.8. Before, it sampled
+  only threads with a PS5 thread of their own, so under the scheduler it saw none of the game.
+
 ## 0.2-alpha.12+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Need for Speed: The Run runs past the garage with "Image readback by the game" on (user,

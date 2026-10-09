@@ -35,6 +35,7 @@
 #include "xbox360ps5/canary_audio.hpp"
 #include "xenia/base/cvar.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/guest_scheduler.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xthread.h"
@@ -534,7 +535,11 @@ void ReportStall(xe::Emulator& emulator, int pass) {
 void MeasurePerformance(xe::Emulator& emulator, float fps) {
   struct Place { uint64_t key; uint32_t count; };
   struct Tally {
-    xe::kernel::object_ref<xe::kernel::XThread> thread;
+    // PS5X360E: a guest or emulator thread, or one of the guest scheduler's
+    // dispatch threads, which run the guest threads' fibers.
+    uint32_t id = 0;
+    std::string name;
+    void* native = nullptr;
     uint32_t total = 0, guest = 0, title = 0, system = 0;
     uint64_t cpus_seen = 0;
     // Guest functions, title code, callers into system libraries, the import
@@ -547,7 +552,12 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
   };
   std::vector<Tally> tallies;
   for (auto& thread : emulator.kernel_state()->object_table()->GetObjectsByType<xe::kernel::XThread>())
-    if (thread->thread()) tallies.push_back({thread});
+    if (thread->thread())
+      tallies.push_back({thread->handle(), thread->thread_name(), thread->thread()->native_handle()});
+  if (auto* scheduler = emulator.kernel_state()->guest_scheduler())
+    for (int cpu = 0; cpu < scheduler->dispatch_cpu_count(); ++cpu)
+      if (auto* host = scheduler->dispatch_thread(cpu))
+        tallies.push_back({uint32_t(cpu), "Guest CPU " + std::to_string(cpu), host->native_handle()});
   auto* code_cache = emulator.processor()->backend()->code_cache();
   const auto started = std::chrono::steady_clock::now();
   const uint64_t swaps = emulator.graphics_system()->command_processor()->swap_count();
@@ -559,7 +569,7 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
   while (std::chrono::steady_clock::now() - started < std::chrono::seconds(5)) {
     for (auto& tally : tallies) {
       xbox360ps5::ThreadSample sample;
-      if (!xbox360ps5::SampleThread(tally.thread->thread()->native_handle(), &sample)) continue;
+      if (!xbox360ps5::SampleThread(tally.native, &sample)) continue;
       ++tally.total;
       if (sample.cpu >= 0 && sample.cpu < 64) tally.cpus_seen |= uint64_t(1) << sample.cpu;
       if (sample.in_title) { ++tally.title; tally.Add(1, sample.rip & ~uint64_t(0x3F)); tally.Add(4, sample.rip >> 20); }
@@ -591,12 +601,11 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
   for (auto& tally : tallies) {
     if (!tally.total) continue;
     std::string line = fmt::format("MEASURE thread {:08X} '{}' samples {} guest {}% title {}% system {}%",
-                                   tally.thread->handle(), tally.thread->thread_name(), tally.total,
+                                   tally.id, tally.name, tally.total,
                                    100 * tally.guest / tally.total, 100 * tally.title / tally.total,
                                    100 * tally.system / tally.total);
     line += fmt::format(" | seen on cpus {:X} of {:X} priority {}", tally.cpus_seen,
-                        xbox360ps5::ThreadCpus(tally.thread->thread()->native_handle()),
-                        xbox360ps5::ThreadPriority(tally.thread->thread()->native_handle()));
+                        xbox360ps5::ThreadCpus(tally.native), xbox360ps5::ThreadPriority(tally.native));
     const char* const kinds[] = {" | guest", " | title", " | system-from", " | imports", " | title-MiB"};
     for (int kind = 0; kind < 5; ++kind) {
       auto& places = tally.places[kind];
@@ -616,11 +625,11 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
   // The GPU command thread once more, by itself, with the sampler seated on its
   // CPU (xbox360ps5::SeatSampler): the shares above lean towards system calls.
   for (auto& tally : tallies) {
-    if (tally.thread->thread_name().find("GPU Commands") == std::string::npos) continue;
-    void* const handle = tally.thread->thread()->native_handle();
+    if (tally.name.find("GPU Commands") == std::string::npos) continue;
+    void* const handle = tally.native;
     const auto seat = xbox360ps5::SeatSampler(handle, 2);
     if (!seat.seated) { XELOGW("MEASURE focused: the system refused the sampler's seat"); break; }
-    Tally focus{tally.thread};
+    Tally focus{tally.id, tally.name, tally.native};
     uint32_t missed = 0;
     const auto focus_started = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - focus_started < std::chrono::seconds(3)) {
@@ -636,7 +645,7 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
     xbox360ps5::UnseatSampler(handle, seat);
     if (!focus.total) { XELOGW("MEASURE focused: no sample taken ({} missed)", missed); break; }
     std::string line = fmt::format("MEASURE focused '{}' samples {} missed {} seen on cpus {:X} | guest {}% title {}% system {}%",
-                                   tally.thread->thread_name(), focus.total, missed, focus.cpus_seen,
+                                   tally.name, focus.total, missed, focus.cpus_seen,
                                    100 * focus.guest / focus.total, 100 * focus.title / focus.total,
                                    100 * focus.system / focus.total);
     const std::pair<int, const char*> kinds[] = {{4, " | title-MiB"}, {2, " | system-from"}, {1, " | title"}};
