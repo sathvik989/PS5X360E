@@ -87,6 +87,7 @@ if(CMAKE_CROSSCOMPILING)
     "${XBOX360PS5_ROOT}/src/covers.cpp"
     "${XBOX360PS5_ROOT}/src/autotest.cpp"
     "${XBOX360PS5_ROOT}/src/game_patches.cpp"
+    "${XBOX360PS5_ROOT}/src/title_switch.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/memory_ps5.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/exception_handler.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/dualsense_input.cpp"

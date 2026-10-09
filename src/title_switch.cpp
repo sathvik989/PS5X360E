@@ -6,9 +6,8 @@
 #include <cstdlib>
 #include <fstream>
 #include <utility>
-namespace config {
-void ReadGameConfig(const std::filesystem::path& file_path);  // config.cc, not in config.h.
-}
+#include "xenia/base/cvar.h"
+#include "xenia/config.h"
 #if XE_PLATFORM_PS5
 extern "C" int sceSystemServiceLoadExec(const char*, const char**);
 #endif
@@ -83,12 +82,30 @@ void LoadGameConfigs(const std::string& title_id) {
 #else
   const fs::path folders[] = {"dist/PPSA50011/assets/game-configs"};
 #endif
+  if (!cvar::ConfigVars) return;
   for (const auto& folder : folders) {
     const fs::path file = folder / (title_id + ".config.toml");
     std::error_code error;
     if (!fs::is_regular_file(file, error)) continue;
-    XELOGW("Game config: {}", file.string());
-    config::ReadGameConfig(file);
+    // PS5X360E: Xenia Edge has no ReadGameConfig; apply the file's [Category]
+    // name = value entries as Edge applies a game config, over the settings.
+    toml::parse_result table;
+    try {
+      table = ParseFile(file);
+    } catch (const std::exception& e) {
+      XELOGE("Game config {}: {}", file.string(), e.what());
+      continue;
+    }
+    size_t applied = 0;
+    for (auto& entry : *cvar::ConfigVars) {
+      auto* var = entry.second;
+      const auto node = table.at_path(toml::path(var->category() + "." + var->name()));
+      if (!node) continue;
+      var->LoadGameConfigValue(node.node());
+      ++applied;
+      XELOGW("Game config: {}.{} from {}", var->category(), var->name(), file.string());
+    }
+    XELOGW("Game config: {} applied {} setting(s)", file.string(), applied);
   }
 }
 }

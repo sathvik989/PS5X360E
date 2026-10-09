@@ -3,6 +3,14 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.11+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Per-game config files work again: `<title id>.config.toml` in `/app0/assets/game-configs` or
+  `/download0/xbox360ps5/game-configs` is applied when the game starts, over the launcher's
+  settings (`[Category]` then `name = value`, as Edge's game configs). The Edge build never
+  read them: the loader was not part of the title and Edge has no `ReadGameConfig`. So the
+  `guest_scheduler = false` switch described for alpha.8 only takes effect from this build.
+
 ## 0.2-alpha.10+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - NFS The Run stops in the same state with VSync on (tested on alpha.8): the same marker word

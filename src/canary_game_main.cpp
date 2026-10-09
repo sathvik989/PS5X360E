@@ -23,6 +23,7 @@
 #include "xbox360ps5/dualsense_input.hpp"
 #include "xbox360ps5/autotest.hpp"
 #include "xbox360ps5/launcher.hpp"
+#include "xbox360ps5/title_switch.hpp"
 #include "xbox360ps5/achievement_hook.hpp"
 #include "xbox360ps5/notify.hpp"
 #include "xbox360ps5/web_settings.hpp"
@@ -1464,6 +1465,8 @@ int main(int argc, char** argv) {
           if (!xbox360ps5::SetCrashReportFile(log_path.c_str())) XELOGW("Crash report remains in boot.log");
           XELOGW("Game log: {}", log_path.string());
         } else XELOGE("Could not create game log; retaining the current destination");
+        // PS5X360E: <title id>.config.toml in the game-configs folders, over the settings.
+        if (!settings_title.empty()) xbox360ps5::LoadGameConfigs(settings_title);
         std::error_code space_error;
         const auto save_space = std::filesystem::space(saves.root, space_error);
         XELOGW("Save storage: {} available {} bytes, capacity {} bytes, query error {}",
