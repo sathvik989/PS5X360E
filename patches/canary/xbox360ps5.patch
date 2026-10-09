@@ -2151,10 +2151,10 @@ index 7a9a87356..183a9e4c3 100644
  DEFINE_bool(
      gpu_debug_markers, false,
 diff --git a/src/xenia/gpu/gpu_flags.h b/src/xenia/gpu/gpu_flags.h
-index be4eb2e2c..aa1ba1212 100644
+index be4eb2e2c..557e0b623 100644
 --- a/src/xenia/gpu/gpu_flags.h
 +++ b/src/xenia/gpu/gpu_flags.h
-@@ -11,6 +11,39 @@
+@@ -11,6 +11,67 @@
  #define XENIA_GPU_GPU_FLAGS_H_
  #include "xenia/base/cvar.h"
  
@@ -2172,6 +2172,34 @@ index be4eb2e2c..aa1ba1212 100644
 +  return frame_trace_frames_left.load(std::memory_order_relaxed) &&
 +         frame_trace_lines.fetch_add(1, std::memory_order_relaxed) < 6000;
 +}
++// Textures read by the draws that render those targets (128 KiB each).
++inline std::atomic<uint32_t> frame_trace_ring_inputs[16];
++inline std::atomic<uint32_t> frame_trace_ring_input_count{0};
++inline bool FrameTraceRingInput(uint32_t start, uint32_t length) {
++  const uint32_t count = std::min<uint32_t>(
++      frame_trace_ring_input_count.load(std::memory_order_relaxed), 16);
++  for (uint32_t i = 0; i < count; ++i) {
++    const uint32_t base =
++        frame_trace_ring_inputs[i].load(std::memory_order_relaxed);
++    if (start < base + 0x20000 && base < start + length) {
++      return true;
++    }
++  }
++  return false;
++}
++inline void FrameTraceAddRingInput(uint32_t base) {
++  const uint32_t count = std::min<uint32_t>(
++      frame_trace_ring_input_count.load(std::memory_order_relaxed), 16);
++  for (uint32_t i = 0; i < count; ++i) {
++    if (frame_trace_ring_inputs[i].load(std::memory_order_relaxed) == base) {
++      return;
++    }
++  }
++  if (count < 16) {
++    frame_trace_ring_inputs[count].store(base, std::memory_order_relaxed);
++    frame_trace_ring_input_count.store(count + 1, std::memory_order_relaxed);
++  }
++}
 +// 128bpp resolve destinations seen while tracing, to log what reads them.
 +inline std::atomic<uint32_t> frame_trace_wide_resolves[8];
 +inline std::atomic<uint32_t> frame_trace_wide_resolve_count{0};
@@ -2187,14 +2215,14 @@ index be4eb2e2c..aa1ba1212 100644
 +      return true;
 +    }
 +  }
-+  return false;
++  return FrameTraceRingInput(start, length);
 +}
 +}  // namespace xe::gpu
 +
  DECLARE_path(trace_gpu_prefix);
  DECLARE_bool(trace_gpu_stream);
  
-@@ -29,6 +62,8 @@ DECLARE_bool(shared_memory_zero_copy);
+@@ -29,6 +90,8 @@ DECLARE_bool(shared_memory_zero_copy);
  
  DECLARE_bool(enable_host_buffer);
  
@@ -2203,7 +2231,7 @@ index be4eb2e2c..aa1ba1212 100644
  DECLARE_bool(memexport_enable);
  DECLARE_bool(memexport_await_pixel_exports);
  DECLARE_bool(memexport_await_vertex_exports);
-@@ -49,6 +84,8 @@ DECLARE_bool(occlusion_query_full_counters);
+@@ -49,6 +112,8 @@ DECLARE_bool(occlusion_query_full_counters);
  
  DECLARE_bool(occlusion_query_viz);
  
@@ -2508,7 +2536,7 @@ index f40494f5a..d3acca6b9 100644
        // 64bpp: one texel spans two contiguous output dwords.
        uint src_bytes = XeDownscaleScaledBlockByte(
 diff --git a/src/xenia/gpu/shared_memory.cc b/src/xenia/gpu/shared_memory.cc
-index 6aaeb76bd..f5b24797c 100644
+index 6aaeb76bd..496b35c80 100644
 --- a/src/xenia/gpu/shared_memory.cc
 +++ b/src/xenia/gpu/shared_memory.cc
 @@ -8,17 +8,34 @@
@@ -2580,7 +2608,33 @@ index 6aaeb76bd..f5b24797c 100644
  
    uint32_t block_first = page_first >> 6;
    uint32_t block_last = page_last >> 6;
-@@ -635,6 +665,24 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+@@ -525,6 +555,25 @@ bool SharedMemory::IsRangeValid(uint32_t start, uint32_t length) const {
+   return true;
+ }
+ 
++std::string SharedMemory::DescribeRangeState(uint32_t start, uint32_t length) {
++  if (!length || start >= kBufferSize) {
++    return "-";
++  }
++  length = std::min(length, kBufferSize - start);
++  const uint32_t page_first = start >> page_size_log2_;
++  const uint32_t page_last = (start + length - 1) >> page_size_log2_;
++  uint32_t valid = 0, gpu = 0, kept = 0;
++  auto global_lock = global_critical_region_.Acquire();
++  for (uint32_t page = page_first; page <= page_last; ++page) {
++    const uint64_t bit = uint64_t(1) << (page & 63);
++    valid += (system_page_flags_valid_[page >> 6] & bit) ? 1 : 0;
++    gpu += (system_page_flags_valid_and_gpu_written_[page >> 6] & bit) ? 1 : 0;
++    kept += kept_pages_.count(page) ? 1 : 0;
++  }
++  return fmt::format("pages {} valid {} gpu {} kept {}",
++                     page_last - page_first + 1, valid, gpu, kept);
++}
++
+ template <typename T>
+ XE_FORCEINLINE XE_NOALIAS static T mod_shift_left(T value, uint32_t by) {
+ #if XE_ARCH_AMD64 == 1
+@@ -635,6 +684,24 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
  
    auto global_lock = global_critical_region_.Acquire();
  
@@ -2605,7 +2659,7 @@ index 6aaeb76bd..f5b24797c 100644
    if (!exact_range) {
      // Check if a somewhat wider range (up to 256 KB with 4 KB pages) can be
      // invalidated - if no GPU-written data nearby that was not intended to be
-@@ -660,7 +708,22 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+@@ -660,7 +727,22 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
      }
    }
  
@@ -2628,7 +2682,7 @@ index 6aaeb76bd..f5b24797c 100644
    for (uint32_t i = block_first; i <= block_last; ++i) {
      uint64_t invalidate_bits = UINT64_MAX;
      if (i == block_first) {
-@@ -669,6 +732,29 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+@@ -669,6 +751,29 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
      if (i == block_last && (page_last & 63) != 63) {
        invalidate_bits &= (uint64_t(1) << ((page_last & 63) + 1)) - 1;
      }
@@ -2658,7 +2712,7 @@ index 6aaeb76bd..f5b24797c 100644
      system_page_flags_valid_[i] &= ~invalidate_bits;
      system_page_flags_valid_and_gpu_written_[i] &= ~invalidate_bits;
      // Track which chunks changed for partial copying.
-@@ -679,12 +765,103 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+@@ -679,12 +784,103 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
    gpu_written_data_dirty_ = true;
    dirty_blocks_ |= dirty_blocks_mask;
  
@@ -2764,20 +2818,21 @@ index 6aaeb76bd..f5b24797c 100644
    ReleaseTraceDownloadRanges();
    assert_true(trace_download_ranges_.empty());
 diff --git a/src/xenia/gpu/shared_memory.h b/src/xenia/gpu/shared_memory.h
-index 2fd3a0c49..4bf1d7546 100644
+index 2fd3a0c49..bf7b59d2c 100644
 --- a/src/xenia/gpu/shared_memory.h
 +++ b/src/xenia/gpu/shared_memory.h
-@@ -10,6 +10,9 @@
+@@ -10,6 +10,10 @@
  #ifndef XENIA_GPU_SHARED_MEMORY_H_
  #define XENIA_GPU_SHARED_MEMORY_H_
  
 +#include <atomic>
++#include <string>
 +#include <unordered_map>
 +
  #include "xenia/memory.h"
  
  namespace xe {
-@@ -74,6 +77,14 @@ class SharedMemory {
+@@ -74,10 +78,21 @@ class SharedMemory {
    // ensures the host GPU memory backing the range are resident. Returns true if
    // the range has been fully updated and is usable.
    bool RequestRange(uint32_t start, uint32_t length);
@@ -2792,7 +2847,14 @@ index 2fd3a0c49..4bf1d7546 100644
    // Returns whether every page in the range is currently valid in the host GPU
    // memory copy. Hold the global critical region if relying on this for state
    // transitions such as watch installation.
-@@ -111,6 +122,9 @@ class SharedMemory {
+   bool IsRangeValid(uint32_t start, uint32_t length) const;
++  // PS5X360E: frame trace - pages in the range that are valid, hold GPU
++  // output, and are kept through a CPU write elsewhere in their host page.
++  std::string DescribeRangeState(uint32_t start, uint32_t length);
+ 
+   void TryFindUploadRange(const uint32_t& block_first,
+                           const uint32_t& block_last,
+@@ -111,6 +126,9 @@ class SharedMemory {
    void RangeWrittenByGpu(uint32_t start, uint32_t length,
                           bool written_to_buffer = true);
  
@@ -2802,7 +2864,7 @@ index 2fd3a0c49..4bf1d7546 100644
   protected:
    SharedMemory(Memory& memory);
    // Call in implementation-specific initialization.
-@@ -180,6 +194,15 @@ class SharedMemory {
+@@ -180,6 +198,15 @@ class SharedMemory {
    // on it is not hard - the access callback takes a range as an argument, and
    // touched pages of the buffer of this size will be invalidated).
    uint32_t page_size_log2_;
@@ -3043,7 +3105,7 @@ index e6b7d535c..0f0eb959b 100644
      SharedMemory::WatchHandle base_watch_handle_ = nullptr;
      SharedMemory::WatchHandle mips_watch_handle_ = nullptr;
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index 76fc1a45f..0737efae3 100644
+index 76fc1a45f..06fa997b9 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,6 +8,9 @@
@@ -3193,7 +3255,7 @@ index 76fc1a45f..0737efae3 100644
      }
      NoteResolveForReadback(written_address, written_length, is_scaled);
    }
-@@ -4793,9 +4866,203 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4793,9 +4866,220 @@ bool VulkanCommandProcessor::IssueCopy() {
  
    SubmitRequestedResolve();
  
@@ -3223,15 +3285,39 @@ index 76fc1a45f..0737efae3 100644
 +    const uint8_t* p = memory_->TranslatePhysical<const uint8_t*>(address);
 +    return p ? XXH3_64bits(p, length) : 0;
 +  };
-+  bool touches = false;
-+  std::string textures, vertex_buffers, exports;
++  auto is_ring_target = [&](uint32_t base) {
++    const uint32_t count = std::min<uint32_t>(
++        frame_trace_wide_resolve_count.load(std::memory_order_relaxed), 8);
++    for (uint32_t k = 0; k < count; ++k) {
++      if (frame_trace_wide_resolves[k].load(std::memory_order_relaxed) ==
++          base) {
++        return true;
++      }
++    }
++    return false;
++  };
++  // A draw sampling a ring target is one computing the next ring entry: its
++  // other textures are that entry's inputs, traced from now on.
++  bool reads_ring = false;
 +  uint32_t texture_bits = used_texture_mask;
 +  uint32_t texture_index;
 +  while (xe::bit_scan_forward(texture_bits, &texture_index)) {
 +    texture_bits = xe::clear_lowest_bit(texture_bits);
 +    xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(texture_index);
++    reads_ring |= is_ring_target((fetch.base_address << 12) & 0x1FFFFFFF);
++  }
++  bool touches = false;
++  std::string textures, vertex_buffers, exports;
++  texture_bits = used_texture_mask;
++  while (xe::bit_scan_forward(texture_bits, &texture_index)) {
++    texture_bits = xe::clear_lowest_bit(texture_bits);
++    xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(texture_index);
 +    const uint32_t base = (fetch.base_address << 12) & 0x1FFFFFFF;
 +    const uint32_t mip = (fetch.mip_address << 12) & 0x1FFFFFFF;
++    const bool target = is_ring_target(base);
++    if (reads_ring && !target) {
++      FrameTraceAddRingInput(base);
++    }
 +    const bool near = FrameTraceWideResolve(base, 0x20000) ||
 +                      (mip && FrameTraceWideResolve(mip, 0x20000));
 +    touches |= near;
@@ -3240,19 +3326,12 @@ index 76fc1a45f..0737efae3 100644
 +        texture_index, base, mip, fetch.dword_0, fetch.dword_1, fetch.dword_2,
 +        fetch.dword_3, fetch.dword_4, fetch.dword_5);
 +    if (near) {
-+      textures += fmt::format(" ram {:016X}", ram_hash(base, 0x20000));
-+      // Experiment, second half of the trace only: reload the inputs next to
-+      // the ring (not the ring targets themselves) from guest RAM, to see
-+      // whether a stale copy is what darkens one ring entry.
-+      bool is_target = false;
-+      const uint32_t count = std::min<uint32_t>(
-+          frame_trace_wide_resolve_count.load(std::memory_order_relaxed), 8);
-+      for (uint32_t k = 0; k < count; ++k) {
-+        is_target |=
-+            frame_trace_wide_resolves[k].load(std::memory_order_relaxed) ==
-+            base;
-+      }
-+      if (!is_target &&
++      textures += fmt::format(" ram {:016X} {}", ram_hash(base, 0x20000),
++                              shared_memory_->DescribeRangeState(base, 0x20000));
++      // Experiment, second half of the trace only: reload the inputs of the
++      // draws computing a ring entry from guest RAM (dropping any GPU output
++      // kept there), to see whether a stale copy darkens one ring entry.
++      if (reads_ring && !target &&
 +          frame_trace_frames_left.load(std::memory_order_relaxed) <= 4) {
 +        shared_memory_->MemoryInvalidationCallback(base, 0x20000, true);
 +        textures += " reload";
@@ -3397,7 +3476,7 @@ index 76fc1a45f..0737efae3 100644
  void VulkanCommandProcessor::EnsureQueryResources() {
    // VIZ surveys need the pool even when ZPD reports are faked.
    if ((zpd_mode_ == ZPDMode::kFake && !cvars::occlusion_query_viz) ||
-@@ -5145,6 +5412,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+@@ -5145,6 +5429,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
  bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                 uint64_t wait_for_submission) {
    assert_not_zero(wait_for_submission);
@@ -3410,7 +3489,7 @@ index 76fc1a45f..0737efae3 100644
  
    // The resolve is still in the open submission. Pipelines being created
    // asynchronously have to finish before it can be executed.
-@@ -5158,6 +5431,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5158,6 +5448,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
              "ZPD/Async: Draining Vulkan async pipeline creation for strict "
              "retirement");
        }
@@ -3418,7 +3497,7 @@ index 76fc1a45f..0737efae3 100644
        pipeline_cache_->AwaitPipelineCompletion();
      }
      EndRenderPass();
-@@ -5167,6 +5441,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5167,6 +5458,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
    }
  
    if (wait_for_submission > GetCompletedSubmission()) {

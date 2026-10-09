@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.33+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Found the real inputs of the NFS The Run fog buffers: each is drawn from the previous buffer
+  and two 256x32 float textures. For two buffers those sit right after the buffer itself; for the
+  dark one (0A680000) one of them is far away at 0AEE6000, which the trace never covered. The fog
+  buffers are also vertex data for the particle draws, which is why one bad buffer shows up as a
+  dark frame of fog and smoke. The trace now follows every texture the fog-buffer draws read, logs
+  how the emulator tracks its pages (valid, GPU output, kept through a CPU write), and in its
+  second half reloads them all from guest RAM.
+
 ## 0.2-alpha.32+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Narrowed the NFS The Run fog flicker. Each fog buffer is computed from the previous one, itself,
