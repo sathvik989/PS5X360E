@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.19+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Rendering at a scale above 1 no longer crashes NFS The Run: alpha.18's log named a quad list
+  pipeline (VS 927ACDEA4618196D, PS DC158E6DFE1CB854) whose geometry shader the PS5's RADV fails
+  to build. When scaled, quad lists are now drawn as triangle lists by index (Edge's own
+  conversion; a game config with `[GPU.Debug] force_convert_quad_lists_to_triangle_lists = true`
+  did the same on alpha.18 and the game ran).
+- NFS at 2x still has wrong effects (pink washes, overbright and flickering smoke, black
+  squares) and runs at 21-24 FPS; 1x remains the setting for it.
+
 ## 0.2-alpha.18+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - At 2x NFS The Run crashes inside the PS5's RADV (radv_pipeline_init_vertex_input_state: a

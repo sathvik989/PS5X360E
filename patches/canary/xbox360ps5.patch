@@ -2417,6 +2417,43 @@ index 505aac188..1514401cf 100644
          if (FILE* cache_file =
                  xe::filesystem::OpenFile(vk_pipeline_cache_path_, "wb")) {
            fwrite(cache_data.data(), 1, cache_size, cache_file);
+diff --git a/src/xenia/gpu/vulkan/vulkan_primitive_processor.cc b/src/xenia/gpu/vulkan/vulkan_primitive_processor.cc
+index bf2533069..b2ddc8261 100644
+--- a/src/xenia/gpu/vulkan/vulkan_primitive_processor.cc
++++ b/src/xenia/gpu/vulkan/vulkan_primitive_processor.cc
+@@ -9,6 +9,8 @@
+ 
+ #include "xenia/gpu/vulkan/vulkan_primitive_processor.h"
+ 
++#include "xenia/gpu/texture_cache.h"
++
+ #include <cstdint>
+ 
+ #include "xenia/base/assert.h"
+@@ -29,9 +31,22 @@ bool VulkanPrimitiveProcessor::Initialize() {
+       command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Properties& device_properties =
+       vulkan_device->properties();
++  bool quad_lists_supported = device_properties.geometryShader;
++#if XE_PLATFORM_PS5
++  // PS5X360E: at a draw resolution scale above 1, the PS5's RADV crashed
++  // creating a quad list pipeline with its geometry shader (NFS The Run);
++  // quads become triangle lists by index instead (always correct, CPU work).
++  {
++    uint32_t scale_x, scale_y;
++    TextureCache::GetConfigDrawResolutionScale(scale_x, scale_y);
++    if (scale_x > 1 || scale_y > 1) {
++      quad_lists_supported = false;
++    }
++  }
++#endif
+   if (!InitializeCommon(
+           device_properties.fullDrawIndexUint32, device_properties.triangleFans,
+-          false, device_properties.geometryShader,
++          false, quad_lists_supported,
+           device_properties.geometryShader, device_properties.geometryShader)) {
+     Shutdown();
+     return false;
 diff --git a/src/xenia/gpu/vulkan/vulkan_shared_memory.cc b/src/xenia/gpu/vulkan/vulkan_shared_memory.cc
 index e8068404e..eaddde6a1 100644
 --- a/src/xenia/gpu/vulkan/vulkan_shared_memory.cc
