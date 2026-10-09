@@ -3,6 +3,19 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.26+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- 2x now runs NFS The Run at 26-30 FPS (was 21-24). Remaining at 2x: tyre smoke as white blobs
+  with stepped edges, grey blocks under the car.
+- alpha.25's trace found what changes every third frame: NFS renders a small 256x32 RGBA float
+  image into one of three buffers in turn (0A660000, 0A4E6000, 0A356000) and never samples it as
+  a texture, so the CPU reads it back. One of the three is aligned to a 16 KiB PS5 page, the
+  other two are not. The trace now records the CPU's reads of GPU output, each copy-back to
+  guest RAM (or why none was made), the mirroring of 2x output for the CPU, and output kept
+  through a neighbouring write.
+- The 30 s performance summary splits watch arming into watches for CPU writes and for CPU
+  reads of GPU output (memory protection costs NFS 80-120 ms of CPU time a second).
+
 ## 0.2-alpha.25+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - New Video setting Render resolution: 1x (720p, original) / 2x (1440p, demanding), per game,

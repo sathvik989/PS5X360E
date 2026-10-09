@@ -1786,6 +1786,12 @@ int main(int argc, char** argv) {
                        double(all - open - closes) / summary_samples, double(time - open_time - spent) / (summary_samples * 1e6), double(open - opens) / summary_samples,
                        double(open_time - open_spent) / (summary_samples * 1e6), double(fault - faults) / summary_samples);
                 closes = all - open; opens = open; spent = time - open_time; open_spent = open_time; faults = fault;
+                // Which watches the closes armed: for CPU writes (uploads to the GPU) or for CPU reads (GPU output).
+                static unsigned long long write_arms = 0, read_arms = 0;
+                const unsigned long long w = xe::memory_watch_arms[0].load(), r = xe::memory_watch_arms[1].load();
+                XELOGW("Performance: watch arming {:.0f}/s for CPU writes, {:.0f}/s for CPU reads of GPU output",
+                       double(w - write_arms) / summary_samples, double(r - read_arms) / summary_samples);
+                write_arms = w; read_arms = r;
               }
               // Draws made while their shader was still being compiled show
               // a stand-in: brief gaps in a frame, lasting ones in what a game
