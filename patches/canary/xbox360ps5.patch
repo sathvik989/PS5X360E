@@ -1831,6 +1831,54 @@ index 916814c86..a3bca419c 100644
      assert_always();
      return false;
    }
+diff --git a/src/xenia/gpu/gpu_flags.cc b/src/xenia/gpu/gpu_flags.cc
+index 7a9a87356..183a9e4c3 100644
+--- a/src/xenia/gpu/gpu_flags.cc
++++ b/src/xenia/gpu/gpu_flags.cc
+@@ -9,6 +9,8 @@
+ 
+ #include "xenia/gpu/gpu_flags.h"
+ 
++#include <algorithm>
++
+ #include "xenia/base/logging.h"
+ #include "xenia/base/platform.h"
+ #include "xenia/ui/renderdoc_api.h"
+@@ -126,7 +128,20 @@ DEFINE_int32(occlusion_query_fake_upper_threshold, 100,
+ DEFINE_bool(occlusion_query_log, false,
+             "Log occlusion query lifetime and summary stats.", "GPU");
+ 
+-uint32_t GetGuestVblankRateHz() { return cvars::use_50Hz_mode ? 50 : 60; }
++// PS5X360E: Canary's "120 Hz video clock" test: a game that presents every
++// second vblank runs at 60 instead of 30, unless it times itself by vblanks
++// (then it runs fast).
++DEFINE_uint32(guest_vblank_rate_override, 0,
++              "Guest vblank rate in Hz in place of 50/60 (0: use_50Hz_mode "
++              "decides). A game presenting every other vblank at 30 FPS may "
++              "run at 60 with 120; one timing itself by vblanks speeds up.",
++              "GPU");
++uint32_t GetGuestVblankRateHz() {
++  if (cvars::guest_vblank_rate_override) {
++    return std::clamp<uint32_t>(cvars::guest_vblank_rate_override, 24, 240);
++  }
++  return cvars::use_50Hz_mode ? 50 : 60;
++}
+ 
+ DEFINE_bool(
+     gpu_debug_markers, false,
+diff --git a/src/xenia/gpu/gpu_flags.h b/src/xenia/gpu/gpu_flags.h
+index be4eb2e2c..e837bc4d8 100644
+--- a/src/xenia/gpu/gpu_flags.h
++++ b/src/xenia/gpu/gpu_flags.h
+@@ -49,6 +49,8 @@ DECLARE_bool(occlusion_query_full_counters);
+ 
+ DECLARE_bool(occlusion_query_viz);
+ 
++DECLARE_uint32(guest_vblank_rate_override);
++
+ // Returns the guest vblank rate in Hz (50 for PAL, 60 for NTSC).
+ // Based on use_50Hz_mode cvar.
+ uint32_t GetGuestVblankRateHz();
 diff --git a/src/xenia/gpu/graphics_system.cc b/src/xenia/gpu/graphics_system.cc
 index b10f87bba..f3f99ae88 100644
 --- a/src/xenia/gpu/graphics_system.cc

@@ -3,6 +3,13 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.15+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- The "120 Hz (test)" video clock works again: guest vblanks come at 120 Hz (new core option
+  guest_vblank_rate_override; Edge itself only has 50/60). A game that shows a frame every
+  second vblank, 30 FPS on the Xbox 360, can then reach 60; one that times itself by vblanks
+  runs too fast instead. A per-game test, as on Canary.
+
 ## 0.2-alpha.14+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Need for Speed: The Run's recommended settings add Fast locks, Video memory optimized and the

@@ -42,6 +42,7 @@ DECLARE_uint32(internal_display_resolution);
 DECLARE_uint32(internal_display_resolution_x);
 DECLARE_uint32(internal_display_resolution_y);
 DECLARE_uint32(framerate_limit);  // PS5X360E: 32-bit in Xenia Edge.
+DECLARE_uint32(guest_vblank_rate_override);
 DECLARE_uint32(kernel_display_gamma_type);
 DECLARE_bool(present_letterbox);
 DECLARE_bool(depth_float24_convert_in_pixel_shader);
@@ -440,6 +441,8 @@ void Settings::Apply() const {
   cvars::disable_context_promotion = no_promotion != 0;
   // Read each time they matter.
   cvars::framerate_limit = video_clock ? 120 : 60;
+  // PS5X360E: the 120 Hz video clock again (Edge's own vblanks are 50/60 only).
+  cvars::guest_vblank_rate_override = video_clock ? 120 : 0;
   cvars::present_letterbox = stretch == 0;
   // Read as the emulator starts.
   cvars::depth_float24_convert_in_pixel_shader = depth_precision != 0;

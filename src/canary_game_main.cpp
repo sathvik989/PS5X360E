@@ -36,6 +36,7 @@
 #include "xenia/base/cvar.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/guest_scheduler.h"
+#include "xenia/gpu/gpu_flags.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xthread.h"
@@ -1514,7 +1515,7 @@ int main(int argc, char** argv) {
         XELOGI("GAME LAUNCH {:08X}", status);
         XELOGW("Game: '{}' title {:08X}, launch status {:08X}", emulator.title_name(), emulator.title_id(), status);
         XELOGW("Graphics: emulated VSync {} (guest vblanks capped at {} Hz either way)",
-               xbox360ps5::EffectiveVsync(settings.vsync) ? "on" : "off", cvars::use_50Hz_mode ? 50 : 60);
+               xbox360ps5::EffectiveVsync(settings.vsync) ? "on" : "off", GetGuestVblankRateHz());
         XELOGW("Settings: {} of this game's own ({}); not at the recommended value: {}", overrides.size(),
                settings_title.empty() ? "title not identified yet" : settings_title, ChangedOptions(settings));
         if (!status) start_reached();
