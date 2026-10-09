@@ -322,6 +322,8 @@ void ApplyPicture(const xbox360ps5::Settings& settings, xe::ui::Presenter* prese
   config.SetCasAdditionalSharpness(kCasSharpness[sharpness]);
   config.SetFsrSharpnessReduction(kFsrReduction[sharpness]);
   config.SetDither(settings.dither != 0);
+  // SMAA on the game's picture, then the filter (FSR upscales, its RCAS pass sharpens).
+  config.SetSmaa(settings.antialiasing != 0);
   presenter->SetGuestOutputPaintConfigFromUIThread(config);
 }
 // What the settings page shows, as JSON: the options with the general values,

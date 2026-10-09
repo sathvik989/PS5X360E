@@ -3,6 +3,19 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.22+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- New Video setting Anti-aliasing: Off / SMAA. SMAA smooths jagged edges on the game's picture
+  before the image filter, so it combines with FSR (upscale, then its RCAS sharpening) or CAS.
+  Off by default.
+- Shader cache: the compiled pipelines were saved only when a game closed cleanly, which never
+  happens on the PS5, so every launch compiled them all again (NFS: 433 pipelines, 3.4 s of
+  compiling, hitches up to 0.35 s). They are now saved during play, 10 s after new ones appear,
+  at most once a minute. The log says how many stored pipelines a launch found, and why if the
+  driver gave nothing to save.
+- The per-pipeline log line added for the 2x crash is gone (less log work at 2x).
+- Builds reconfigure when source or shader files were added, so new shaders are compiled.
+
 ## 0.2-alpha.21+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Distant fog and smoke flickering in NFS The Run: alpha.20 showed it is not the visibility

@@ -251,6 +251,8 @@ inline const char* Tr(const char* key) {
     {"Desligados", "Off", "Desactivados"},
     {"Mudo", "Muted", "Silenciado"},
     {"Filtro de imagem", "Image filter", "Filtro de imagen"},
+    {"Antisserrilhamento", "Anti-aliasing", "Antialiasing"},
+    {"SMAA suaviza as bordas serrilhadas da imagem do jogo antes do filtro de imagem (FSR ou CAS). Pesa pouco; pode deixar textos e detalhes finos um pouco mais suaves.", "SMAA smooths the jagged edges of the game's picture before the image filter (FSR or CAS). It costs little; text and fine detail may look slightly softer.", "SMAA suaviza los bordes dentados de la imagen del juego antes del filtro de imagen (FSR o CAS). Pesa poco; textos y detalles finos pueden verse algo más suaves."},
     {"Clique do touchpad", "Touchpad click", "Clic del touchpad"},
     {"Medir desempenho (5 s)", "Measure performance (5 s)", "Medir rendimiento (5 s)"},
     {"Janela de invalidação (teste)", "Invalidation window (test)", "Ventana de invalidación (prueba)"},

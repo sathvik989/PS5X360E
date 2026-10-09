@@ -30,7 +30,11 @@ done
 
 # Explicit defaults keep an experimental configure from leaking into the next
 # normal build. Separate output directories preserve release executables.
+# Source and shader lists are globbed when configuring: a file added since
+# (a new shader, say) needs the configure to run again.
+source_list=$(cd .deps/xenia-canary/src && find . -name '*.slang' -o -name '*.cc' -o -name '*.h' | LC_ALL=C sort | md5sum | cut -d' ' -f1)
 if [[ ! -f "$build/build.ninja" ]] || \
+   [[ "$(cat "$build/.source-list" 2>/dev/null)" != "$source_list" ]] || \
    ! grep -Fqx "XBOX360PS5_EXPERIMENTAL_DIAGNOSTICS:BOOL=${XBOX360PS5_EXPERIMENTAL_DIAGNOSTICS:-OFF}" "$build/CMakeCache.txt" || \
    ! grep -Fqx "XBOX360PS5_VERSION_OVERRIDE:STRING=${XBOX360PS5_VERSION_OVERRIDE:-}" "$build/CMakeCache.txt"; then
   cmake -S canary -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -38,6 +42,7 @@ if [[ ! -f "$build/build.ninja" ]] || \
     -DXBOX360PS5_EXPERIMENTAL_DIAGNOSTICS="${XBOX360PS5_EXPERIMENTAL_DIAGNOSTICS:-OFF}" \
     -DXBOX360PS5_VERSION_OVERRIDE="${XBOX360PS5_VERSION_OVERRIDE:-}" \
     -DXE_HOST_SHADER_CC="$XE_HOST_SHADER_CC"
+  echo "$source_list" > "$build/.source-list"
 fi
 # Canary's xenia-build.py normally writes this.
 commit=$(git -C .deps/xenia-canary rev-parse HEAD)
