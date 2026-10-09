@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.37+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- The shader cache was thrown away on every launch since alpha.35: the header check ported from
+  PS5X360 0.5.9 never matched the PS5 driver's own saved cache ("rejected damaged or incompatible
+  header"). It now only logs the difference; the driver itself decides whether the data is usable.
+- Fewer GPU submissions. At 2x the emulator handed work to the GPU about 550 times a second, most
+  of them early so the CPU could read render output right after a fence, and each hand-over took
+  up to half a millisecond. Render output the game has not read for a while no longer causes one
+  (`resolve_sync_only_watched`, under [GPU]).
+
 ## 0.2-alpha.36+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Every launch logs "no stored pipelines": the list of the game's pipelines, kept so they can be
