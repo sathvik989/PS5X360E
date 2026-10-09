@@ -1526,10 +1526,26 @@ index ed9bb6b10..ac659d0f9 100644
    for (int i = 0; i < 32; i++) {
      crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
 diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
-index 4bfd8c3ec..516192125 100644
+index 4bfd8c3ec..7215bedc4 100644
 --- a/src/xenia/gpu/command_processor.cc
 +++ b/src/xenia/gpu/command_processor.cc
-@@ -144,6 +144,12 @@ DEFINE_bool(
+@@ -109,6 +109,15 @@ DEFINE_bool(
+     "RAM without it, which breaks games that read it back.",
+     "GPU");
+ 
++// PS5X360E
++DEFINE_bool(
++    readback_skip_unread_resolves, true,
++    "Stop watching render output the CPU has not read in 8 resolves in a row "
++    "(checking again every 64th). Saves a kernel call per resolve and a copy "
++    "back whenever the CPU writes next to the output; a first read after a "
++    "long pause may see the output of up to 63 resolves before.",
++    "GPU");
++
+ DEFINE_bool(
+     memexport_enable, true,
+     "Make memory export output visible to the CPU. Needed by games that read "
+@@ -144,6 +153,12 @@ DEFINE_bool(
      "Vulkan, SV_Barycentrics on Direct3D 12).",
      "GPU");
  
@@ -1542,7 +1558,7 @@ index 4bfd8c3ec..516192125 100644
  namespace xe {
  namespace gpu {
  
-@@ -488,6 +494,11 @@ void CommandProcessor::ThrottlePresentation() {
+@@ -488,6 +503,11 @@ void CommandProcessor::ThrottlePresentation() {
  }
  
  void CommandProcessor::WorkerThreadMain() {
@@ -1554,7 +1570,7 @@ index 4bfd8c3ec..516192125 100644
    if (!SetupContext()) {
      xe::FatalError("Unable to setup command processor internal state");
      return;
-@@ -506,6 +517,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -506,6 +526,7 @@ void CommandProcessor::WorkerThreadMain() {
        // We've run out of commands to execute.
        // We spin here waiting for new ones, as the overhead of waiting on our
        // event is too high.
@@ -1562,7 +1578,7 @@ index 4bfd8c3ec..516192125 100644
        PrepareForWait();
        uint32_t loop_count = 0;
        do {
-@@ -518,6 +530,15 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -518,6 +539,15 @@ void CommandProcessor::WorkerThreadMain() {
            // nothing left in the ring.
            if (zpd_mode_ == ZPDMode::kStrict && zpd_awaited_report_count_) {
              PrepareForWait();
@@ -1578,7 +1594,7 @@ index 4bfd8c3ec..516192125 100644
            }
          } else {
            xe::threading::MaybeYield();
-@@ -528,6 +549,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -528,6 +558,7 @@ void CommandProcessor::WorkerThreadMain() {
                 (write_ptr_index == 0xBAADF00D ||
                  read_ptr_index_ == write_ptr_index));
        ReturnFromWait();
@@ -1586,7 +1602,7 @@ index 4bfd8c3ec..516192125 100644
        if (!worker_running_ || !pending_fns_.empty()) {
          continue;
        }
-@@ -553,6 +575,183 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -553,6 +584,183 @@ void CommandProcessor::WorkerThreadMain() {
    ShutdownContext();
  }
  
@@ -1770,7 +1786,7 @@ index 4bfd8c3ec..516192125 100644
  void CommandProcessor::Pause() {
    if (paused_) {
      return;
-@@ -742,6 +941,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
+@@ -742,6 +950,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
        uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
        uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
        xe::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
@@ -1780,7 +1796,7 @@ index 4bfd8c3ec..516192125 100644
      }
    } else {
      switch (index) {
-@@ -1279,6 +1481,8 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1279,6 +1490,8 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
      WriteZPDReport(report_address, report.speculative_value);
    }
    zpd_awaited_report_count_ += report.awaited;
@@ -1789,7 +1805,7 @@ index 4bfd8c3ec..516192125 100644
    zpd_reports_.push_back(report);
    zpd_stats_.reports_queued++;
  
-@@ -1476,10 +1680,10 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
+@@ -1476,10 +1689,10 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
    return nullptr;
  }
  
@@ -1802,7 +1818,7 @@ index 4bfd8c3ec..516192125 100644
        awaited_handle = report.handle;
        break;
      }
-@@ -1547,6 +1751,21 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1547,6 +1760,21 @@ void CommandProcessor::PumpPendingRetire() {
      zpd_pending_retire_start_ms_ = 0;
  
      zpd_sample_counter_ += front.delta;
@@ -1934,7 +1950,7 @@ index 484b6d2e1..452d8f4c2 100644
    uint8_t* source = static_cast<uint8_t*>(buffer.mapped) + source_offset;
    // vastcpy's non-temporal stores need both pointers and the length to be
 diff --git a/src/xenia/gpu/command_processor_resolve_readwatch.inc b/src/xenia/gpu/command_processor_resolve_readwatch.inc
-index 8c2e6f64d..1482c3493 100644
+index 8c2e6f64d..aadf46a97 100644
 --- a/src/xenia/gpu/command_processor_resolve_readwatch.inc
 +++ b/src/xenia/gpu/command_processor_resolve_readwatch.inc
 @@ -83,6 +83,11 @@ void MarkResolvePagesRead(uint32_t physical_address, uint32_t length) {
@@ -1983,7 +1999,37 @@ index 8c2e6f64d..1482c3493 100644
      std::memcpy(memory_->TranslatePhysical(range.first), source_bytes,
                  range.second);
      source_bytes += range.second;
-@@ -495,9 +513,9 @@ bool GetScaledResolveReadbackInfo(uint32_t address, uint32_t length,
+@@ -306,10 +324,28 @@ void NoteResolveForReadback(uint32_t address, uint32_t length, bool is_scaled) {
+     owner.clip_first_page = false;
+     owner.clip_last_page = false;
+   }
++  // PS5X360E: a destination the CPU has not read in many resolves in a row is
++  // not watched, but for one resolve in 64 that checks whether it still is
++  // not. Arming costs a kernel call per range here, and a CPU write to the
++  // rest of a 16 KiB host page shared with it then has to copy the output
++  // back first, which NFS The Run did every frame for two of its three
++  // buffers of a small float target, but not for the third.
++  bool arm = true;
++  if (cvars::readback_skip_unread_resolves) {
++    uint32_t& unread = resolve_unread_streaks_[resolve_key];
++    unread = read_before ? 0 : unread + 1;
++    arm = unread <= kResolveUnreadBeforeUnwatched ||
++          !(unread % kResolveUnreadProbeInterval);
++    if (resolve_unread_streaks_.size() > 4096) {
++      resolve_unread_streaks_.clear();
++    }
++  }
+   // The watch is one-shot, so it is re-armed on every resolve. Only once the
+   // owner is published: a fault still on the previous arm would otherwise see
+   // the previous output as copied and drop the watch.
+-  memory_->EnablePhysicalMemoryAccessCallbacks(address, length, false, true);
++  if (arm) {
++    memory_->EnablePhysicalMemoryAccessCallbacks(address, length, false, true);
++  }
+   if (is_scaled) {
+     return;
+   }
+@@ -495,9 +531,9 @@ bool GetScaledResolveReadbackInfo(uint32_t address, uint32_t length,
    // RB_COPY_DEST_INFO, for depth the register can hold a different size.
    uint32_t pixel_size_log2 =
        draw_util::GetResolveDownscalePixelSizeLog2(copy_dest_info);
@@ -1996,6 +2042,26 @@ index 8c2e6f64d..1482c3493 100644
      XELOGGPU(
          "Skipping readback of a resolution-scaled resolve to a 128bpp "
          "destination - not supported by the downscale shader");
+@@ -574,6 +610,7 @@ void ResetResolveReadWatch() {
+     resolve_read_keys_.clear();
+     resolve_owners_.clear();
+   }
++  resolve_unread_streaks_.clear();
+   resolve_unsubmitted_owner_ = false;
+   resolve_submit_requested_ = false;
+   resolve_rearm_ranges_.clear();
+@@ -639,6 +676,11 @@ std::vector<std::pair<uint32_t, uint32_t>> resolve_rearming_ranges_;
+ // Frame the CPU last read each destination's output, by resolve key. GPU thread
+ // only.
+ std::unordered_map<uint64_t, uint32_t> resolve_read_frames_;
++// PS5X360E: resolves of each destination since the CPU last read it. GPU
++// thread only.
++std::unordered_map<uint64_t, uint32_t> resolve_unread_streaks_;
++static constexpr uint32_t kResolveUnreadBeforeUnwatched = 8;
++static constexpr uint32_t kResolveUnreadProbeInterval = 64;
+ static constexpr size_t kMaxResolveReadFrames = 4096;
+ // About a second, chosen, not measured.
+ static constexpr uint32_t kResolveReadRecentFrames = 60;
 diff --git a/src/xenia/gpu/draw_util.cc b/src/xenia/gpu/draw_util.cc
 index 916814c86..a3bca419c 100644
 --- a/src/xenia/gpu/draw_util.cc
@@ -2072,7 +2138,7 @@ index 7a9a87356..183a9e4c3 100644
  DEFINE_bool(
      gpu_debug_markers, false,
 diff --git a/src/xenia/gpu/gpu_flags.h b/src/xenia/gpu/gpu_flags.h
-index be4eb2e2c..58b0bc146 100644
+index be4eb2e2c..8ddbb113d 100644
 --- a/src/xenia/gpu/gpu_flags.h
 +++ b/src/xenia/gpu/gpu_flags.h
 @@ -11,6 +11,37 @@
@@ -2113,7 +2179,16 @@ index be4eb2e2c..58b0bc146 100644
  DECLARE_path(trace_gpu_prefix);
  DECLARE_bool(trace_gpu_stream);
  
-@@ -49,6 +80,8 @@ DECLARE_bool(occlusion_query_full_counters);
+@@ -29,6 +60,8 @@ DECLARE_bool(shared_memory_zero_copy);
+ 
+ DECLARE_bool(enable_host_buffer);
+ 
++DECLARE_bool(readback_skip_unread_resolves);
++
+ DECLARE_bool(memexport_enable);
+ DECLARE_bool(memexport_await_pixel_exports);
+ DECLARE_bool(memexport_await_vertex_exports);
+@@ -49,6 +82,8 @@ DECLARE_bool(occlusion_query_full_counters);
  
  DECLARE_bool(occlusion_query_viz);
  

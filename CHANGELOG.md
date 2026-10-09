@@ -3,6 +3,18 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.28+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- alpha.27 fixed the 2x white-out; 2x now looks like 1x. The 1x flicker remains, still every
+  third frame: in the dark frame the distant fog and sky lose their haze (greenish sky, saturated
+  buildings). alpha.27's trace shows the one thing that differs between the three frames: the CPU
+  writes just past the end of two of the three 128 KiB float buffers, inside the same 16 KiB PS5
+  page, and each write first forced a synchronous copy of that buffer's GPU output back to guest
+  RAM; the third buffer ends on a page boundary and never did.
+- Render output the CPU has not read in 8 resolves in a row is no longer watched for reads
+  (every 64th resolve checks again). That removes those copies, and a kernel call per resolve
+  (about 115 a second in NFS). `[GPU] readback_skip_unread_resolves = false` turns it off.
+
 ## 0.2-alpha.27+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - 2x: the copy of 2x output back to 1x (for the CPU and anything reading it at 1x) skipped
