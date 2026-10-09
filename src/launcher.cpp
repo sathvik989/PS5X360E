@@ -187,6 +187,9 @@ const std::vector<Option>& Options() {
       {"video_clock", &S::video_clock, 0, W::live, 0, true, "Ritmo do vídeo emulado",
        "Quantas vezes por segundo o console emulado avisa o jogo de um novo quadro. Em 120 Hz alguns jogos presos em 30 quadros passam a 60, mas outros ficam acelerados. É um teste por jogo; não garante 60 quadros.",
        {"60 Hz", "120 Hz (teste)"}},
+      {"render_scale", &S::render_scale, 0, W::start, 0, true, "Resolução de renderização",
+       "O jogo desenha em 2x a resolução original (720p vira 1440p): imagem bem mais nítida, mais trabalho para o vídeo e mais memória. Alguns efeitos podem sair errados em 2x; volte a 1x se aparecerem.",
+       {"1x (720p, original)", "2x (1440p, pesado)"}},
       {"vsync", &S::vsync, 0, W::start, 1, true, "VSync",
        "Controla a sincronização vertical emulada. O ritmo automático permanece em 60 Hz mesmo quando desligado, para evitar acelerar o jogo.", off_on},
       {"gamma", &S::gamma, 0, W::launch, 0, true, "Gama do console emulado",
@@ -403,7 +406,8 @@ void Settings::Apply() const {
   ui_language.store(SupportedUiLanguage(interface_language ? interface_language : console_language));
   cvars::user_language = GameLanguage();
   cvars::mute = mute != 0;
-  cvars::draw_resolution_scale_x = cvars::draw_resolution_scale_y = resolution_scale;
+  // PS5X360E: the Video option; a game config can still set its own scale.
+  cvars::draw_resolution_scale_x = cvars::draw_resolution_scale_y = std::clamp(render_scale, 0, 1) + 1;
   // Normal gameplay records warnings/errors plus explicit session metadata.
   // Do not duplicate every line into the platform stdout transport, and do
   // not let stale debug files silently override the user's visible setting.

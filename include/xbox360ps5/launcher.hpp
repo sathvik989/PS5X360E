@@ -43,6 +43,7 @@ struct Settings {
   int show_fps = 0;       // A frame counter over the game.
   int vsync = 1;          // Applied before graphics setup; changes restart the title.
   int resolution_scale = 1;   // Games render at 1, 2 or 3 times their resolution. Read when the title starts.
+  int render_scale = 0;       // The option: 0 renders at 1x, 1 at 2x (applied as resolution_scale - 1).
   int image_filter = 0;       // How a game's picture is stretched to the screen: 0 plain, 1 CAS, 2 FSR.
   int antialiasing = 0;       // SMAA on the game's picture before the filter: 0 off, 1 SMAA, 2 SMAA+FXAA, 3 FXAA, 4 SMAA's edges.
   int touchpad_menu = 1;  // The touchpad click opens the emulator's guide (else it is the Back button).

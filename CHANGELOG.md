@@ -3,6 +3,13 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.25+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- New Video setting Render resolution: 1x (720p, original) / 2x (1440p, demanding), per game,
+  applied by restarting the game. It was left out of the settings since scaled rendering ran out
+  of memory; alpha.17 gave it the memory and alpha.19 fixed the 2x crash. A game config's
+  draw_resolution_scale still wins over it.
+
 ## 0.2-alpha.24+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Changing Anti-aliasing during play did nothing: the picture settings only reached the screen
