@@ -23,9 +23,20 @@ log, elf = sys.argv[1], sys.argv[2]
 lines = open(log, errors="replace").read().split("\n")
 start = max((i for i, l in enumerate(lines) if "BOOT main entered" in l), default=0)
 session = lines[start:]
-offsets = sorted({int(m, 16) for l in session for m in re.findall(r"eboot\+0x([0-9a-fA-F]+)", l)})
+# The guide's "Measure performance" lines (game log): eboot offsets in their
+# title and system-from parts, written as hex keys before ':' or '<'.
+def measure_parts(l):
+    for part in l.split(" | "):
+        name, _, rest = part.partition(" ")
+        if name in ("title", "system-from"):
+            yield name, rest
+measure = [l for l in session if "MEASURE thread" in l or "MEASURE focused" in l]
+measured = {int(k, 16) for l in measure for _, rest in measure_parts(l)
+            for k in re.findall(r"([0-9A-F]+)(?=[:<])|(?<=<)([0-9A-F]+)", rest) for k in k if k}
+measured.discard(0)
+offsets = sorted({int(m, 16) for l in session for m in re.findall(r"eboot\+0x([0-9a-fA-F]+)", l)} | measured)
 if not offsets:
-    sys.exit("No eboot+0x... places in the last session of " + log)
+    sys.exit("No eboot+0x... places or MEASURE lines in the last session of " + log)
 out = subprocess.run(["llvm-symbolizer-18", "--obj=" + elf, "--demangle", "--functions=linkage",
                       "--inlines", "--output-style=LLVM"],
                      input="\n".join(hex(o) for o in offsets), capture_output=True, text=True).stdout
@@ -44,6 +55,20 @@ for o in offsets:
 print("== places")
 for o in offsets:
     print(f"eboot+0x{o:x}: {names[o]}")
+if measure:
+    print("\n== measure (eboot offsets named; percentages as in the log)")
+    short = lambda o: names.get(o, "?").split(" <- ")[-1].split(" (")[0]
+    for l in measure:
+        head = l[l.index("MEASURE"):].split(" | ")[0]
+        print(head)
+        for name, rest in measure_parts(l):
+            for item in rest.split():
+                key, _, share = item.rpartition(":")
+                at, _, caller = key.partition("<")
+                text = short(int(at, 16)) if at else "?"
+                if caller:
+                    text += "  called from  " + short(int(caller, 16))
+                print(f"    {name:12} {share.rstrip('%') + '%':>6}  {text}")
 print("\n== threads (WHERE lines of the last session, top of stack first)")
 for l in session:
     m = re.search(r"WHERE (\S+) rip=(\S+)", l)
