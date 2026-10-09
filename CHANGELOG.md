@@ -3,6 +3,13 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.36+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Every launch logs "no stored pipelines": the list of the game's pipelines, kept so they can be
+  rebuilt before they are needed, is never found again, so each session builds them as the game
+  meets them. The log now says how many shaders and pipelines storage loaded, and each shader
+  cache save says how large the storage files have grown, to find where they are lost.
+
 ## 0.2-alpha.35+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - The NFS The Run fog and smoke flicker is fixed (alpha.34, confirmed on the PS5).

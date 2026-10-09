@@ -2508,6 +2508,28 @@ index b5b005966..0574dd782 100644
        }
      }
    }
+diff --git a/src/xenia/gpu/shader_storage.h b/src/xenia/gpu/shader_storage.h
+index b9480c641..c7bbc5c38 100644
+--- a/src/xenia/gpu/shader_storage.h
++++ b/src/xenia/gpu/shader_storage.h
+@@ -348,7 +348,7 @@ class ShaderStorageWriter {
+         return false;
+       }
+     }
+-    XELOGI("Loaded {} shaders from storage", shaders_loaded);
++    XELOGW("Shader storage: loaded {} shaders from storage", shaders_loaded);
+ 
+     // Collect shader translations needed from pipeline descriptions.
+     std::set<std::pair<uint64_t, uint64_t>> translations_needed;
+@@ -360,7 +360,7 @@ class ShaderStorageWriter {
+                                     desc.description.pixel_shader_modification);
+       }
+     }
+-    XELOGI("Loaded {} pipeline descriptions, {} shader translations needed",
++    XELOGW("Shader storage: loaded {} pipeline descriptions, {} shader translations needed",
+            pipeline_descriptions_out.size(), translations_needed.size());
+ 
+     // Translate shaders (callback handles parallel translation).
 diff --git a/src/xenia/gpu/shaders/resolve_downscale.cs.slang b/src/xenia/gpu/shaders/resolve_downscale.cs.slang
 index f40494f5a..d3acca6b9 100644
 --- a/src/xenia/gpu/shaders/resolve_downscale.cs.slang
@@ -4125,7 +4147,7 @@ index 5fdd9173a..b3d6edf98 100644
                                           uint32_t written_length,
                                           reg::RB_COPY_DEST_INFO copy_dest_info,
 diff --git a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc b/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
-index 505aac188..2dc8267ca 100644
+index 505aac188..2f2028347 100644
 --- a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
 @@ -8,7 +8,9 @@
@@ -4227,7 +4249,7 @@ index 505aac188..2dc8267ca 100644
             pipelines_created, pipelines_already_exist,
             pipeline_stored_descriptions.size(),
             (xe::Clock::QueryHostTickCount() - pipeline_creation_start) * 1000 /
-@@ -2784,31 +2831,139 @@ void VulkanPipelineCache::InitializeShaderStorage(
+@@ -2784,31 +2831,167 @@ void VulkanPipelineCache::InitializeShaderStorage(
    }
  }
  
@@ -4313,12 +4335,40 @@ index 505aac188..2dc8267ca 100644
 +  pipeline_cache_first_unsaved_ = {};
 +  pipeline_cache_last_save_ = now;
 +  pipeline_cache_save_running_.store(true, std::memory_order_release);
-+  std::thread([this, data, pipelines, path = vk_pipeline_cache_path_]() {
++  // And how far the guest shader and pipeline storage files have grown, as
++  // stored pipelines were never found at launch.
++  std::filesystem::path shader_storage_path, pipeline_storage_path;
++  if (storage_writer_.is_active()) {
++    shader_storage_path = GetShaderStorageFilePath(
++        storage_writer_.cache_root(), storage_writer_.title_id());
++    pipeline_storage_path =
++        GetShaderStorageShareableRoot(storage_writer_.cache_root()) /
++        fmt::format("{:08X}.{}.vk.xpso", storage_writer_.title_id(),
++                    render_target_cache_.GetPath() ==
++                            RenderTargetCache::Path::kPixelShaderInterlock
++                        ? "fsi"
++                        : "fbo");
++  }
++  std::thread([this, data, pipelines, path = vk_pipeline_cache_path_,
++               shader_storage_path, pipeline_storage_path]() {
 +    const bool written =
 +        xbox360ps5::WriteCacheAtomically(path, data->data(), data->size());
-+    XELOGW("Shader cache: saved {} KiB ({} new pipelines) to {}{}",
-+           data->size() >> 10, pipelines, path.string(),
-+           written ? "" : " - failed");
++    std::error_code error;
++    const auto shader_bytes =
++        shader_storage_path.empty()
++            ? 0
++            : std::filesystem::file_size(shader_storage_path, error);
++    const auto pipeline_bytes =
++        pipeline_storage_path.empty()
++            ? 0
++            : std::filesystem::file_size(pipeline_storage_path, error);
++    XELOGW(
++        "Shader cache: saved {} KiB ({} new pipelines) to {}{}; storage {} "
++        "KiB of shaders, {} KiB of pipelines{}",
++        data->size() >> 10, pipelines, path.string(),
++        written ? "" : " - failed", uint64_t(shader_bytes) >> 10,
++        uint64_t(pipeline_bytes) >> 10,
++        shader_storage_path.empty() ? " (storage inactive)" : "");
 +    pipeline_cache_save_running_.store(false, std::memory_order_release);
 +  }).detach();
 +}
