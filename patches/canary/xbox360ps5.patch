@@ -6239,6 +6239,26 @@ index 23fa67211..16153831b 100644
    // On Linux, find and merge CJK font using fontconfig
    FcConfig* config = FcInitLoadConfigAndFonts();
    if (!config) {
+diff --git a/src/xenia/ui/presenter.cc b/src/xenia/ui/presenter.cc
+index 3fd166235..b8875d06f 100644
+--- a/src/xenia/ui/presenter.cc
++++ b/src/xenia/ui/presenter.cc
+@@ -503,6 +503,15 @@ void Presenter::SetGuestOutputPaintConfigFromUIThread(
+     modified = true;
+     request_repaint = true;
+   }
++  // PS5X360E: the anti-aliasing passes, which were not compared here, so a
++  // change to them alone never reached the painter.
++  if (guest_output_paint_config_.GetSmaa() != new_config.GetSmaa() ||
++      guest_output_paint_config_.GetFxaa() != new_config.GetFxaa() ||
++      guest_output_paint_config_.GetSmaaShowEdges() !=
++          new_config.GetSmaaShowEdges()) {
++    modified = true;
++    request_repaint = true;
++  }
+   if (modified) {
+     {
+       std::unique_lock<std::mutex> config_lock(
 diff --git a/src/xenia/ui/presenter.h b/src/xenia/ui/presenter.h
 index 93f9250e6..6e89a8981 100644
 --- a/src/xenia/ui/presenter.h

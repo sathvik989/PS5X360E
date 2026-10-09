@@ -3,6 +3,12 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.24+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Changing Anti-aliasing during play did nothing: the picture settings only reached the screen
+  when the image filter, sharpness or dither changed too. SMAA, FXAA and Show edges now apply as
+  soon as they are chosen. (SMAA chosen before launching a game did run.)
+
 ## 0.2-alpha.23+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Anti-aliasing now offers Off / SMAA / SMAA + FXAA / FXAA / SMAA (show edges). FXAA runs at its
