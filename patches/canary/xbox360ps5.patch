@@ -2151,10 +2151,10 @@ index 7a9a87356..183a9e4c3 100644
  DEFINE_bool(
      gpu_debug_markers, false,
 diff --git a/src/xenia/gpu/gpu_flags.h b/src/xenia/gpu/gpu_flags.h
-index be4eb2e2c..8ddbb113d 100644
+index be4eb2e2c..aa1ba1212 100644
 --- a/src/xenia/gpu/gpu_flags.h
 +++ b/src/xenia/gpu/gpu_flags.h
-@@ -11,6 +11,37 @@
+@@ -11,6 +11,39 @@
  #define XENIA_GPU_GPU_FLAGS_H_
  #include "xenia/base/cvar.h"
  
@@ -2181,7 +2181,9 @@ index be4eb2e2c..8ddbb113d 100644
 +  for (uint32_t i = 0; i < count; ++i) {
 +    const uint32_t base =
 +        frame_trace_wide_resolves[i].load(std::memory_order_relaxed);
-+    if (start < base + 0x20000 && base < start + length) {
++    // The target and the two 128 KiB objects after it (NFS The Run keeps
++    // CPU-written data and a texture there).
++    if (start < base + 0x60000 && base < start + length) {
 +      return true;
 +    }
 +  }
@@ -2192,7 +2194,7 @@ index be4eb2e2c..8ddbb113d 100644
  DECLARE_path(trace_gpu_prefix);
  DECLARE_bool(trace_gpu_stream);
  
-@@ -29,6 +60,8 @@ DECLARE_bool(shared_memory_zero_copy);
+@@ -29,6 +62,8 @@ DECLARE_bool(shared_memory_zero_copy);
  
  DECLARE_bool(enable_host_buffer);
  
@@ -2201,7 +2203,7 @@ index be4eb2e2c..8ddbb113d 100644
  DECLARE_bool(memexport_enable);
  DECLARE_bool(memexport_await_pixel_exports);
  DECLARE_bool(memexport_await_vertex_exports);
-@@ -49,6 +82,8 @@ DECLARE_bool(occlusion_query_full_counters);
+@@ -49,6 +84,8 @@ DECLARE_bool(occlusion_query_full_counters);
  
  DECLARE_bool(occlusion_query_viz);
  
@@ -2506,7 +2508,7 @@ index f40494f5a..d3acca6b9 100644
        // 64bpp: one texel spans two contiguous output dwords.
        uint src_bytes = XeDownscaleScaledBlockByte(
 diff --git a/src/xenia/gpu/shared_memory.cc b/src/xenia/gpu/shared_memory.cc
-index 6aaeb76bd..920ea76df 100644
+index 6aaeb76bd..f5b24797c 100644
 --- a/src/xenia/gpu/shared_memory.cc
 +++ b/src/xenia/gpu/shared_memory.cc
 @@ -8,17 +8,34 @@
@@ -2656,12 +2658,13 @@ index 6aaeb76bd..920ea76df 100644
      system_page_flags_valid_[i] &= ~invalidate_bits;
      system_page_flags_valid_and_gpu_written_[i] &= ~invalidate_bits;
      // Track which chunks changed for partial copying.
-@@ -679,12 +765,102 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+@@ -679,12 +765,103 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
    gpu_written_data_dirty_ = true;
    dirty_blocks_ |= dirty_blocks_mask;
  
 -  FireWatches(page_first, page_last, false);
-+  if (any_kept && FrameTraceLine()) {
++  if ((any_kept || FrameTraceWideResolve(physical_address_start, length)) &&
++      FrameTraceLine()) {
 +    XELOGW("FT {} INV {:08X} {} write {:08X} {} kept {}",
 +           frame_trace_frame.load(std::memory_order_relaxed),
 +           physical_address_start, length, physical_write_in_flight.start,
@@ -2835,7 +2838,7 @@ index 372cbebfb..3adaf6caa 100644
                    spv::Id register_gradient_x =
                        builder_->createCompositeExtract(register_gradient_3d,
 diff --git a/src/xenia/gpu/texture_cache.cc b/src/xenia/gpu/texture_cache.cc
-index c6a2f0850..181f6facd 100644
+index c6a2f0850..ea98e74b0 100644
 --- a/src/xenia/gpu/texture_cache.cc
 +++ b/src/xenia/gpu/texture_cache.cc
 @@ -9,6 +9,8 @@
@@ -2961,7 +2964,25 @@ index c6a2f0850..181f6facd 100644
    XELOGGPU(
        "{} {} {}{}x{}x{} {} {} texture with {} {}packed mip level{}, "
        "base at 0x{:08X} (pitch {}, size 0x{:08X}), mips at 0x{:08X} (size "
-@@ -1140,6 +1235,18 @@ bool TextureCache::LoadTextureData(Texture& texture) {
+@@ -1062,6 +1157,17 @@ void TextureCache::LoadTexturesData(Texture** textures, uint32_t n_textures) {
+ }
+ bool TextureCache::LoadTextureData(Texture& texture) {
+   SCOPE_profile_cpu_f("gpu");
++  // PS5X360E: textures read around NFS The Run's float target ring.
++  if (frame_trace_frames_left.load(std::memory_order_relaxed)) {
++    const TextureKey& key = texture.key();
++    if (FrameTraceWideResolve(key.base_page << 12, texture.GetGuestBaseSize()) &&
++        FrameTraceLine()) {
++      XELOGW("FT {} TEX {:08X} {}x{} fmt {} outdated {}",
++             frame_trace_frame.load(std::memory_order_relaxed),
++             key.base_page << 12, key.GetWidth(), key.GetHeight(),
++             uint32_t(key.format), int(texture.base_outdated_lockless()));
++    }
++  }
+   // Lockless pre-check: if texture appears up-to-date, skip the lock.
+   // This is safe because worst case is a false positive (we acquire lock
+   // unnecessarily), never a false negative.
+@@ -1140,6 +1246,18 @@ bool TextureCache::LoadTextureData(Texture& texture) {
    }
  
    texture.LogAction("Loaded");

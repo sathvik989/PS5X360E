@@ -3,6 +3,15 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.31+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Found the bad fog data in NFS The Run. Of the three 256x32 float buffers the fog is computed
+  into in turn, the one at 0A680000 holds very different values every time it is rendered (mean
+  0.115, 7243 zeros) from the other two (mean 0.778, 1802 zeros): the dark frame. Its memory
+  starts on a 16 KiB PS5 page; the other two share their last page with data the CPU writes
+  next to them. The trace now also logs CPU writes to and texture reads of the 256 KiB after each
+  buffer, to find which input of that frame's fog pass is stale.
+
 ## 0.2-alpha.30+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Reviewed everything PS5X360 changed from 0.5.7-fix.1 to 0.5.9 (the 0.5.8 series is only in
