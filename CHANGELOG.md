@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.34+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Fix attempt for the NFS The Run fog and smoke flicker. The fog buffers are rendered on the GPU
+  and then read as vertex data by the particle draws. Some of those draws also read GPU-exported
+  data, so they are routed to the copy of memory the CPU sees, where render output only arrives
+  once the CPU reads it. They drew one of the three buffers from its old contents, hence one dark
+  frame in three. Running the performance measurement hid it because the trace copies every fog
+  buffer to that memory. Render output is now copied there (on the GPU, only the pages such a draw
+  fetches) before the draw runs. `host_buffer_resolve_sync = false` under [GPU] turns it off.
+
 ## 0.2-alpha.33+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Found the real inputs of the NFS The Run fog buffers: each is drawn from the previous buffer

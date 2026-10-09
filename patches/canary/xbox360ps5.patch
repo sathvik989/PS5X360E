@@ -2818,7 +2818,7 @@ index 6aaeb76bd..496b35c80 100644
    ReleaseTraceDownloadRanges();
    assert_true(trace_download_ranges_.empty());
 diff --git a/src/xenia/gpu/shared_memory.h b/src/xenia/gpu/shared_memory.h
-index 2fd3a0c49..bf7b59d2c 100644
+index 2fd3a0c49..bb01e860e 100644
 --- a/src/xenia/gpu/shared_memory.h
 +++ b/src/xenia/gpu/shared_memory.h
 @@ -10,6 +10,10 @@
@@ -2832,7 +2832,7 @@ index 2fd3a0c49..bf7b59d2c 100644
  #include "xenia/memory.h"
  
  namespace xe {
-@@ -74,10 +78,21 @@ class SharedMemory {
+@@ -74,10 +78,32 @@ class SharedMemory {
    // ensures the host GPU memory backing the range are resident. Returns true if
    // the range has been fully updated and is usable.
    bool RequestRange(uint32_t start, uint32_t length);
@@ -2851,10 +2851,21 @@ index 2fd3a0c49..bf7b59d2c 100644
 +  // PS5X360E: frame trace - pages in the range that are valid, hold GPU
 +  // output, and are kept through a CPU write elsewhere in their host page.
 +  std::string DescribeRangeState(uint32_t start, uint32_t length);
++  // PS5X360E: whether the guest page (4 KiB) holding the address has GPU
++  // output newer than guest RAM in the buffer.
++  bool IsGpuWrittenAddress(uint32_t address) const {
++    if (address >= kBufferSize || !system_page_flags_valid_and_gpu_written_) {
++      return false;
++    }
++    const uint32_t page = address >> page_size_log2_;
++    return (system_page_flags_valid_and_gpu_written_[page >> 6] >>
++            (page & 63)) &
++           1;
++  }
  
    void TryFindUploadRange(const uint32_t& block_first,
                            const uint32_t& block_last,
-@@ -111,6 +126,9 @@ class SharedMemory {
+@@ -111,6 +137,9 @@ class SharedMemory {
    void RangeWrittenByGpu(uint32_t start, uint32_t length,
                           bool written_to_buffer = true);
  
@@ -2864,7 +2875,7 @@ index 2fd3a0c49..bf7b59d2c 100644
   protected:
    SharedMemory(Memory& memory);
    // Call in implementation-specific initialization.
-@@ -180,6 +198,15 @@ class SharedMemory {
+@@ -180,6 +209,15 @@ class SharedMemory {
    // on it is not hard - the access callback takes a range as an argument, and
    // touched pages of the buffer of this size will be invalidated).
    uint32_t page_size_log2_;
@@ -3105,7 +3116,7 @@ index e6b7d535c..0f0eb959b 100644
      SharedMemory::WatchHandle base_watch_handle_ = nullptr;
      SharedMemory::WatchHandle mips_watch_handle_ = nullptr;
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index 76fc1a45f..06fa997b9 100644
+index 76fc1a45f..fcfdcb9f6 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,6 +8,9 @@
@@ -3126,7 +3137,23 @@ index 76fc1a45f..06fa997b9 100644
  #include "xenia/gpu/draw_util.h"
  #include "xenia/gpu/gpu_flags.h"
  #include "xenia/gpu/packet_disassembler.h"
-@@ -1973,6 +1977,20 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -40,6 +44,15 @@
+ DECLARE_bool(clear_memory_page_state);
+ DECLARE_bool(gpu_debug_markers);
+ DECLARE_bool(memexport_enable);
++// PS5X360E
++DEFINE_bool(
++    host_buffer_resolve_sync, true,
++    "Before a draw that reads the host-imported buffer (geometry consuming "
++    "memory export output) fetches vertices from resolve output, copy that "
++    "output there from the device buffer, which is the only place it is "
++    "otherwise. Without it such draws read what guest RAM held before the "
++    "resolve (one dark frame of fog in three in NFS The Run).",
++    "GPU");
+ DECLARE_bool(submit_on_primary_buffer_end);
+ 
+ DEFINE_bool(
+@@ -1973,6 +1986,20 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
    // Before the presenter check, so the paths that return early end the frame
    // too.
    NoteResolveFrame();
@@ -3147,7 +3174,7 @@ index 76fc1a45f..06fa997b9 100644
  
    CollectCompletedGpuTimeQueries();
    static constexpr uint32_t kRenderPassWindowFrames = 60;
-@@ -2019,7 +2037,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2019,7 +2046,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
  
    auto aspect = graphics_system_->GetScaledAspectRatio();
  
@@ -3156,7 +3183,7 @@ index 76fc1a45f..06fa997b9 100644
        frontbuffer_width_scaled, frontbuffer_height_scaled, aspect.first,
        aspect.second,
        [this, frontbuffer_width_scaled, frontbuffer_height_scaled,
-@@ -2200,7 +2218,14 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2200,7 +2227,14 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
          uint32_t& gamma_ramp_frame_index_ref =
              use_pwl_gamma_ramp ? gamma_ramp_pwl_current_frame_
                                 : gamma_ramp_256_entry_table_current_frame_;
@@ -3172,7 +3199,7 @@ index 76fc1a45f..06fa997b9 100644
            constexpr uint32_t kGammaRampSize256EntryTable =
                sizeof(uint32_t) * 256;
            constexpr uint32_t kGammaRampSizePWL = sizeof(uint16_t) * 2 * 3 * 128;
-@@ -2577,6 +2602,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2577,6 +2611,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
  
    // End the frame even if did not present for any reason (the image refresher
    // was not called), to prevent leaking per-frame resources.
@@ -3183,7 +3210,7 @@ index 76fc1a45f..06fa997b9 100644
    EndSubmission(true);
  }
  
-@@ -3824,6 +3853,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3824,6 +3862,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
        (pixel_shader != nullptr && pixel_shader->bindings_ready()
             ? pixel_shader->GetUsedTextureMaskAfterTranslation()
             : 0);
@@ -3196,7 +3223,20 @@ index 76fc1a45f..06fa997b9 100644
    texture_cache_->RequestTextures(used_texture_mask);
  
    // Update the graphics pipeline, and if the new graphics pipeline has a
-@@ -4262,6 +4297,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4128,6 +4172,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+           return false;
+         }
+       }
++      if (route_to_host) {
++        for (uint32_t i = 0; i < vfetch_current_queued; ++i) {
++          EnsureGpuOutputInHostBuffer(vfetch_addresses[i] << 2,
++                                      vfetch_sizes[i] << 2);
++        }
++      }
+     }
+   }
+ 
+@@ -4262,6 +4312,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
    }
  
    if (!memexport_ranges_.empty()) {
@@ -3207,7 +3247,123 @@ index 76fc1a45f..06fa997b9 100644
      if (route_to_host) {
        // Producer draw: output landed in host_buffer_ (guest RAM), already CPU
        // coherent, so no readback. Just record the written pages. Consumers then
-@@ -4765,6 +4804,35 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4369,6 +4423,115 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
+   memexport_staged_.clear();
+ }
+ 
++void VulkanCommandProcessor::MarkGpuOutputHostStale(uint32_t base_bytes,
++                                                    uint32_t size_bytes) {
++  if (!cvars::host_buffer_resolve_sync || !size_bytes ||
++      base_bytes >= SharedMemory::kBufferSize ||
++      shared_memory_->host_buffer() == VK_NULL_HANDLE) {
++    return;
++  }
++  size_bytes = std::min(size_bytes, SharedMemory::kBufferSize - base_bytes);
++  const uint32_t first_page = base_bytes >> 12;
++  const uint32_t last_page = (base_bytes + size_bytes - 1) >> 12;
++  for (uint32_t page = first_page; page <= last_page; ++page) {
++    host_stale_gpu_pages_[page >> 6] |= uint64_t(1) << (page & 63);
++  }
++  host_stale_page_min_ = std::min(host_stale_page_min_, first_page);
++  host_stale_page_max_ = std::max(host_stale_page_max_, last_page);
++}
++
++void VulkanCommandProcessor::EnsureGpuOutputInHostBuffer(uint32_t base_bytes,
++                                                         uint32_t size_bytes) {
++  if (!size_bytes || host_stale_page_min_ > host_stale_page_max_) {
++    return;
++  }
++  base_bytes &= 0x1FFFFFFF;
++  if (base_bytes >= SharedMemory::kBufferSize) {
++    return;
++  }
++  size_bytes = std::min(size_bytes, SharedMemory::kBufferSize - base_bytes);
++  const uint32_t first_page = std::max(base_bytes >> 12, host_stale_page_min_);
++  const uint32_t last_page =
++      std::min((base_bytes + size_bytes - 1) >> 12, host_stale_page_max_);
++  if (first_page > last_page) {
++    return;
++  }
++  host_stale_copy_regions_.clear();
++  uint32_t copy_start = UINT32_MAX, copy_end = 0;
++  for (uint32_t page = first_page; page <= last_page; ++page) {
++    uint64_t& block = host_stale_gpu_pages_[page >> 6];
++    const uint64_t bit = uint64_t(1) << (page & 63);
++    if (!(block & bit)) {
++      continue;
++    }
++    block &= ~bit;
++    // Only while the device buffer still holds the newest data there: a CPU
++    // write since, or memory export output in the host buffer, clears it.
++    if (!shared_memory_->IsGpuWrittenAddress(page << 12)) {
++      continue;
++    }
++    const uint32_t offset = page << 12;
++    if (!host_stale_copy_regions_.empty()) {
++      VkBufferCopy& last = host_stale_copy_regions_.back();
++      if (last.srcOffset + last.size == offset) {
++        last.size += 4096;
++        copy_end = offset + 4096;
++        continue;
++      }
++    }
++    VkBufferCopy& region = host_stale_copy_regions_.emplace_back();
++    region.srcOffset = offset;
++    region.dstOffset = offset;
++    region.size = 4096;
++    copy_start = std::min(copy_start, offset);
++    copy_end = offset + 4096;
++  }
++  if (host_stale_copy_regions_.empty()) {
++    return;
++  }
++  VkBuffer host_buffer = shared_memory_->host_buffer();
++  VkBuffer device_buffer = shared_memory_->buffer();
++  if (host_buffer == VK_NULL_HANDLE) {
++    return;
++  }
++  const VkDeviceSize range_base = copy_start;
++  const VkDeviceSize range_size = copy_end - copy_start;
++  const VkPipelineStageFlags read_stages =
++      VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | guest_shader_pipeline_stages_ |
++      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
++  const VkAccessFlags read_access = VK_ACCESS_INDEX_READ_BIT |
++                                    VK_ACCESS_SHADER_READ_BIT |
++                                    VK_ACCESS_TRANSFER_READ_BIT;
++  // Resolve output in the device buffer (written by transfer or compute)
++  // before the transfer read, and earlier host buffer accesses before the
++  // transfer write into it.
++  shared_memory_->Use(VulkanSharedMemory::Usage::kRead);
++  PushBufferMemoryBarrier(
++      device_buffer, range_base, range_size,
++      guest_shader_pipeline_stages_ | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
++          VK_PIPELINE_STAGE_TRANSFER_BIT,
++      VK_PIPELINE_STAGE_TRANSFER_BIT,
++      VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
++      VK_ACCESS_TRANSFER_READ_BIT);
++  PushBufferMemoryBarrier(
++      host_buffer, range_base, range_size, read_stages,
++      VK_PIPELINE_STAGE_TRANSFER_BIT,
++      read_access | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
++      VK_ACCESS_TRANSFER_WRITE_BIT);
++  SubmitBarriers(true);
++  deferred_command_buffer_.CmdVkCopyBuffer(
++      device_buffer, host_buffer, uint32_t(host_stale_copy_regions_.size()),
++      host_stale_copy_regions_.data());
++  PushBufferMemoryBarrier(host_buffer, range_base, range_size,
++                          VK_PIPELINE_STAGE_TRANSFER_BIT, read_stages,
++                          VK_ACCESS_TRANSFER_WRITE_BIT, read_access);
++  if (FrameTraceLine()) {
++    XELOGW("FT {} HOSTSYNC {:08X} {} in {} runs",
++           frame_trace_frame.load(std::memory_order_relaxed), copy_start,
++           copy_end - copy_start, host_stale_copy_regions_.size());
++  }
++}
++
+ bool VulkanCommandProcessor::EnsureMemexportRangeInDeviceBuffer(
+     uint32_t base_bytes, uint32_t size_bytes, bool whole_range) {
+   // Readers of the device buffer need memexport output copied across from
+@@ -4765,6 +4928,35 @@ bool VulkanCommandProcessor::IssueCopy() {
      return false;
    }
    ++submission_in_progress_.resolve_count;
@@ -3243,7 +3399,7 @@ index 76fc1a45f..06fa997b9 100644
  
    // The resolve wrote the device buffer. Drop any stale memexport marks so the
    // output isn't overwritten with guest RAM by a later texture load.
-@@ -4782,6 +4850,11 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4782,9 +4974,17 @@ bool VulkanCommandProcessor::IssueCopy() {
          is_scaled = false;
          written_length = mirrored_length;
        }
@@ -3255,7 +3411,13 @@ index 76fc1a45f..06fa997b9 100644
      }
      NoteResolveForReadback(written_address, written_length, is_scaled);
    }
-@@ -4793,9 +4866,220 @@ bool VulkanCommandProcessor::IssueCopy() {
++  if (!is_scaled && written_length) {
++    MarkGpuOutputHostStale(written_address, written_length);
++  }
+ 
+   // Pop debug marker for resolve operation.
+   if (debug_markers_enabled_) {
+@@ -4793,9 +4993,220 @@ bool VulkanCommandProcessor::IssueCopy() {
  
    SubmitRequestedResolve();
  
@@ -3476,7 +3638,7 @@ index 76fc1a45f..06fa997b9 100644
  void VulkanCommandProcessor::EnsureQueryResources() {
    // VIZ surveys need the pool even when ZPD reports are faked.
    if ((zpd_mode_ == ZPDMode::kFake && !cvars::occlusion_query_viz) ||
-@@ -5145,6 +5429,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+@@ -5145,6 +5556,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
  bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                 uint64_t wait_for_submission) {
    assert_not_zero(wait_for_submission);
@@ -3489,7 +3651,7 @@ index 76fc1a45f..06fa997b9 100644
  
    // The resolve is still in the open submission. Pipelines being created
    // asynchronously have to finish before it can be executed.
-@@ -5158,6 +5448,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5158,6 +5575,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
              "ZPD/Async: Draining Vulkan async pipeline creation for strict "
              "retirement");
        }
@@ -3497,7 +3659,7 @@ index 76fc1a45f..06fa997b9 100644
        pipeline_cache_->AwaitPipelineCompletion();
      }
      EndRenderPass();
-@@ -5167,6 +5458,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5167,6 +5585,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
    }
  
    if (wait_for_submission > GetCompletedSubmission()) {
@@ -3506,10 +3668,39 @@ index 76fc1a45f..06fa997b9 100644
    }
  
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.h b/src/xenia/gpu/vulkan/vulkan_command_processor.h
-index 5fdd9173a..32d36332e 100644
+index 5fdd9173a..fe0be7c15 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.h
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.h
-@@ -394,6 +394,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -238,6 +238,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
+                                           uint32_t size_bytes,
+                                           bool whole_range = false);
+ 
++  // PS5X360E: the reverse, for draws reading the host-imported buffer: copies
++  // resolve output in the range, which only the device buffer holds until the
++  // CPU reads it, into the host buffer. Without it a particle draw routed to
++  // the host buffer (for its memexported vertices) read the previous contents
++  // of NFS The Run's fog ring resolve: one dark frame of fog in three.
++  void EnsureGpuOutputInHostBuffer(uint32_t base_bytes, uint32_t size_bytes);
++  void MarkGpuOutputHostStale(uint32_t base_bytes, uint32_t size_bytes);
++
+   // If not started yet, begins a render pass from the render target cache.
+   // Submission must be open.
+   void SubmitBarriersAndEnterRenderTargetCacheRenderPass(
+@@ -379,6 +387,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
+   std::vector<MemexportStagedRange> memexport_staged_;
+   // For EnsureMemexportRangeInDeviceBuffer.
+   std::vector<VkBufferCopy> memexport_copy_regions_;
++  // PS5X360E: guest pages (4 KiB) of resolve output not yet copied into the
++  // host buffer, and their inclusive min/max.
++  std::vector<uint64_t> host_stale_gpu_pages_ =
++      std::vector<uint64_t>(SharedMemory::kBufferSize >> 18);
++  uint32_t host_stale_page_min_ = UINT32_MAX;
++  uint32_t host_stale_page_max_ = 0;
++  std::vector<VkBufferCopy> host_stale_copy_regions_;
+ 
+   void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                  uint32_t frontbuffer_height) override;
+@@ -394,6 +409,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
                   bool major_mode_explicit) override;
    bool IssueCopy() override;
  
@@ -3517,7 +3708,7 @@ index 5fdd9173a..32d36332e 100644
    void InitializeTrace() override;
    bool DumpEdramSnapshotToFile(const std::filesystem::path& path) override;
  
-@@ -1093,6 +1094,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -1093,6 +1109,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // .inc for ScaledResolveReadbackInfo.
    bool DownscaleScaledResolve(uint32_t written_address,
                                const ScaledResolveReadbackInfo& scaled_info);
