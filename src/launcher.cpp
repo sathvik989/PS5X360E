@@ -332,7 +332,10 @@ GameOverrides GamePreset(const std::string& title_id) {
       // Fast locks and the video-memory changes took races from 12-20 to
       // 27-30 FPS, the game's own 30 (0.2-alpha.13, user's measurements); the
       // alternative fast visibility queries fixed its collision sparks.
-      {"4541094A", {{"readback", 1}, {"fast_locks", 1}, {"memory_boost", 1}, {"occlusion", 2}}},
+      // Accurate visibility queries keep lens flares of lights out of view (the
+      // hallway light in the elevator) from staying on screen (user,
+      // alpha.39; at 2x still near 30 FPS in the car sequence).
+      {"4541094A", {{"readback", 1}, {"fast_locks", 1}, {"memory_boost", 1}, {"occlusion", 3}}},
   };
   GameOverrides preset;
   for (const auto& [id, values] : built_in) if (Lower(title_id) == Lower(id)) preset = values;

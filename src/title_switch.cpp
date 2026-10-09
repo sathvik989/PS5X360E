@@ -8,6 +8,9 @@
 #include <utility>
 #include "xenia/base/cvar.h"
 #include "xenia/config.h"
+#include "xenia/base/utf8.h"
+
+DECLARE_uint32(draw_resolution_scale_threshold);
 #if XE_PLATFORM_PS5
 extern "C" int sceSystemServiceLoadExec(const char*, const char**);
 #endif
@@ -101,6 +104,15 @@ void LoadGameConfigs(const std::string& title_id) {
 #else
   const fs::path folders[] = {"dist/PPSA50011/assets/game-configs"};
 #endif
+  // PS5X360E: built-in emulator settings for titles that need them, set for
+  // every title (so one game's value doesn't carry over to the next) before
+  // the files below, which can still change them.
+  // Need for Speed: The Run at 2x: its brightness measurement (a chain of ever
+  // smaller copies of the picture, read back by the CPU) came out wrong
+  // upscaled, so scenes were far darker than at 1x. Keeping targets up to 320
+  // pixels wide native fixed it (user, alpha.39).
+  cvars::draw_resolution_scale_threshold =
+      xe::utf8::lower_ascii(title_id) == "4541094a" ? 320 : 0;
   if (!cvar::ConfigVars) return;
   for (const auto& folder : folders) {
     const fs::path file = folder / (title_id + ".config.toml");

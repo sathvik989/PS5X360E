@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.40+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- NFS The Run defaults confirmed on the PS5 (alpha.39):
+  - At 2x its render targets up to 320 pixels wide stay native (`draw_resolution_scale_threshold
+    = 320`, built in now; a game-configs file can still change it). Its brightness measurement
+    came out wrong upscaled and scenes were far darker than at 1x.
+  - Visibility queries default to Accurate: lens flares of lights out of view (the hallway light
+    in the elevator) no longer stay on screen. The sun's flare still does.
+  - The car sequence ran at about 29-30 FPS at 2x (1440p), against 22-23 before.
+
 ## 0.2-alpha.39+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Undid alpha.37's fewer GPU submissions by default (`resolve_sync_only_watched = false`). In NFS
