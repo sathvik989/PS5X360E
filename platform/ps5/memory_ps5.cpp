@@ -7,6 +7,7 @@
 // the union of the access of its four guest pages.
 #include "xenia/base/memory.h"
 #include "xbox360ps5/gpu_diagnostics.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <atomic>
 #include <cstring>
@@ -43,9 +44,24 @@ constexpr int kFixed = 0x10, kReadWrite = 3, kCpuMemory = 12;
 // 0x2_FFFF_FFFF); the title's heap starts at 0x20_0000_0000. Mappings without
 // a required address go between the guest address space and that heap.
 constexpr uintptr_t kAnywhereStart = 0x1400000000ull, kAnywhereEnd = 0x2000000000ull;
-struct Object { int64_t start; size_t bytes; };
+// PS5X360E: direct memory is physical from the moment it is allocated, so
+// Xenia's 4.5 GiB guest mapping (its 4 GiB virtual space, then the 512 MiB of
+// guest RAM at 4 GiB) took about 6 GiB of the console's 12 before a game ran,
+// and rendering at twice the resolution ran out of memory. Below lazy_limit an
+// object gets memory a chunk at a time, when a view of it is first committed;
+// above it (the guest RAM, which the GPU imports whole) all of it up front.
+constexpr size_t kChunk = 0x100000;
+constexpr size_t kLazyFrom = size_t(1) << 32, kLazyLimit = size_t(1) << 32;
+struct Object {
+  int64_t start;   // Of the up-front part: offset lazy_limit on.
+  size_t bytes;
+  size_t lazy_limit = 0;
+  std::vector<int64_t> chunks;  // Below lazy_limit; -1 until committed.
+};
 struct View {
   size_t size; int handle; bool owns_object;
+  size_t offset = 0;              // In the object.
+  std::vector<uint8_t> backed;    // Per kernel page: memory mapped there.
   std::vector<uint8_t> access;  // Per 4 KiB guest page.
   std::vector<uint8_t> host;    // Protection in effect per kernel page.
   // A protection asked for whole kernel pages (the emulator's write watches
@@ -118,25 +134,69 @@ void* Reserve(uintptr_t wanted, size_t bytes) {
   }
   return nullptr;
 }
-bool CreateObject(size_t bytes, Object& object) {
-  object.bytes = RoundUp(bytes, kUnit);
+bool AllocateDirect(size_t bytes, int64_t& start) {
   const int32_t result = sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(),
-      object.bytes, kUnit, kCpuMemory, &object.start);
-  if (result) { Note("allocate-direct", 0, object.bytes, result); return false; }
+      bytes, kUnit, kCpuMemory, &start);
+  if (result) { Note("allocate-direct", 0, bytes, result); return false; }
+  return true;
+}
+bool CreateObject(size_t bytes, Object& object, bool allow_lazy = false) {
+  object.bytes = RoundUp(bytes, kUnit);
+  object.lazy_limit = allow_lazy && object.bytes > kLazyFrom ? kLazyLimit : 0;
+  object.chunks.assign(object.lazy_limit / kChunk, -1);
+  return AllocateDirect(object.bytes - object.lazy_limit, object.start);
+}
+void ReleaseObject(const Object& object) {
+  sceKernelReleaseDirectMemory(object.start, object.bytes - object.lazy_limit);
+  for (const int64_t chunk : object.chunks)
+    if (chunk >= 0) sceKernelReleaseDirectMemory(chunk, kChunk);
+}
+// Maps [offset, offset + bytes) of an object at a reserved address: the part
+// that has memory (lazy chunks not yet committed stay reserved).
+bool MapBacked(const Object& object, size_t offset, uintptr_t at, size_t bytes) {
+  for (size_t done = 0; done < bytes;) {
+    const size_t here = offset + done;
+    size_t span;
+    int64_t physical;
+    if (here < object.lazy_limit) {
+      span = std::min(kChunk - here % kChunk, bytes - done);
+      physical = object.chunks[here / kChunk];
+      if (physical >= 0) physical += int64_t(here % kChunk);
+    } else {
+      span = bytes - done;
+      physical = object.start + int64_t(here - object.lazy_limit);
+    }
+    if (physical >= 0) {
+      void* mapped = reinterpret_cast<void*>(at + done);
+      const int32_t result = sceKernelMapDirectMemory(&mapped, span, kReadWrite, kFixed, physical, kPage);
+      if (result || mapped != reinterpret_cast<void*>(at + done)) {
+        Note("map-direct", at + done, span, result);
+        return false;
+      }
+    }
+    done += span;
+  }
   return true;
 }
 void* MapObject(const Object& object, size_t offset, uintptr_t wanted, size_t bytes) {
   void* reserved = Reserve(wanted, bytes);
   if (!reserved) return nullptr;
-  void* mapped = reserved;
-  const int32_t result = sceKernelMapDirectMemory(&mapped, bytes, kReadWrite, kFixed,
-      object.start + static_cast<int64_t>(offset), kPage);
-  if (result || mapped != reserved) {
-    Note("map-direct", reinterpret_cast<uintptr_t>(reserved), bytes, result);
-    sceKernelMunmap(result ? reserved : mapped, bytes);
+  if (!object.lazy_limit) {
+    void* mapped = reserved;
+    const int32_t result = sceKernelMapDirectMemory(&mapped, bytes, kReadWrite, kFixed,
+        object.start + static_cast<int64_t>(offset), kPage);
+    if (result || mapped != reserved) {
+      Note("map-direct", reinterpret_cast<uintptr_t>(reserved), bytes, result);
+      sceKernelMunmap(result ? reserved : mapped, bytes);
+      return nullptr;
+    }
+    return mapped;
+  }
+  if (!MapBacked(object, offset, reinterpret_cast<uintptr_t>(reserved), bytes)) {
+    sceKernelMunmap(reserved, bytes);
     return nullptr;
   }
-  return mapped;
+  return reserved;
 }
 // Applies the union of the guest pages' access to the kernel pages of a range.
 bool Apply(uintptr_t base, View& view, size_t first_guest, size_t guest_count) {
@@ -150,16 +210,16 @@ bool Apply(uintptr_t base, View& view, size_t first_guest, size_t guest_count) {
       return bits;
     };
     const uint8_t bits = wanted(page);
-    if (view.host[page] == bits) { ++page; continue; }
+    if (!view.backed[page] || view.host[page] == bits) { ++page; continue; }
     size_t end = page + 1;
     if (xbox360ps5::gpu_diag::enabled.load(std::memory_order_relaxed)) {
       // Already-correct pages do not split an otherwise identical target
       // protection. Include them only when bridging to another changed page;
       // do not expand beyond the requested range or include an unchanged tail.
-      for (size_t scan = end; scan <= last && wanted(scan) == bits; ++scan)
+      for (size_t scan = end; scan <= last && view.backed[scan] && wanted(scan) == bits; ++scan)
         if (view.host[scan] != bits) end = scan + 1;
     } else {
-      while (end <= last && view.host[end] != bits && wanted(end) == bits) ++end;
+      while (end <= last && view.backed[end] && view.host[end] != bits && wanted(end) == bits) ++end;
     }
     timespec before{}, after{};
     clock_gettime(CLOCK_MONOTONIC, &before);
@@ -177,10 +237,64 @@ bool Apply(uintptr_t base, View& view, size_t first_guest, size_t guest_count) {
   }
   return good;
 }
+// Gives the lazy chunks under [first_guest, first_guest + guest_count) of a
+// view memory, zeroed, mapped in every view of the object that covers them.
+bool EnsureBacked(uintptr_t base, View& view, size_t first_guest, size_t guest_count) {
+  auto object = objects.find(view.handle);
+  if (object == objects.end() || !object->second.lazy_limit) return true;
+  Object& o = object->second;
+  const size_t from = view.offset + first_guest * kGuestPage;
+  const size_t to = std::min(view.offset + (first_guest + guest_count) * kGuestPage, o.lazy_limit);
+  for (size_t chunk = from / kChunk; chunk * kChunk < to; ++chunk) {
+    if (o.chunks[chunk] >= 0) continue;
+    if (!AllocateDirect(kChunk, o.chunks[chunk])) return false;
+    const size_t chunk_from = chunk * kChunk;
+    bool zeroed = false;
+    for (auto& [other_base, other] : views) {
+      if (other.handle != view.handle || other.offset >= chunk_from + kChunk ||
+          other.offset + other.size <= chunk_from) continue;
+      const size_t lo = std::max(chunk_from, other.offset);
+      const size_t hi = std::min(chunk_from + kChunk, other.offset + other.size);
+      const uintptr_t at = other_base + (lo - other.offset);
+      if (!MapBacked(o, lo, at, hi - lo)) return false;
+      if (!zeroed && lo == chunk_from && hi == chunk_from + kChunk) {
+        std::memset(reinterpret_cast<void*>(at), 0, kChunk);
+        zeroed = true;
+      }
+      const size_t first_page = (lo - other.offset) / kPage, end_page = (hi - other.offset) / kPage;
+      for (size_t page = first_page; page < end_page; ++page) {
+        other.backed[page] = 1;
+        other.host[page] = kReadWrite;
+      }
+      Apply(other_base, other, (lo - other.offset) / kGuestPage, (hi - lo) / kGuestPage);
+    }
+    if (!zeroed) {
+      // No view held the whole chunk: zero it through a temporary mapping.
+      if (void* whole = Reserve(0, kChunk)) {
+        void* mapped = whole;
+        if (!sceKernelMapDirectMemory(&mapped, kChunk, kReadWrite, kFixed, o.chunks[chunk], kPage))
+          std::memset(mapped, 0, kChunk);
+        sceKernelMunmap(whole, kChunk);
+      }
+    }
+  }
+  return true;
+}
+bool RangeBacked(const View& view, size_t first_guest, size_t guest_count) {
+  const size_t first = first_guest / kPerPage, last = (first_guest + guest_count - 1) / kPerPage;
+  for (size_t page = first; page <= last; ++page) if (!view.backed[page]) return false;
+  return true;
+}
 bool SetAccess(uintptr_t address, size_t length, PageAccess access, PageAccess* previous, bool hold = false) {
   if (!length) return false;
   auto i = Containing(address, length);
   if (i == views.end()) return false;
+  if (access != PageAccess::kNoAccess) {
+    const size_t first_guest = (address - i->first) / kGuestPage;
+    const size_t guest_count = (address - i->first + length + kGuestPage - 1) / kGuestPage - first_guest;
+    if (!RangeBacked(i->second, first_guest, guest_count) &&
+        !EnsureBacked(i->first, i->second, first_guest, guest_count)) return false;
+  }
   const size_t first = (address - i->first) / kGuestPage;
   const size_t count = (address - i->first + length + kGuestPage - 1) / kGuestPage - first;
   if (previous) *previous = static_cast<PageAccess>(i->second.access[first]);
@@ -192,9 +306,21 @@ bool SetAccess(uintptr_t address, size_t length, PageAccess access, PageAccess* 
               hold ? static_cast<uint8_t>(access) : kNoHold);
   return Apply(i->first, i->second, first, count);
 }
-void* AddView(void* mapped, size_t bytes, int handle, bool owns, PageAccess access) {
-  View view{bytes, handle, owns, std::vector<uint8_t>(bytes / kGuestPage, static_cast<uint8_t>(access)),
+void* AddView(void* mapped, size_t bytes, int handle, bool owns, PageAccess access, size_t offset = 0) {
+  View view{bytes, handle, owns, offset, std::vector<uint8_t>(bytes / kPage, 1),
+            std::vector<uint8_t>(bytes / kGuestPage, static_cast<uint8_t>(access)),
             std::vector<uint8_t>(bytes / kPage, kReadWrite), std::vector<uint8_t>(bytes / kPage, kNoHold)};
+  // Lazy chunks without memory yet: nothing mapped, nothing to protect.
+  auto object = objects.find(handle);
+  if (object != objects.end() && object->second.lazy_limit) {
+    for (size_t page = 0; page < bytes / kPage; ++page) {
+      const size_t at = offset + page * kPage;
+      if (at < object->second.lazy_limit && object->second.chunks[at / kChunk] < 0) {
+        view.backed[page] = 0;
+        view.host[page] = 0;
+      }
+    }
+  }
   auto i = views.emplace(reinterpret_cast<uintptr_t>(mapped), std::move(view)).first;
   Apply(i->first, i->second, 0, bytes / kGuestPage);
   return mapped;
@@ -208,13 +334,15 @@ bool IsWritableExecutableMemorySupported() { return true; }
 FileMappingHandle CreateFileMappingHandle(const std::filesystem::path&, size_t length, PageAccess, bool) {
   std::lock_guard lock(guard);
   Object object{};
-  if (!length || !CreateObject(length, object)) return kFileMappingHandleInvalid;
-  // Callers expect zero pages, as a new file gives them.
-  if (void* whole = MapObject(object, 0, 0, object.bytes)) {
-    std::memset(whole, 0, object.bytes);
-    sceKernelMunmap(whole, object.bytes);
+  if (!length || !CreateObject(length, object, true)) return kFileMappingHandleInvalid;
+  // Callers expect zero pages, as a new file gives them (lazy chunks are zeroed
+  // when they get memory).
+  const size_t eager = object.bytes - object.lazy_limit;
+  if (void* whole = MapObject(object, object.lazy_limit, 0, eager)) {
+    std::memset(whole, 0, eager);
+    sceKernelMunmap(whole, eager);
   } else {
-    sceKernelReleaseDirectMemory(object.start, object.bytes);
+    ReleaseObject(object);
     return kFileMappingHandleInvalid;
   }
   objects.emplace(next_handle, object);
@@ -224,7 +352,7 @@ void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::pat
   std::lock_guard lock(guard);
   auto i = objects.find(handle);
   if (i == objects.end()) return;
-  sceKernelReleaseDirectMemory(i->second.start, i->second.bytes);
+  ReleaseObject(i->second);
   objects.erase(i);
 }
 void* MapFileView(FileMappingHandle handle, void* address, size_t length, PageAccess access, size_t offset) {
@@ -235,7 +363,7 @@ void* MapFileView(FileMappingHandle handle, void* address, size_t length, PageAc
   if (object == objects.end() || !bytes || wanted % kPage || offset % kPage ||
       offset > object->second.bytes || bytes > object->second.bytes - offset) return nullptr;
   void* mapped = MapObject(object->second, offset, wanted, bytes);
-  return mapped ? AddView(mapped, bytes, handle, false, access) : nullptr;
+  return mapped ? AddView(mapped, bytes, handle, false, access, offset) : nullptr;
 }
 bool UnmapFileView(FileMappingHandle handle, void* address, size_t length) {
   std::lock_guard lock(guard);
@@ -278,6 +406,14 @@ bool DeallocFixed(void* address, size_t length, DeallocationType type) {
     auto i = Containing(at, bytes);
     if (i == views.end()) return false;
     View& view = i->second;
+    // Never given memory: nothing to zero.
+    {
+      const size_t first_guest = (at - i->first) / kGuestPage, guest_count = bytes / kGuestPage;
+      bool any = false;
+      for (size_t page = first_guest / kPerPage; page <= (first_guest + guest_count - 1) / kPerPage; ++page)
+        any |= view.backed[page] != 0;
+      if (!any) return SetAccess(at, bytes, PageAccess::kNoAccess, nullptr);
+    }
     const size_t first = (at - i->first) / kPage, last = (at - i->first + bytes - 1) / kPage;
     const uint8_t first_hold = view.hold[first], last_hold = view.hold[last];
     view.hold[first] = view.hold[last] = kNoHold;

@@ -3,6 +3,18 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.17+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- About 4 GiB more memory for games and the GPU. Xenia maps the guest's whole 4 GiB address
+  space plus its 512 MiB of RAM; on the PS5 every byte of that was direct memory from the start
+  (the console has 12 GiB; about 6 were gone before a game ran). The 4 GiB address space now gets
+  memory 1 MiB at a time when the guest first commits it; the 512 MiB of guest RAM, which the GPU
+  imports whole, is still allocated up front. Checked against a model of the console's memory
+  calls on a PC (commit, aliasing views, protections, decommit).
+- Aimed at rendering at 2x (game config `draw_resolution_scale_x/_y = 2`): NFS The Run drew at
+  2560x1440 on alpha.16 but ran out of memory ("Failed to create ... texture blit staging
+  image"), with black effects and then a crash.
+
 ## 0.2-alpha.16+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Game config options that are only read as the emulator starts now take effect, such as the
