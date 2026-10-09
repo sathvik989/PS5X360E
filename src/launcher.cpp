@@ -319,6 +319,10 @@ GameOverrides GamePreset(const std::string& title_id) {
       // them; the others stayed on the loading screen at 16 frames a second or
       // stopped. The core's own note on that mode names this title.
       {"454108D4", {{"released_memory", 1}, {"readback", 2}, {"occlusion", 2}}},
+      // Need for Speed: The Run: without the readback it stops in the garage
+      // after Start, its GPU waiting on a job that never finishes (every build
+      // up to 0.2-alpha.10); with it the game runs (user, 0.2-alpha.10).
+      {"4541094A", {{"readback", 1}}},
   };
   GameOverrides preset;
   for (const auto& [id, values] : built_in) if (Lower(title_id) == Lower(id)) preset = values;

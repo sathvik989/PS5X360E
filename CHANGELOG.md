@@ -3,6 +3,13 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.12+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- Need for Speed: The Run runs past the garage with "Image readback by the game" on (user,
+  0.2-alpha.10, per-game setting). It is now the recommended setting for title 4541094A, so the
+  game gets it without changing anything. The launcher's general default stays off; Xenia Edge
+  on PC has it on.
+
 ## 0.2-alpha.11+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - Per-game config files work again: `<title id>.config.toml` in `/app0/assets/game-configs` or
