@@ -4,6 +4,9 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cmath>
+#include <cstdio>
+#include <string>
 #include <utility>
 
 namespace xbox360ps5::gpu_diag {
@@ -110,4 +113,55 @@ auto Call(Kind kind, Fn fn, Args&&... args) {
 }
 inline void Reset() { for (auto& c : counters) c.Take(); }
 // These are API wall times, including waits; they are not GPU utilization.
+
+// PS5X360E: frame pacing. Intervals between events, bucketed in display
+// refreshes (16.68 ms at 59.94 Hz). One writer thread per instance.
+inline uint64_t SteadyNs() {
+  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch())
+                      .count());
+}
+struct Intervals {
+  // Under 0.75, about 1, 1.25-1.75, about 2, 2.25-2.75, about 3, about 4, over
+  // 4.5 refreshes.
+  static constexpr double kEdgesMs[7] = {12.5, 20.8, 29.2, 37.5, 45.8, 54.2, 75.0};
+  std::atomic<uint64_t> last{0}, count{0}, sum_ns{0}, sum_sq_us2{0}, max_ns{0};
+  std::array<std::atomic<uint64_t>, 8> buckets{};
+  void Mark(uint64_t now = SteadyNs()) {
+    const uint64_t prev = last.exchange(now, std::memory_order_relaxed);
+    if (!prev || now <= prev) return;
+    const uint64_t d = now - prev;
+    if (d > 1000000000ull) return;  // Pauses and loading.
+    count.fetch_add(1, std::memory_order_relaxed);
+    sum_ns.fetch_add(d, std::memory_order_relaxed);
+    sum_sq_us2.fetch_add((d / 1000) * (d / 1000), std::memory_order_relaxed);
+    uint64_t m = max_ns.load(std::memory_order_relaxed);
+    while (m < d && !max_ns.compare_exchange_weak(m, d, std::memory_order_relaxed)) {}
+    unsigned b = 0;
+    while (b < 7 && double(d) / 1e6 >= kEdgesMs[b]) ++b;
+    buckets[b].fetch_add(1, std::memory_order_relaxed);
+  }
+  // "n 900 mean 33.37 ms sd 1.10 max 50.1 | refreshes <1 0, 1 0, 1.5 1, 2 897, 2.5 1, 3 1, 4 0, >4 0"
+  std::string TakeText() {
+    const uint64_t n = count.exchange(0), s = sum_ns.exchange(0),
+                   q = sum_sq_us2.exchange(0), mx = max_ns.exchange(0);
+    std::array<unsigned long long, 8> h{};
+    for (unsigned i = 0; i < 8; ++i) h[i] = buckets[i].exchange(0);
+    const double mean_us = n ? double(s) / 1e3 / double(n) : 0;
+    const double var = n ? double(q) / double(n) - mean_us * mean_us : 0;
+    char text[256];
+    std::snprintf(text, sizeof(text),
+                  "n %llu mean %.2f ms sd %.2f max %.1f | in refreshes <1 %llu, 1 %llu, "
+                  "1.5 %llu, 2 %llu, 2.5 %llu, 3 %llu, 4 %llu, >4 %llu",
+                  (unsigned long long)n, mean_us / 1e3, var > 0 ? std::sqrt(var) / 1e3 : 0.0,
+                  double(mx) / 1e6, h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+    return text;
+  }
+};
+// Guest vblank interrupts, the game's VdSwap calls, swaps the GPU thread
+// processed, and host presents.
+inline Intervals vblank_intervals, guest_vdswap, guest_swaps, host_presents;
+// Host refreshes (presents) each distinct guest frame got: [0] never shown,
+// then 1, 2, 3, 4 or more.
+inline std::array<std::atomic<unsigned long long>, 5> shown_refreshes{};
 }

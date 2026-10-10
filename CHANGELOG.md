@@ -3,6 +3,26 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.41+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+Aimed at a locked 30 FPS with even frame times at 2x (1440p) in NFS The Run.
+
+- **Even frame pacing** (new per-game option "Frame pacing", on for NFS The Run): each frame the
+  game makes is shown for exactly two 60 Hz refreshes. Before, the screen took the newest frame
+  at each refresh on its own clock, so frames landing near a refresh got 1 refresh and their
+  neighbour 3 (16.7 / 50 ms) even at a steady 30 FPS. The emulated console's vblank now runs at
+  the display's 59.94 Hz in this mode, and its thread above normal priority.
+- **Visibility queries without waiting** (new option "Strict, no waiting", default for NFS The
+  Run): the real answer per query, delivered as soon as the GPU has it, without the emulator
+  stopping for it. Strict cost up to 90 ms a second of waiting in some scenes.
+- **Render output the game reads, without waiting** (NFS The Run): small images it reads back
+  about 100 times a second are copied into its memory by the GPU right after they are drawn,
+  so its threads no longer stop for the GPU. Reads may see the previous frame's output. Fewer
+  early hand-overs to the GPU come with it.
+- **Pacing statistics** every 30 s in the log: intervals of the emulated vblank, the game's
+  frames, the frames the GPU thread processed and the host presents, and how many refreshes
+  each frame was on screen.
+
 ## 0.2-alpha.40+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - NFS The Run defaults confirmed on the PS5 (alpha.39):

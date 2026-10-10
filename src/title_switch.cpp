@@ -11,6 +11,8 @@
 #include "xenia/base/utf8.h"
 
 DECLARE_uint32(draw_resolution_scale_threshold);
+DECLARE_bool(readback_resolve_async);
+DECLARE_bool(resolve_sync_only_watched);
 #if XE_PLATFORM_PS5
 extern "C" int sceSystemServiceLoadExec(const char*, const char**);
 #endif
@@ -111,8 +113,15 @@ void LoadGameConfigs(const std::string& title_id) {
   // smaller copies of the picture, read back by the CPU) came out wrong
   // upscaled, so scenes were far darker than at 1x. Keeping targets up to 320
   // pixels wide native fixed it (user, alpha.39).
-  cvars::draw_resolution_scale_threshold =
-      xe::utf8::lower_ascii(title_id) == "4541094a" ? 320 : 0;
+  const bool nfs_the_run = xe::utf8::lower_ascii(title_id) == "4541094a";
+  cvars::draw_resolution_scale_threshold = nfs_the_run ? 320 : 0;
+  // NFS The Run reads small render output (its brightness measurement) about
+  // 100 times a second; waiting for the GPU on each read took 30-270 ms a
+  // second of its threads at 2x. Copied for it on the GPU instead, the reads
+  // see output up to a frame old, and no early submissions are needed for
+  // them (alpha.41).
+  cvars::readback_resolve_async = nfs_the_run;
+  cvars::resolve_sync_only_watched = nfs_the_run;
   if (!cvar::ConfigVars) return;
   for (const auto& folder : folders) {
     const fs::path file = folder / (title_id + ".config.toml");

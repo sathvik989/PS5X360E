@@ -1539,10 +1539,30 @@ index ed9bb6b10..5ed344e73 100644
    for (int i = 0; i < 32; i++) {
      crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
 diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
-index 4bfd8c3ec..76ad7eff2 100644
+index 4bfd8c3ec..4256ac647 100644
 --- a/src/xenia/gpu/command_processor.cc
 +++ b/src/xenia/gpu/command_processor.cc
-@@ -109,6 +109,24 @@ DEFINE_bool(
+@@ -8,6 +8,7 @@
+  */
+ 
+ #include "xenia/gpu/command_processor.h"
++#include "xbox360ps5/gpu_diagnostics.hpp"
+ 
+ #include <algorithm>
+ #include <fstream>
+@@ -75,7 +76,10 @@ DEFINE_string(
+     "           unresolved reports. May improve effects relying on precise\n"
+     "           visibility, but may be less stable for occlusion culling.\n"
+     " strict: Ask the GPU and wait for the real result before continuing.\n"
+-    "         Most accurate, but may be somewhat less performant.",
++    "         Most accurate, but may be somewhat less performant.\n"
++    " async: The real result like strict, delivered as soon as the GPU has\n"
++    "        it, without the GPU thread waiting; the game sees its query as\n"
++    "        not ready until then.",
+     "GPU");
+ 
+ DEFINE_bool(
+@@ -109,6 +113,34 @@ DEFINE_bool(
      "RAM without it, which breaks games that read it back.",
      "GPU");
  
@@ -1556,18 +1576,28 @@ index 4bfd8c3ec..76ad7eff2 100644
 +    "GPU");
 +
 +DEFINE_bool(
++    readback_resolve_async, false,
++    "Copy render output the CPU reads regularly into guest RAM on the GPU, "
++    "right after it is drawn, instead of making the reading thread wait for "
++    "the GPU. A read before the copy lands sees the previous output (usually "
++    "the frame before), so it is for titles known to take it (NFS The Run). "
++    "Needs the guest RAM host buffer.",
++    "GPU");
++
++DEFINE_bool(
 +    resolve_sync_only_watched, false,
 +    "Submit GPU work early at guest sync points only for render output the "
 +    "CPU may read (see readback_skip_unread_resolves), rather than after any "
-+    "resolve. Fewer, larger submissions, but in NFS The Run at 2x the CPU then "
-+    "waited four times as long for the render output it reads (up to 270 ms "
-+    "a second) and the frame rate dropped, so off by default.",
++    "resolve. Fewer, larger submissions. Alone, NFS The Run at 2x then waited "
++    "four times as long for the render output its CPU reads; with "
++    "readback_resolve_async those reads no longer wait for submissions, so "
++    "the two go together, per title.",
 +    "GPU");
 +
  DEFINE_bool(
      memexport_enable, true,
      "Make memory export output visible to the CPU. Needed by games that read "
-@@ -144,6 +162,12 @@ DEFINE_bool(
+@@ -144,6 +176,12 @@ DEFINE_bool(
      "Vulkan, SV_Barycentrics on Direct3D 12).",
      "GPU");
  
@@ -1580,7 +1610,26 @@ index 4bfd8c3ec..76ad7eff2 100644
  namespace xe {
  namespace gpu {
  
-@@ -488,6 +512,11 @@ void CommandProcessor::ThrottlePresentation() {
+@@ -195,6 +233,8 @@ static ZPDMode ParseZPDMode() {
+   const std::string& mode = cvars::occlusion_query;
+   if (mode == "strict") {
+     return ZPDMode::kStrict;
++  } else if (mode == "async") {
++    return ZPDMode::kAsync;
+   } else if (mode == "fast") {
+     return ZPDMode::kFast;
+   } else if (mode == "fast-alt") {
+@@ -407,6 +447,9 @@ void CommandProcessor::SetZPDMode(ZPDMode mode) {
+     case ZPDMode::kStrict:
+       mode_str = "strict";
+       break;
++    case ZPDMode::kAsync:
++      mode_str = "async";
++      break;
+     default:
+       break;
+   }
+@@ -488,6 +531,11 @@ void CommandProcessor::ThrottlePresentation() {
  }
  
  void CommandProcessor::WorkerThreadMain() {
@@ -1592,7 +1641,7 @@ index 4bfd8c3ec..76ad7eff2 100644
    if (!SetupContext()) {
      xe::FatalError("Unable to setup command processor internal state");
      return;
-@@ -506,6 +535,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -506,18 +554,47 @@ void CommandProcessor::WorkerThreadMain() {
        // We've run out of commands to execute.
        // We spin here waiting for new ones, as the overhead of waiting on our
        // event is too high.
@@ -1600,7 +1649,32 @@ index 4bfd8c3ec..76ad7eff2 100644
        PrepareForWait();
        uint32_t loop_count = 0;
        do {
-@@ -518,6 +548,15 @@ void CommandProcessor::WorkerThreadMain() {
++        // PS5X360E: async ZPD owes the guest results it may be polling for:
++        // hand everything to the GPU and retire results as they land, never
++        // blocking. The GPU thread has a core of its own.
++        // Only reports the guest is waiting on (its pending sentinel in place)
++        // keep the thread spinning; others are handed over once it has been
++        // idle a while, below.
++        const bool zpd_async_awaited =
++            zpd_mode_ == ZPDMode::kAsync && zpd_awaited_report_count_;
+         // If we spin around too much, revert to a "low-power" state.
+-        if (loop_count > 500) {
++        if (zpd_async_awaited && loop_count <= 4000) {
++          if (!(loop_count & 15)) {
++            FlushZPDForWait(false);
++          }
++          xe::threading::MaybeYield();
++        } else if (loop_count > 500) {
+           constexpr int wait_time_ms = 2;
+           xe::threading::Wait(write_ptr_index_event_.get(), true,
+                               std::chrono::milliseconds(wait_time_ms));
++          // PS5X360E: async ZPD, idle a while: hand over what queued reports
++          // need and retire what completed (after a few ms of a guest waiting
++          // on one, also letting pipeline creation finish).
++          if (zpd_mode_ == ZPDMode::kAsync && !zpd_reports_.empty()) {
++            FlushZPDForWait(zpd_awaited_report_count_ != 0);
++          }
+           // Strict ZPD may still owe the guest a report it's spinning on with
            // nothing left in the ring.
            if (zpd_mode_ == ZPDMode::kStrict && zpd_awaited_report_count_) {
              PrepareForWait();
@@ -1616,7 +1690,7 @@ index 4bfd8c3ec..76ad7eff2 100644
            }
          } else {
            xe::threading::MaybeYield();
-@@ -528,6 +567,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -528,6 +605,7 @@ void CommandProcessor::WorkerThreadMain() {
                 (write_ptr_index == 0xBAADF00D ||
                  read_ptr_index_ == write_ptr_index));
        ReturnFromWait();
@@ -1624,7 +1698,7 @@ index 4bfd8c3ec..76ad7eff2 100644
        if (!worker_running_ || !pending_fns_.empty()) {
          continue;
        }
-@@ -553,6 +593,183 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -553,6 +631,184 @@ void CommandProcessor::WorkerThreadMain() {
    ShutdownContext();
  }
  
@@ -1711,7 +1785,8 @@ index 4bfd8c3ec..76ad7eff2 100644
 +      phase < uint32_t(DiagPhase::kCount) ? kPhaseNames[phase] : "?",
 +      since ? Clock::QueryHostUptimeMillis() - since : 0, read_ptr_index_,
 +      write_ptr_index_.load(), GetCompletedSubmission());
-+  const char* mode = zpd_mode_ == ZPDMode::kStrict    ? "strict"
++  const char* mode = zpd_mode_ == ZPDMode::kAsync     ? "async"
++                     : zpd_mode_ == ZPDMode::kStrict  ? "strict"
 +                     : zpd_mode_ == ZPDMode::kFastAlt ? "fast-alt"
 +                     : zpd_mode_ == ZPDMode::kFast    ? "fast"
 +                                                      : "fake";
@@ -1808,7 +1883,7 @@ index 4bfd8c3ec..76ad7eff2 100644
  void CommandProcessor::Pause() {
    if (paused_) {
      return;
-@@ -742,6 +959,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
+@@ -742,6 +998,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
        uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
        uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
        xe::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
@@ -1818,7 +1893,29 @@ index 4bfd8c3ec..76ad7eff2 100644
      }
    } else {
      switch (index) {
-@@ -1279,6 +1499,8 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1034,6 +1293,12 @@ void CommandProcessor::PrepareForWait() {
+   trace_writer_.Flush();
+   if (zpd_mode_ == ZPDMode::kStrict && zpd_awaited_report_count_) {
+     PrepareZPDForWait();
++  } else if (zpd_mode_ == ZPDMode::kAsync && zpd_awaited_report_count_) {
++    FlushZPDForWait();
++  } else if (zpd_mode_ == ZPDMode::kAsync && !zpd_reports_.empty()) {
++    // Results that already arrived, without handing anything over.
++    PollCompletedSubmission();
++    PumpPendingRetire();
+   }
+   if (viz_pending_resolves_) {
+     PollCompletedSubmission();
+@@ -1251,7 +1516,7 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+ 
+   ZPDReport& report = zpd_current_report_;
+   report.address = report_address;
+-  if (zpd_mode_ == ZPDMode::kStrict) {
++  if (IsExactZPDMode()) {
+     // See EVENT_WRITE_ZPD for additional information on the pending sentinel.
+     const uint32_t kPendingSentinel = xe::byte_swap(0xFFFFFEEDu);
+     const auto* guest =
+@@ -1279,6 +1544,8 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
      WriteZPDReport(report_address, report.speculative_value);
    }
    zpd_awaited_report_count_ += report.awaited;
@@ -1827,11 +1924,41 @@ index 4bfd8c3ec..76ad7eff2 100644
    zpd_reports_.push_back(report);
    zpd_stats_.reports_queued++;
  
-@@ -1476,10 +1698,10 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
+@@ -1328,8 +1595,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
+   if (result == QueryOpenResult::kPoolExhausted) {
+     zpd_stats_.pool_exhausted++;
+   }
+-  if (result == QueryOpenResult::kPoolExhausted &&
+-      zpd_mode_ != ZPDMode::kStrict) {
++  if (result == QueryOpenResult::kPoolExhausted && !IsExactZPDMode()) {
+     // Fast modes favor forward progress over accuracy. Report at least one
+     // passing sample instead of waiting for a slot to become available.
+     if (report) {
+@@ -1476,10 +1742,30 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
    return nullptr;
  }
  
 -void CommandProcessor::PrepareZPDForWait() {
++void CommandProcessor::FlushZPDForWait(bool block_on_pipelines) {
++  // Non-blocking: picks up completed submissions and retires them.
++  PollCompletedSubmission();
++  PumpPendingRetire();
++  if (zpd_reports_.empty()) {
++    return;
++  }
++  // Reports retire in order and segments close in order, so the newest queued
++  // report's last segment is the furthest submission anything queued needs.
++  uint64_t needed = 0;
++  for (const ZPDReport& report : zpd_reports_) {
++    if (report.pending_segments) {
++      needed = std::max(needed, report.last_segment_end_submission);
++    }
++  }
++  if (needed) {
++    SubmitQueryResolvesNoWait(needed, block_on_pipelines);
++  }
++}
++
 +void CommandProcessor::PrepareZPDForWait(bool any_report) {
    ReportHandle awaited_handle = kInvalidReportHandle;
    for (const ZPDReport& report : zpd_reports_) {
@@ -1840,7 +1967,31 @@ index 4bfd8c3ec..76ad7eff2 100644
        awaited_handle = report.handle;
        break;
      }
-@@ -1547,6 +1769,21 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1531,13 +1817,22 @@ void CommandProcessor::PumpPendingRetire() {
+       if (zpd_mode_ == ZPDMode::kStrict) {
+         break;
+       }
++      // PS5X360E: async only gives up on a result that went missing after the
++      // GPU finished the submission holding it.
++      if (zpd_mode_ == ZPDMode::kAsync &&
++          front.last_segment_end_submission > GetCompletedSubmission()) {
++        zpd_pending_retire_start_ms_ = 0;
++        break;
++      }
+       // A stuck front report would block everything behind it.
+       uint64_t now_ms = Clock::QueryHostUptimeMillis();
+       if (!zpd_pending_retire_start_ms_) {
+         zpd_pending_retire_start_ms_ = now_ms;
+         break;
+       }
+-      if (now_ms - zpd_pending_retire_start_ms_ < kFastZPDRetireDeadlineMs) {
++      if (now_ms - zpd_pending_retire_start_ms_ <
++          (zpd_mode_ == ZPDMode::kAsync ? kAsyncZPDRetireDeadlineMs
++                                        : kFastZPDRetireDeadlineMs)) {
+         break;
+       }
+       front.delta.z_pass = std::max<uint64_t>(front.delta.z_pass, 1);
+@@ -1547,6 +1842,21 @@ void CommandProcessor::PumpPendingRetire() {
      zpd_pending_retire_start_ms_ = 0;
  
      zpd_sample_counter_ += front.delta;
@@ -1863,10 +2014,30 @@ index 4bfd8c3ec..76ad7eff2 100644
        if (fast_zpd_report_cached_deltas_.size() >= kFastZPDCacheMaxEntries &&
            !fast_zpd_report_cached_deltas_.count(front.address)) {
 diff --git a/src/xenia/gpu/command_processor.h b/src/xenia/gpu/command_processor.h
-index 96d842b84..510be533d 100644
+index 96d842b84..22bdbc243 100644
 --- a/src/xenia/gpu/command_processor.h
 +++ b/src/xenia/gpu/command_processor.h
-@@ -136,7 +136,25 @@ class CommandProcessor {
+@@ -53,6 +53,9 @@ enum class ZPDMode {
+   kFast,     // Real queries, speculative writes biased visible (fast)
+   kFastAlt,  // Fast, but replays cached zero deltas too (fast-alt)
+   kStrict,   // Real queries, waits before writeback (strict)
++  // PS5X360E: real queries, the guest's pending sentinel kept until the real
++  // result is written, and the GPU thread never waits for it (async).
++  kAsync,
+ };
+ 
+ void SaveGPUSetting(GPUSetting setting, uint64_t value);
+@@ -75,6 +78,9 @@ struct ResolveRange {
+ constexpr uint64_t kStrictZPDRetireDeadlineMs = 2;
+ // The fast modes only need to keep queue growth in check.
+ constexpr uint64_t kFastZPDRetireDeadlineMs = 250;
++// PS5X360E: async gives up on a report only when its submission completed and
++// its result still has not arrived, after this long.
++constexpr uint64_t kAsyncZPDRetireDeadlineMs = 100;
+ 
+ // Cap for the fast-mode cached delta map.  Games reuse a small set of report
+ // addresses so this should never be hit, but prevents unbounded growth if a
+@@ -136,7 +142,25 @@ class CommandProcessor {
                     kernel::KernelState* kernel_state);
    virtual ~CommandProcessor();
    uint32_t counter() const { return counter_; }
@@ -1892,7 +2063,7 @@ index 96d842b84..510be533d 100644
  
    Shader* active_vertex_shader() const { return active_vertex_shader_; }
    Shader* active_pixel_shader() const { return active_pixel_shader_; }
-@@ -196,6 +214,10 @@ class CommandProcessor {
+@@ -196,6 +220,10 @@ class CommandProcessor {
        std::function<void()> completion_callback = nullptr);
  
    virtual void RequestFrameTrace(const std::filesystem::path& root_path);
@@ -1903,7 +2074,7 @@ index 96d842b84..510be533d 100644
    virtual void BeginTracing(const std::filesystem::path& root_path);
    virtual void EndTracing();
    // Safe from any thread, the writer is closed on the next swap.
-@@ -216,6 +238,9 @@ class CommandProcessor {
+@@ -216,6 +244,9 @@ class CommandProcessor {
    // register write-back - by backends that must have submitted what the guest
    // may then touch (see command_processor_resolve_readwatch.inc).
    virtual void SubmitResolvesForGuestSync() {}
@@ -1913,7 +2084,7 @@ index 96d842b84..510be533d 100644
  
    void RestoreRegisters(uint32_t first_register,
                          const uint32_t* register_values,
-@@ -393,6 +418,8 @@ class CommandProcessor {
+@@ -393,6 +424,8 @@ class CommandProcessor {
      // For strict, when a report holds the D3D sentinel.
      // Only these are worth blocking a wait for.
      bool awaited = false;
@@ -1922,16 +2093,31 @@ index 96d842b84..510be533d 100644
    };
  
    static constexpr uint64_t kInvalidVIZGeneration = 0;
-@@ -491,7 +518,7 @@ class CommandProcessor {
+@@ -491,7 +524,22 @@ class CommandProcessor {
    // order, so the queue is indexed by the front handle.
    ZPDReport* FindZPDReport(ReportHandle report_handle);
    // Handles a strict report the guest is waiting on while the ring is empty.
 -  void PrepareZPDForWait();
 +  void PrepareZPDForWait(bool any_report = false);
++  // PS5X360E: strict and async never write a guess; the guest keeps its
++  // sentinel until the real result.
++  bool IsExactZPDMode() const {
++    return zpd_mode_ == ZPDMode::kStrict || zpd_mode_ == ZPDMode::kAsync;
++  }
++  // PS5X360E: async. Retires what has completed and hands the GPU what queued
++  // reports still need, never waiting. block_on_pipelines lets an idle GPU
++  // thread drain asynchronous pipeline creation keeping the submission open.
++  void FlushZPDForWait(bool block_on_pipelines = false);
++  // Backend: ends the open submission if it is `submission` or later, without
++  // waiting for the GPU. False if that had to be postponed.
++  virtual bool SubmitQueryResolvesNoWait(uint64_t submission,
++                                         bool block_on_pipelines) {
++    return true;
++  }
    // Called from PrepareForWait and submission boundaries so retired reports
    // reach the guest before it loops again. Fast modes give up on a stuck front
    // report after kFastZPDRetireDeadlineMs.
-@@ -705,6 +732,8 @@ class CommandProcessor {
+@@ -705,6 +753,8 @@ class CommandProcessor {
    std::vector<uint32_t> me_bin_;
  
    uint32_t counter_ = 0;
@@ -1940,7 +2126,7 @@ index 96d842b84..510be533d 100644
  
    uint32_t primary_buffer_ptr_ = 0;
    uint32_t primary_buffer_size_ = 0;
-@@ -713,6 +742,39 @@ class CommandProcessor {
+@@ -713,6 +763,39 @@ class CommandProcessor {
    uint32_t read_ptr_update_freq_ = 0;
    uint32_t read_ptr_writeback_ptr_ = 0;
  
@@ -1993,10 +2179,21 @@ index 484b6d2e1..452d8f4c2 100644
    uint8_t* source = static_cast<uint8_t*>(buffer.mapped) + source_offset;
    // vastcpy's non-temporal stores need both pointers and the length to be
 diff --git a/src/xenia/gpu/command_processor_resolve_readwatch.inc b/src/xenia/gpu/command_processor_resolve_readwatch.inc
-index 8c2e6f64d..6e6b15a8f 100644
+index 8c2e6f64d..62fe0ca7f 100644
 --- a/src/xenia/gpu/command_processor_resolve_readwatch.inc
 +++ b/src/xenia/gpu/command_processor_resolve_readwatch.inc
-@@ -83,6 +83,11 @@ void MarkResolvePagesRead(uint32_t physical_address, uint32_t length) {
+@@ -26,6 +26,10 @@
+ // It must also define, before including this:
+ //   bool EndResolveSubmission()
+ //     Submits what has been recorded, without waiting for it.
++//   bool CopyResolveToGuestRamAsync(uint32_t address, uint32_t length)
++//     PS5X360E: records, after the resolve, a GPU copy of its output from the
++//     shared memory buffer into guest RAM, which lands when the GPU gets
++//     there. False when there is no way to (no guest RAM host buffer).
+ // And call OnResolveSubmissionEnded on the GPU thread whenever a submission is
+ // handed to the GPU, and SubmitRequestedResolve once IssueCopy is done.
+ //   uint64_t GetResolveSubmittedThrough() const
+@@ -83,6 +87,11 @@ void MarkResolvePagesRead(uint32_t physical_address, uint32_t length) {
    if (!resolve_page_owners_ || !length) {
      return;
    }
@@ -2008,7 +2205,18 @@ index 8c2e6f64d..6e6b15a8f 100644
    const uint32_t page_count = SharedMemory::kBufferSize >> 12;
    uint32_t first_page = physical_address >> 12;
    if (first_page >= page_count) {
-@@ -199,6 +204,13 @@ void ProvideResolveOutput(uint32_t address, uint32_t length, bool write) {
+@@ -193,12 +202,23 @@ void ProvideResolveOutput(uint32_t address, uint32_t length, bool write) {
+       continue;
+     }
+     ResolveOwner& owner = owner_it->second;
+-    if (owner.in_guest_ram || !owner.copyable) {
++    // PS5X360E: a read of output copied asynchronously takes what guest RAM
++    // has; a write has to wait for the copy (made again here, after it in the
++    // queue) so the copy can't land over it.
++    if (!owner.copyable ||
++        (owner.in_guest_ram && !(write && owner.async_copy))) {
+       continue;
+     }
      uint32_t owner_end = owner.address + owner.length;
      uint32_t owner_first_page = owner.address >> 12;
      uint32_t owner_last_page = std::min((owner_end - 1) >> 12, page_count - 1);
@@ -2022,9 +2230,11 @@ index 8c2e6f64d..6e6b15a8f 100644
      if (owner.submission > submitted) {
        if (write) {
          ClipResolveEdgePagesWritten(owner, owner_first_page, owner_last_page,
-@@ -244,6 +256,11 @@ void ProvideResolveOutput(uint32_t address, uint32_t length, bool write) {
+@@ -243,7 +263,13 @@ void ProvideResolveOutput(uint32_t address, uint32_t length, bool write) {
+     }
      if (FaultCopyResolveToGuestRam(resolve_fault_copy_ranges_)) {
        owner.in_guest_ram = true;
++      owner.async_copy = false;
      } else {
 +      if (trace) {
 +        XELOGW("FT {} PROVIDE {:08X} copy failed",
@@ -2034,7 +2244,7 @@ index 8c2e6f64d..6e6b15a8f 100644
        if (write) {
          ClipResolveEdgePagesWritten(owner, owner_first_page, owner_last_page,
                                      first_page, last_page);
-@@ -260,6 +277,7 @@ void CopyPackedRangesToGuestRam(
+@@ -260,6 +286,7 @@ void CopyPackedRangesToGuestRam(
      const std::vector<std::pair<uint32_t, uint32_t>>& ranges) {
    const uint8_t* source_bytes = static_cast<const uint8_t*>(source);
    for (const auto& range : ranges) {
@@ -2042,7 +2252,12 @@ index 8c2e6f64d..6e6b15a8f 100644
      std::memcpy(memory_->TranslatePhysical(range.first), source_bytes,
                  range.second);
      source_bytes += range.second;
-@@ -306,14 +324,39 @@ void NoteResolveForReadback(uint32_t address, uint32_t length, bool is_scaled) {
+@@ -302,22 +329,72 @@ void NoteResolveForReadback(uint32_t address, uint32_t length, bool is_scaled) {
+     owner.frame = resolve_frame_index_;
+     owner.copyable = !is_scaled;
+     owner.in_guest_ram = false;
++    owner.async_copy = false;
+     owner.rearm_pending = false;
      owner.clip_first_page = false;
      owner.clip_last_page = false;
    }
@@ -2073,6 +2288,30 @@ index 8c2e6f64d..6e6b15a8f 100644
      return;
    }
    resolve_unsubmitted_owner_ = true;
++  const bool read_recently = ResolveReadRecently(resolve_key, read_before);
++  // PS5X360E: output the CPU reads regularly goes to guest RAM on the GPU, in
++  // stream order right after the resolve, instead of the reading thread
++  // waiting for the GPU on a fault. A read before the GPU gets there sees the
++  // previous output (the frame before, for a per-frame read). In NFS The Run
++  // at 2x those waits took 30-270 ms a second of its threads. The watch stays
++  // armed, so reads keep being noticed (a fault then has nothing to wait for).
++  if (read_recently && cvars::readback_resolve_async &&
++      CopyResolveToGuestRamAsync(address, length)) {
++    {
++      std::lock_guard<std::mutex> lock(resolve_read_mutex_);
++      auto owner_it = resolve_owners_.find(resolve_key);
++      if (owner_it != resolve_owners_.end()) {
++        owner_it->second.in_guest_ram = true;
++        owner_it->second.async_copy = true;
++      }
++    }
++    // Submitted right after IssueCopy, so the copy reaches guest RAM as early
++    // as it can, a CPU spinning on it with the GPU idle gets it, and a CPU
++    // write has the shortest window in which it can't wait for it.
++    resolve_unsubmitted_watched_ = true;
++    resolve_submit_requested_ = true;
++    return;
++  }
 +  // PS5X360E: guest sync points (fences, interrupts, memory writes) submit
 +  // early only for output the CPU may read, not for output that has gone
 +  // unread for a while. They ended about 15 submissions a frame in NFS The
@@ -2083,7 +2322,12 @@ index 8c2e6f64d..6e6b15a8f 100644
    // A destination the CPU has read recently will likely be read again, and
    // possibly before the next guest sync point submits it, so it is submitted as
    // soon as IssueCopy is done, outside its debug marker scope.
-@@ -398,6 +441,7 @@ void SubmitRequestedResolve() {
+-  if (ResolveReadRecently(resolve_key, read_before)) {
++  if (read_recently) {
+     resolve_submit_requested_ = true;
+   }
+ }
+@@ -398,6 +475,7 @@ void SubmitRequestedResolve() {
  // them used up are armed again.
  void OnResolveSubmissionEnded() {
    resolve_unsubmitted_owner_ = false;
@@ -2091,7 +2335,7 @@ index 8c2e6f64d..6e6b15a8f 100644
    {
      std::lock_guard<std::mutex> lock(resolve_read_mutex_);
      if (resolve_rearm_ranges_.empty()) {
-@@ -419,6 +463,14 @@ void OnResolveSubmissionEnded() {
+@@ -419,6 +497,14 @@ void OnResolveSubmissionEnded() {
  // Before the guest can learn the GPU got past a resolve, the resolve has to be
  // submitted, so ProvideResolveOutput can copy its output from the fault.
  void SubmitResolvesForGuestSync() override {
@@ -2106,7 +2350,7 @@ index 8c2e6f64d..6e6b15a8f 100644
    if (resolve_unsubmitted_owner_) {
      EndResolveSubmission();
    }
-@@ -495,9 +547,9 @@ bool GetScaledResolveReadbackInfo(uint32_t address, uint32_t length,
+@@ -495,9 +581,9 @@ bool GetScaledResolveReadbackInfo(uint32_t address, uint32_t length,
    // RB_COPY_DEST_INFO, for depth the register can hold a different size.
    uint32_t pixel_size_log2 =
        draw_util::GetResolveDownscalePixelSizeLog2(copy_dest_info);
@@ -2119,7 +2363,7 @@ index 8c2e6f64d..6e6b15a8f 100644
      XELOGGPU(
          "Skipping readback of a resolution-scaled resolve to a 128bpp "
          "destination - not supported by the downscale shader");
-@@ -574,7 +626,9 @@ void ResetResolveReadWatch() {
+@@ -574,7 +660,9 @@ void ResetResolveReadWatch() {
      resolve_read_keys_.clear();
      resolve_owners_.clear();
    }
@@ -2129,7 +2373,18 @@ index 8c2e6f64d..6e6b15a8f 100644
    resolve_submit_requested_ = false;
    resolve_rearm_ranges_.clear();
    resolve_read_frames_.clear();
-@@ -610,6 +664,10 @@ std::unordered_map<uint64_t, ResolveOwner> resolve_owners_;
+@@ -599,6 +687,10 @@ struct ResolveOwner {
+   uint32_t frame = 0;
+   bool copyable = false;
+   bool in_guest_ram = false;
++  // PS5X360E: in_guest_ram because a GPU copy was recorded after the resolve
++  // (readback_resolve_async), not because it has run. A CPU write has to wait
++  // for it, or the copy would land over the write.
++  bool async_copy = false;
+   // In resolve_rearm_ranges_ already.
+   bool rearm_pending = false;
+   // The CPU wrote this edge page before the output could be copied, so only
+@@ -610,6 +702,10 @@ std::unordered_map<uint64_t, ResolveOwner> resolve_owners_;
  static constexpr size_t kMaxResolveOwners = 4096;
  // Under resolve_read_mutex_.
  void RearmResolveAfterSubmission(ResolveOwner& owner) {
@@ -2140,7 +2395,7 @@ index 8c2e6f64d..6e6b15a8f 100644
    if (!owner.rearm_pending) {
      owner.rearm_pending = true;
      resolve_rearm_ranges_.emplace_back(owner.address, owner.length);
-@@ -639,12 +697,21 @@ std::vector<std::pair<uint32_t, uint32_t>> resolve_rearming_ranges_;
+@@ -639,12 +735,21 @@ std::vector<std::pair<uint32_t, uint32_t>> resolve_rearming_ranges_;
  // Frame the CPU last read each destination's output, by resolve key. GPU thread
  // only.
  std::unordered_map<uint64_t, uint32_t> resolve_read_frames_;
@@ -2162,6 +2417,33 @@ index 8c2e6f64d..6e6b15a8f 100644
  bool resolve_submit_requested_ = false;
  uint32_t resolve_frame_index_ = 0;
  // Handle from RegisterPhysicalMemoryReadCallback, or null when not armed.
+diff --git a/src/xenia/gpu/d3d12/d3d12_command_processor.cc b/src/xenia/gpu/d3d12/d3d12_command_processor.cc
+index 43ae5a906..8737352c9 100644
+--- a/src/xenia/gpu/d3d12/d3d12_command_processor.cc
++++ b/src/xenia/gpu/d3d12/d3d12_command_processor.cc
+@@ -8,6 +8,7 @@
+  */
+ 
+ #include "xenia/gpu/d3d12/d3d12_command_processor.h"
++#include "xbox360ps5/gpu_diagnostics.hpp"
+ 
+ #include <cstdarg>
+ #include <cstring>
+diff --git a/src/xenia/gpu/d3d12/d3d12_command_processor.h b/src/xenia/gpu/d3d12/d3d12_command_processor.h
+index 3ea94fdc1..f9153b13c 100644
+--- a/src/xenia/gpu/d3d12/d3d12_command_processor.h
++++ b/src/xenia/gpu/d3d12/d3d12_command_processor.h
+@@ -376,6 +376,10 @@ class D3D12CommandProcessor final : public CommandProcessor {
+   bool EndResolveSubmission() {
+     return !submission_open_ || EndSubmission(false);
+   }
++  // PS5X360E: readback_resolve_async is Vulkan-only.
++  bool CopyResolveToGuestRamAsync(uint32_t address, uint32_t length) {
++    return false;
++  }
+   uint64_t GetResolveSubmittedThrough() const {
+     return resolve_submitted_through_.load(std::memory_order_acquire);
+   }
 diff --git a/src/xenia/gpu/draw_util.cc b/src/xenia/gpu/draw_util.cc
 index 916814c86..a3bca419c 100644
 --- a/src/xenia/gpu/draw_util.cc
@@ -2203,7 +2485,7 @@ index 916814c86..a3bca419c 100644
      return false;
    }
 diff --git a/src/xenia/gpu/gpu_flags.cc b/src/xenia/gpu/gpu_flags.cc
-index 7a9a87356..cd82863e4 100644
+index 7a9a87356..d24d9da5a 100644
 --- a/src/xenia/gpu/gpu_flags.cc
 +++ b/src/xenia/gpu/gpu_flags.cc
 @@ -9,6 +9,8 @@
@@ -2231,7 +2513,7 @@ index 7a9a87356..cd82863e4 100644
  DEFINE_bool(
      enable_host_buffer, true,
      "Import guest RAM as a second GPU buffer, so memexport output and resolve "
-@@ -126,7 +137,20 @@ DEFINE_int32(occlusion_query_fake_upper_threshold, 100,
+@@ -126,7 +137,40 @@ DEFINE_int32(occlusion_query_fake_upper_threshold, 100,
  DEFINE_bool(occlusion_query_log, false,
              "Log occlusion query lifetime and summary stats.", "GPU");
  
@@ -2250,11 +2532,31 @@ index 7a9a87356..cd82863e4 100644
 +  }
 +  return cvars::use_50Hz_mode ? 50 : 60;
 +}
++
++// PS5X360E
++DEFINE_uint32(guest_vblank_rate_millihz, 0,
++              "Exact guest vblank rate in millihertz (59940 matches a 59.94 Hz "
++              "display, so a game making 30 frames a second makes exactly one "
++              "per two display refreshes). 0: the whole-number rate "
++              "(guest_vblank_rate_override or 50/60 Hz).",
++              "GPU");
++DEFINE_bool(guest_vblank_high_priority, true,
++            "Run the thread that makes guest vblank interrupts above normal "
++            "priority (not the highest: it runs guest interrupt code), so they "
++            "arrive on time.",
++            "GPU");
++uint32_t GetGuestVblankRateMilliHz() {
++  if (cvars::guest_vblank_rate_millihz) {
++    return std::clamp<uint32_t>(cvars::guest_vblank_rate_millihz, 24000,
++                                240000);
++  }
++  return GetGuestVblankRateHz() * 1000;
++}
  
  DEFINE_bool(
      gpu_debug_markers, false,
 diff --git a/src/xenia/gpu/gpu_flags.h b/src/xenia/gpu/gpu_flags.h
-index be4eb2e2c..568aea0b5 100644
+index be4eb2e2c..e7afe444e 100644
 --- a/src/xenia/gpu/gpu_flags.h
 +++ b/src/xenia/gpu/gpu_flags.h
 @@ -11,6 +11,67 @@
@@ -2325,18 +2627,21 @@ index be4eb2e2c..568aea0b5 100644
  DECLARE_path(trace_gpu_prefix);
  DECLARE_bool(trace_gpu_stream);
  
-@@ -28,6 +89,10 @@ DECLARE_bool(gpu_allow_invalid_fetch_constants);
+@@ -28,6 +89,13 @@ DECLARE_bool(gpu_allow_invalid_fetch_constants);
  DECLARE_bool(shared_memory_zero_copy);
  
  DECLARE_bool(enable_host_buffer);
 +DECLARE_bool(frame_trace_on_measure);
++DECLARE_uint32(guest_vblank_rate_millihz);
++DECLARE_bool(guest_vblank_high_priority);
 +
 +DECLARE_bool(readback_skip_unread_resolves);
 +DECLARE_bool(resolve_sync_only_watched);
++DECLARE_bool(readback_resolve_async);
  
  DECLARE_bool(memexport_enable);
  DECLARE_bool(memexport_await_pixel_exports);
-@@ -49,6 +114,8 @@ DECLARE_bool(occlusion_query_full_counters);
+@@ -49,9 +117,13 @@ DECLARE_bool(occlusion_query_full_counters);
  
  DECLARE_bool(occlusion_query_viz);
  
@@ -2345,8 +2650,13 @@ index be4eb2e2c..568aea0b5 100644
  // Returns the guest vblank rate in Hz (50 for PAL, 60 for NTSC).
  // Based on use_50Hz_mode cvar.
  uint32_t GetGuestVblankRateHz();
++// PS5X360E
++uint32_t GetGuestVblankRateMilliHz();
+ 
+ DECLARE_int32(anisotropic_override);
+ 
 diff --git a/src/xenia/gpu/graphics_system.cc b/src/xenia/gpu/graphics_system.cc
-index b10f87bba..f3f99ae88 100644
+index b10f87bba..bb2800e63 100644
 --- a/src/xenia/gpu/graphics_system.cc
 +++ b/src/xenia/gpu/graphics_system.cc
 @@ -8,6 +8,10 @@
@@ -2360,8 +2670,52 @@ index b10f87bba..f3f99ae88 100644
  
  #include "xenia/base/byte_stream.h"
  #include "xenia/base/clock.h"
+@@ -22,6 +26,7 @@
+ #include "xenia/ui/graphics_provider.h"
+ #include "xenia/ui/window.h"
+ #include "xenia/ui/windowed_app_context.h"
++#include "xbox360ps5/gpu_diagnostics.hpp"
+ 
+ DEFINE_uint32(internal_display_resolution, 8,
+               "Allow games that support different resolutions to render "
+@@ -170,7 +175,11 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
+               if (refresh_cap_enabled) {
+                 const uint32_t vblank_hz = GetGuestVblankRateHz();
+                 const uint64_t tick_freq = Clock::guest_tick_frequency();
+-                const uint64_t target_duration_ticks = tick_freq / vblank_hz;
++                // PS5X360E: the rate can be fractional (59.94 Hz to match the
++                // display, guest_vblank_rate_millihz).
++                (void)vblank_hz;
++                const uint64_t target_duration_ticks =
++                    tick_freq * 1000 / GetGuestVblankRateMilliHz();
+                 const uint64_t current_time = Clock::QueryGuestTickCount();
+                 const uint64_t time_delta = current_time - last_frame_time;
+ 
+@@ -217,8 +226,12 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
+   frame_limiter_worker_thread_->set_can_debugger_suspend(true);
+   frame_limiter_worker_thread_->set_name("GPU Frame limiter");
+   frame_limiter_worker_thread_->Create();
++  // PS5X360E: guest vblank interrupts pace the game; a late wake-up is a late
++  // frame. The thread sleeps nearly all the time.
+   frame_limiter_worker_thread_->thread()->set_priority(
+-      threading::ThreadPriority::kLowest);
++      cvars::guest_vblank_high_priority
++          ? threading::ThreadPriority::kAboveNormal
++          : threading::ThreadPriority::kLowest);
+   if (cvars::trace_gpu_stream) {
+     BeginTracing();
+   }
+@@ -388,6 +401,8 @@ void GraphicsSystem::MarkVblank() {
+   // Capture vblank cadence so D1MODE_V_COUNTER tracks the actual rate
+   // (50Hz, 60Hz, or uncapped ~1ms), not just the configured one.
+   const uint64_t now = Clock::QueryGuestTickCount();
++  // PS5X360E: vblank timer jitter, for the pacing line.
++  xbox360ps5::gpu_diag::vblank_intervals.Mark();
+   const uint64_t prev =
+       last_vblank_guest_tick_.exchange(now, std::memory_order_acq_rel);
+   if (prev && now > prev) {
 diff --git a/src/xenia/gpu/pm4_command_processor_implement.h b/src/xenia/gpu/pm4_command_processor_implement.h
-index b5b005966..218cdd1b5 100644
+index b5b005966..d908617ea 100644
 --- a/src/xenia/gpu/pm4_command_processor_implement.h
 +++ b/src/xenia/gpu/pm4_command_processor_implement.h
 @@ -86,6 +86,13 @@ void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
@@ -2413,15 +2767,16 @@ index b5b005966..218cdd1b5 100644
  
    if (COMMAND_PROCESSOR::debug_markers_enabled()) {
      COMMAND_PROCESSOR::InsertDebugMarker("PM4_INTERRUPT: cpu_mask=0x%02X",
-@@ -798,6 +819,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_XE_SWAP(uint32_t packet,
+@@ -798,6 +819,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_XE_SWAP(uint32_t packet,
                                           frontbuffer_height);
    }
  
 +  ++swap_count_;  // Xbox360PS5: swap requests, including unavailable frontbuffers.
++  xbox360ps5::gpu_diag::guest_swaps.Mark();
    COMMAND_PROCESSOR::IssueSwap(frontbuffer_ptr, frontbuffer_width,
                                 frontbuffer_height);
  
-@@ -870,6 +892,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -870,6 +893,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
                  : register_file_->values[poll_reg_addr];
  
    bool matched = false;
@@ -2432,7 +2787,7 @@ index b5b005966..218cdd1b5 100644
  
    do {
      uint32_t value = value_ref;
-@@ -895,6 +921,66 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -895,6 +922,74 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
      matched = MatchValueAndRef(value & mask, ref, wait_info);
  
      if (!matched) {
@@ -2450,12 +2805,20 @@ index b5b005966..218cdd1b5 100644
 +        DiagRecordWrite(0x103, poll_reg_addr, value, set);
 +        COMMAND_PROCESSOR::SubmitResolvesForGuestSync();
 +        COMMAND_PROCESSOR::AwaitMemexportForFence();
++        if (zpd_mode_ == ZPDMode::kAsync && zpd_awaited_report_count_) {
++          COMMAND_PROCESSOR::FlushZPDForWait();
++        }
 +      } else if (is_memory) {
 +        // PS5X360E: a wait that did not end at once may be for a CPU that
 +        // reads render output first, including output that had gone unwatched
 +        // (resolve_sync_only_watched): submit all of it, as before alpha.37.
 +        // A check of a flag when nothing is pending.
 +        COMMAND_PROCESSOR::SubmitAllResolvesForGuestWait();
++        // A wait on a ZPD report, or on what the guest sets after reading
++        // one, can only end once its result is written.
++        if (zpd_mode_ == ZPDMode::kAsync && !zpd_reports_.empty()) {
++          COMMAND_PROCESSOR::FlushZPDForWait(false);
++        }
 +      }
 +      if (!wait_reported) {
 +        const auto now = std::chrono::steady_clock::now();
@@ -2499,7 +2862,7 @@ index b5b005966..218cdd1b5 100644
        // Wait using the duration specified by the guest.
        if (wait >= 0x100) {
          PrepareForWait();
-@@ -921,6 +1007,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -921,6 +1016,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
        }
      }
    } while (!matched);
@@ -2516,7 +2879,7 @@ index b5b005966..218cdd1b5 100644
  
    return true;
  }
-@@ -978,6 +1074,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
+@@ -978,6 +1083,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
  
    auto endianness = static_cast<xenos::Endian>(mem_addr & 0x3);
    mem_addr &= ~0x3;
@@ -2524,7 +2887,7 @@ index b5b005966..218cdd1b5 100644
    reg_val = GpuSwap(reg_val, endianness);
    xe::store(memory_->TranslatePhysical(mem_addr), reg_val);
    trace_writer_.WriteMemoryWrite(CpuToGpu(mem_addr), 4);
-@@ -997,6 +1094,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
+@@ -997,6 +1103,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
  
    for (uint32_t i = 0; i < count - 1; i++) {
      uint32_t write_data = reader_.ReadAndSwap<uint32_t>();
@@ -2534,7 +2897,7 @@ index b5b005966..218cdd1b5 100644
  
      auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
      auto addr = write_addr & ~0x3;
-@@ -1042,6 +1142,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
+@@ -1042,6 +1151,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
      value = register_file_->values[poll_reg_addr];
    }
    bool matched = MatchValueAndRef(value & mask, ref, wait_info);
@@ -2543,7 +2906,7 @@ index b5b005966..218cdd1b5 100644
  
    if (matched) {
      // Write.
-@@ -1081,7 +1183,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
+@@ -1081,7 +1192,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
      // Just an event flag? Where does this write?
    } else {
      // Write to an address.
@@ -2562,7 +2925,7 @@ index b5b005966..218cdd1b5 100644
      reader_.AdvanceRead((count - 1) * sizeof(uint32_t));
    }
    return true;
-@@ -1116,6 +1228,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
+@@ -1116,6 +1237,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
      // Write value.
      data_value = value;
    }
@@ -2570,7 +2933,7 @@ index b5b005966..218cdd1b5 100644
    auto endianness = static_cast<xenos::Endian>(address & 0x3);
    address &= ~0x3;
    data_value = GpuSwap(data_value, endianness);
-@@ -1359,10 +1472,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
+@@ -1359,10 +1481,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
        }
  
        if (!draw_succeeded) {
@@ -3249,7 +3612,7 @@ index e6b7d535c..0f0eb959b 100644
      SharedMemory::WatchHandle base_watch_handle_ = nullptr;
      SharedMemory::WatchHandle mips_watch_handle_ = nullptr;
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index 76fc1a45f..a210c01ad 100644
+index 76fc1a45f..705795256 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,7 +8,11 @@
@@ -3496,10 +3859,64 @@ index 76fc1a45f..a210c01ad 100644
      if (route_to_host) {
        // Producer draw: output landed in host_buffer_ (guest RAM), already CPU
        // coherent, so no readback. Just record the written pages. Consumers then
-@@ -4369,6 +4496,115 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
+@@ -4369,6 +4496,169 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
    memexport_staged_.clear();
  }
  
++bool VulkanCommandProcessor::CopyResolveToGuestRamAsync(uint32_t address,
++                                                        uint32_t length) {
++  // PS5X360E: see readback_resolve_async. With zero-copy the resolve wrote
++  // guest RAM itself.
++  if (shared_memory_->is_zero_copy()) {
++    return true;
++  }
++  VkBuffer host_buffer = shared_memory_->host_buffer();
++  if (host_buffer == VK_NULL_HANDLE || !length ||
++      address >= SharedMemory::kBufferSize) {
++    return false;
++  }
++  length = std::min(length, SharedMemory::kBufferSize - address);
++  VkBuffer device_buffer = shared_memory_->buffer();
++  const VkPipelineStageFlags read_stages =
++      VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | guest_shader_pipeline_stages_ |
++      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
++  const VkAccessFlags read_access = VK_ACCESS_INDEX_READ_BIT |
++                                    VK_ACCESS_SHADER_READ_BIT |
++                                    VK_ACCESS_TRANSFER_READ_BIT;
++  // The resolve (a transfer or compute write) before the transfer read, and
++  // earlier accesses of the host buffer before the transfer write.
++  shared_memory_->Use(VulkanSharedMemory::Usage::kRead);
++  PushBufferMemoryBarrier(
++      device_buffer, VkDeviceSize(address), VkDeviceSize(length),
++      guest_shader_pipeline_stages_ | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
++          VK_PIPELINE_STAGE_TRANSFER_BIT,
++      VK_PIPELINE_STAGE_TRANSFER_BIT,
++      VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
++      VK_ACCESS_TRANSFER_READ_BIT);
++  PushBufferMemoryBarrier(
++      host_buffer, VkDeviceSize(address), VkDeviceSize(length), read_stages,
++      VK_PIPELINE_STAGE_TRANSFER_BIT,
++      read_access | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
++      VK_ACCESS_TRANSFER_WRITE_BIT);
++  SubmitBarriers(true);
++  VkBufferCopy region;
++  region.srcOffset = address;
++  region.dstOffset = address;
++  region.size = length;
++  deferred_command_buffer_.CmdVkCopyBuffer(device_buffer, host_buffer, 1,
++                                           &region);
++  // Visible to the CPU once the submission completes, and to draws reading
++  // the host buffer.
++  PushBufferMemoryBarrier(host_buffer, VkDeviceSize(address),
++                          VkDeviceSize(length), VK_PIPELINE_STAGE_TRANSFER_BIT,
++                          read_stages | VK_PIPELINE_STAGE_HOST_BIT,
++                          VK_ACCESS_TRANSFER_WRITE_BIT,
++                          read_access | VK_ACCESS_TRANSFER_WRITE_BIT |
++                              VK_ACCESS_HOST_READ_BIT);
++  perf_async_readbacks_.fetch_add(1, std::memory_order_relaxed);
++  return true;
++}
++
 +void VulkanCommandProcessor::MarkGpuOutputHostStale(uint32_t base_bytes,
 +                                                    uint32_t size_bytes) {
 +  if (!cvars::host_buffer_resolve_sync || !size_bytes ||
@@ -3612,7 +4029,7 @@ index 76fc1a45f..a210c01ad 100644
  bool VulkanCommandProcessor::EnsureMemexportRangeInDeviceBuffer(
      uint32_t base_bytes, uint32_t size_bytes, bool whole_range) {
    // Readers of the device buffer need memexport output copied across from
-@@ -4765,6 +5001,35 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4765,6 +5055,35 @@ bool VulkanCommandProcessor::IssueCopy() {
      return false;
    }
    ++submission_in_progress_.resolve_count;
@@ -3648,7 +4065,7 @@ index 76fc1a45f..a210c01ad 100644
  
    // The resolve wrote the device buffer. Drop any stale memexport marks so the
    // output isn't overwritten with guest RAM by a later texture load.
-@@ -4782,9 +5047,17 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4782,9 +5101,17 @@ bool VulkanCommandProcessor::IssueCopy() {
          is_scaled = false;
          written_length = mirrored_length;
        }
@@ -3666,7 +4083,7 @@ index 76fc1a45f..a210c01ad 100644
  
    // Pop debug marker for resolve operation.
    if (debug_markers_enabled_) {
-@@ -4793,9 +5066,212 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4793,9 +5120,212 @@ bool VulkanCommandProcessor::IssueCopy() {
  
    SubmitRequestedResolve();
  
@@ -3879,7 +4296,16 @@ index 76fc1a45f..a210c01ad 100644
  void VulkanCommandProcessor::EnsureQueryResources() {
    // VIZ surveys need the pool even when ZPD reports are faked.
    if ((zpd_mode_ == ZPDMode::kFake && !cvars::occlusion_query_viz) ||
-@@ -4945,6 +5421,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4919,7 +5449,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+       is_pool_exhausted = !host_query_pool_->has_free_indices();
+     }
+ 
+-    if (is_pool_exhausted && zpd_mode_ != ZPDMode::kStrict) {
++    if (is_pool_exhausted && !IsExactZPDMode()) {
+       return QueryOpenResult::kPoolExhausted;
+     }
+ 
+@@ -4945,6 +5475,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
          saved_framebuffer = current_framebuffer_;
          EndRenderPass();
        }
@@ -3887,7 +4313,7 @@ index 76fc1a45f..a210c01ad 100644
        if (!EndSubmission(false)) {
          return QueryOpenResult::kFailed;
        }
-@@ -4971,7 +5448,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4971,7 +5502,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
          XELOGI("ZPD: Stall awaiting submission={} completed_before={}",
                 wait_for, completed_submission);
        }
@@ -3896,7 +4322,7 @@ index 76fc1a45f..a210c01ad 100644
        PumpQueryResolves();
      }
  
-@@ -5145,6 +5622,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+@@ -5145,6 +5676,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
  bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                 uint64_t wait_for_submission) {
    assert_not_zero(wait_for_submission);
@@ -3909,7 +4335,7 @@ index 76fc1a45f..a210c01ad 100644
  
    // The resolve is still in the open submission. Pipelines being created
    // asynchronously have to finish before it can be executed.
-@@ -5158,16 +5641,19 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5158,16 +5695,19 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
              "ZPD/Async: Draining Vulkan async pipeline creation for strict "
              "retirement");
        }
@@ -3930,7 +4356,32 @@ index 76fc1a45f..a210c01ad 100644
    }
  
    PumpQueryResolves();
-@@ -5313,7 +5799,7 @@ void VulkanCommandProcessor::AwaitVIZQueryResolve(
+@@ -5176,6 +5716,24 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+   return !report || !report->pending_segments;
+ }
+ 
++bool VulkanCommandProcessor::SubmitQueryResolvesNoWait(
++    uint64_t submission, bool block_on_pipelines) {
++  // PS5X360E: the first half of AwaitQueryResolve, for async ZPD: hand the
++  // queries to the GPU, never wait for their results.
++  if (!submission_open_ || submission < GetCurrentSubmission()) {
++    return true;
++  }
++  if (!CanEndSubmissionImmediately()) {
++    if (!block_on_pipelines) {
++      return false;
++    }
++    pipeline_cache_->AwaitPipelineCompletion();
++  }
++  EndRenderPass();
++  submit_reason_ = SubmitReason::kQuery;
++  return EndSubmission(false);
++}
++
+ bool VulkanCommandProcessor::EnsureVIZPredicateBuffer() {
+   if (viz_predicate_buffer_ != VK_NULL_HANDLE) {
+     return true;
+@@ -5313,7 +5871,7 @@ void VulkanCommandProcessor::AwaitVIZQueryResolve(
    }
  
    if (wait_for_submission > GetCompletedSubmission()) {
@@ -3939,7 +4390,7 @@ index 76fc1a45f..a210c01ad 100644
    }
  
    PumpQueryResolves();
-@@ -5393,6 +5879,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
+@@ -5393,6 +5951,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
  
    if (await_submission >= GetCurrentSubmission()) {
      if (submission_open_) {
@@ -3947,7 +4398,7 @@ index 76fc1a45f..a210c01ad 100644
        EndSubmission(false);
      }
      // A submission won't be ended if it hasn't been started, or if ending
-@@ -5400,7 +5887,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
+@@ -5400,7 +5959,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
      await_submission = GetCurrentSubmission() - 1;
    }
  
@@ -3956,7 +4407,7 @@ index 76fc1a45f..a210c01ad 100644
  
    const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
  
-@@ -5678,6 +6165,72 @@ bool VulkanCommandProcessor::CanEndSubmissionImmediately() const {
+@@ -5678,6 +6237,76 @@ bool VulkanCommandProcessor::CanEndSubmissionImmediately() const {
           !pipeline_cache_->IsCreatingPipelines();
  }
  
@@ -3985,6 +4436,7 @@ index 76fc1a45f..a210c01ad 100644
 +    perf_gpu_busy_ns_.store(0);
 +    perf_gpu_timed_.store(0);
 +    perf_gpu_untimed_.store(0);
++    perf_async_readbacks_.store(0);
 +    return {};
 +  }
 +  const double seconds = double(now - since) / 1e9;
@@ -4000,6 +4452,7 @@ index 76fc1a45f..a210c01ad 100644
 +    wait_ns[i] = perf_wait_ns_[i].exchange(0);
 +  }
 +  const uint64_t busy = perf_gpu_busy_ns_.exchange(0);
++  const uint64_t async_readbacks = perf_async_readbacks_.exchange(0);
 +  const uint64_t timed = perf_gpu_timed_.exchange(0);
 +  const uint64_t untimed = perf_gpu_untimed_.exchange(0);
 +  auto per_s = [&](uint64_t v) { return double(v) / seconds; };
@@ -4009,7 +4462,8 @@ index 76fc1a45f..a210c01ad 100644
 +      "submissions {:.0f}/s: swap {:.0f}, guest buffer end {:.0f}, resolve "
 +      "sync {:.0f}, occlusion query {:.0f}, wait {:.0f}, other {:.0f}; GPU "
 +      "waits: occlusion query {:.0f}/s {:.1f} ms/s, other {:.0f}/s {:.1f} "
-+      "ms/s, resolve read by CPU {:.0f}/s {:.1f} ms/s",
++      "ms/s, resolve read by CPU {:.0f}/s {:.1f} ms/s; render output copied "
++      "for the CPU without waiting {:.0f}/s",
 +      100.0 * double(busy) / double(now - since), ms_per_s(busy), timed,
 +      untimed, per_s(total_submits),
 +      per_s(submits[uint32_t(SubmitReason::kSwap)]),
@@ -4023,13 +4477,14 @@ index 76fc1a45f..a210c01ad 100644
 +      per_s(waits[uint32_t(WaitReason::kOther)]),
 +      ms_per_s(wait_ns[uint32_t(WaitReason::kOther)]),
 +      per_s(waits[uint32_t(WaitReason::kFaultCopy)]),
-+      ms_per_s(wait_ns[uint32_t(WaitReason::kFaultCopy)]));
++      ms_per_s(wait_ns[uint32_t(WaitReason::kFaultCopy)]),
++      per_s(async_readbacks));
 +}
 +
  void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    if (!vulkan_device->properties().timestampPeriod) {
-@@ -5724,13 +6277,22 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
+@@ -5724,13 +6353,22 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
                                    sizeof(uint64_t),
                                    VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
          timestamps[1] > timestamps[0]) {
@@ -4053,7 +4508,7 @@ index 76fc1a45f..a210c01ad 100644
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5885,6 +6447,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5885,6 +6523,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
          gpu_time_pool_available && !gpu_time_query_submissions_[gpu_time_slot];
      if (gpu_time_pool_available && !gpu_time_recorded) {
        ++gpu_time_untimed_submissions_;
@@ -4061,7 +4516,7 @@ index 76fc1a45f..a210c01ad 100644
      }
      if (gpu_time_recorded) {
        dfn.vkCmdResetQueryPool(command_buffer.buffer, gpu_time_query_pool_,
-@@ -5954,6 +6517,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5954,6 +6593,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        }
        return false;
      }
@@ -4070,7 +4525,7 @@ index 76fc1a45f..a210c01ad 100644
      current_submission_wait_stage_masks_.clear();
      for (VkSemaphore semaphore : current_submission_wait_semaphores_) {
        submissions_in_flight_semaphores_.emplace_back(submission_index,
-@@ -6879,20 +7444,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6879,20 +7520,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
          std::memcpy(mapping, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X],
                      sizeof(float) * 4 * 256);
        } else {
@@ -4094,7 +4549,7 @@ index 76fc1a45f..a210c01ad 100644
        }
      }
      // Pixel shader float constants.
-@@ -6906,20 +7460,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6906,20 +7536,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
        if (!mapping) {
          return false;
        }
@@ -4119,7 +4574,7 @@ index 76fc1a45f..a210c01ad 100644
      // Bool and loop constants.
      if (!(current_constant_buffers_up_to_date_ &
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.h b/src/xenia/gpu/vulkan/vulkan_command_processor.h
-index 5fdd9173a..b3d6edf98 100644
+index 5fdd9173a..c71330186 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.h
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.h
 @@ -238,6 +238,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
@@ -4137,7 +4592,7 @@ index 5fdd9173a..b3d6edf98 100644
    // If not started yet, begins a render pass from the render target cache.
    // Submission must be open.
    void SubmitBarriersAndEnterRenderTargetCacheRenderPass(
-@@ -320,7 +328,11 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -320,8 +328,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
  
    // For command_processor_resolve_readwatch.inc.
    bool EndResolveSubmission() {
@@ -4148,9 +4603,11 @@ index 5fdd9173a..b3d6edf98 100644
 +    submit_reason_ = SubmitReason::kResolveSync;
 +    return EndSubmission(false);
    }
++  bool CopyResolveToGuestRamAsync(uint32_t address, uint32_t length);
    uint64_t GetResolveSubmittedThrough() const {
      return resolve_submitted_through_.load(std::memory_order_acquire);
-@@ -379,6 +391,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
+   }
+@@ -379,6 +392,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
    std::vector<MemexportStagedRange> memexport_staged_;
    // For EnsureMemexportRangeInDeviceBuffer.
    std::vector<VkBufferCopy> memexport_copy_regions_;
@@ -4164,7 +4621,7 @@ index 5fdd9173a..b3d6edf98 100644
  
    void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                   uint32_t frontbuffer_height) override;
-@@ -394,6 +413,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -394,6 +414,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
                   bool major_mode_explicit) override;
    bool IssueCopy() override;
  
@@ -4172,7 +4629,16 @@ index 5fdd9173a..b3d6edf98 100644
    void InitializeTrace() override;
    bool DumpEdramSnapshotToFile(const std::filesystem::path& path) override;
  
-@@ -702,7 +722,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -576,6 +597,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
+   void PumpQueryResolves() override;
+   bool AwaitQueryResolve(ReportHandle report_handle,
+                          uint64_t wait_for_submission) override;
++  bool SubmitQueryResolvesNoWait(uint64_t submission,
++                                 bool block_on_pipelines) override;
+ 
+   bool EnsureVIZPredicateBuffer();
+   // Drains the queued predicate copies.
+@@ -702,7 +725,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
  
    // A timestamp pair per in-flight submission, so the summed GPU busy time is
    // comparable against the Metal backend's completion-handler figure.
@@ -4181,7 +4647,7 @@ index 5fdd9173a..b3d6edf98 100644
    VkQueryPool gpu_time_query_pool_ = VK_NULL_HANDLE;
    uint64_t gpu_time_query_submissions_[kGpuTimeQuerySubmissions] = {};
    uint32_t gpu_time_query_slot_ = 0;
-@@ -714,6 +734,34 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -714,6 +737,35 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // which sums per-submission intervals and misleads without it.
    uint64_t gpu_time_submissions_window_start_ = 0;
    uint64_t gpu_time_window_start_ns_ = 0;
@@ -4204,6 +4670,7 @@ index 5fdd9173a..b3d6edf98 100644
 +  std::atomic<uint64_t> perf_waits_[uint32_t(WaitReason::kCount)] = {};
 +  std::atomic<uint64_t> perf_wait_ns_[uint32_t(WaitReason::kCount)] = {};
 +  std::atomic<uint64_t> perf_gpu_busy_ns_{0};
++  std::atomic<uint64_t> perf_async_readbacks_{0};
 +  std::atomic<uint64_t> perf_gpu_timed_{0};
 +  std::atomic<uint64_t> perf_gpu_untimed_{0};
 +  std::atomic<uint64_t> perf_summary_ns_{0};
@@ -4216,7 +4683,7 @@ index 5fdd9173a..b3d6edf98 100644
    void CreateGpuTimeQueryPool();
    void DestroyGpuTimeQueryPool();
    void CollectCompletedGpuTimeQueries();
-@@ -1093,6 +1141,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -1093,6 +1145,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // .inc for ScaledResolveReadbackInfo.
    bool DownscaleScaledResolve(uint32_t written_address,
                                const ScaledResolveReadbackInfo& scaled_info);
@@ -7160,6 +7627,27 @@ index 7139999aa..0ae720290 100644
  dword_result_t NtCreateMutant_entry(
      lpdword_t handle_out, pointer_t<X_OBJECT_ATTRIBUTES> obj_attributes,
      dword_t initial_owner) {
+diff --git a/src/xenia/kernel/xboxkrnl/xboxkrnl_video.cc b/src/xenia/kernel/xboxkrnl/xboxkrnl_video.cc
+index 501821580..43026cb63 100644
+--- a/src/xenia/kernel/xboxkrnl/xboxkrnl_video.cc
++++ b/src/xenia/kernel/xboxkrnl/xboxkrnl_video.cc
+@@ -17,6 +17,7 @@
+ #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
+ #include "xenia/kernel/xboxkrnl/xboxkrnl_rtl.h"
+ #include "xenia/xbox.h"
++#include "xbox360ps5/gpu_diagnostics.hpp"
+ 
+ DEFINE_int32(
+     video_standard, 1,
+@@ -445,6 +446,8 @@ void VdSwap_entry(
+     lpdword_t frontbuffer_ptr,  // ptr to frontbuffer address
+     lpdword_t texture_format_ptr, lpdword_t color_space_ptr, lpdword_t width,
+     lpdword_t height) {
++  // PS5X360E: the game's own frame cadence, for the pacing line.
++  xbox360ps5::gpu_diag::guest_vdswap.Mark();
+   // All of these parameters are REQUIRED.
+   assert(buffer_ptr);
+   assert(fetch_ptr);
 diff --git a/src/xenia/kernel/xobject.cc b/src/xenia/kernel/xobject.cc
 index 27b8bf7f5..924072a35 100644
 --- a/src/xenia/kernel/xobject.cc
@@ -7756,10 +8244,130 @@ index 23fa67211..16153831b 100644
    FcConfig* config = FcInitLoadConfigAndFonts();
    if (!config) {
 diff --git a/src/xenia/ui/presenter.cc b/src/xenia/ui/presenter.cc
-index 3fd166235..b8875d06f 100644
+index 3fd166235..6be5047b8 100644
 --- a/src/xenia/ui/presenter.cc
 +++ b/src/xenia/ui/presenter.cc
-@@ -503,6 +503,15 @@ void Presenter::SetGuestOutputPaintConfigFromUIThread(
+@@ -14,11 +14,24 @@
+ #include "xenia/base/logging.h"
+ #include "xenia/base/platform.h"
+ #include "xenia/ui/window.h"
++#include "xbox360ps5/gpu_diagnostics.hpp"
++
++#include <algorithm>
++#include <chrono>
+ 
+ #if XE_PLATFORM_WIN32
+ #include "xenia/ui/surface_win.h"
+ #endif
+ 
++// PS5X360E
++DEFINE_uint32(
++    present_frame_repeat, 0,
++    "With a vsynced (FIFO) host swapchain, show each guest frame for exactly "
++    "this many display refreshes while the game makes frames (2: even frame "
++    "times for a 30 FPS game on a 60 Hz display). 0: show the newest guest "
++    "frame at every refresh.",
++    "Display");
++
+ // On Windows, InvalidateRect causes WM_PAINT to be sent quite quickly, so
+ // presenting from the thread refreshing the guest output is not absolutely
+ // necessary, but still may be nice for bypassing the scheduling and the
+@@ -246,6 +259,40 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+   if (ui_thread_paint_requested_.exchange(false, std::memory_order_relaxed)) {
+     do_paint = true;
+   }
++  // PS5X360E: present_frame_repeat. On a vsynced (FIFO) swapchain one present
++  // is one display refresh, so presenting each guest frame exactly N times,
++  // never a newer one before, and nothing while the next is late, shows every
++  // frame for N refreshes: even 33.4 ms frames for a 30 FPS game at 60 Hz.
++  // Otherwise the newest frame is taken at each refresh, and a frame landing
++  // near a refresh gets 1 and its neighbour 3 (16.7 / 50 ms).
++  hold_guest_output_.store(false, std::memory_order_relaxed);
++  const uint32_t frame_repeat = cvars::present_frame_repeat;
++  bool paced = false;
++  if (frame_repeat && !force_paint &&
++      surface_paint_connection_has_implicit_vsync_ &&
++      surface_paint_connection_state_ ==
++          SurfacePaintConnectionState::kConnectedPaintable) {
++    const auto last_refresh = std::chrono::steady_clock::time_point(
++        std::chrono::steady_clock::duration(
++            guest_output_last_refresh_ticks_.load(std::memory_order_relaxed)));
++    // Only while the guest makes frames; a paused or loading game keeps the
++    // normal cadence for the UI.
++    if (std::chrono::steady_clock::now() - last_refresh <
++        std::chrono::milliseconds(250)) {
++      paced = true;
++      const uint64_t published =
++          guest_output_sequence_published_.load(std::memory_order_acquire);
++      if (paced_sequence_ && paced_presents_ < frame_repeat) {
++        hold_guest_output_.store(true, std::memory_order_relaxed);
++        do_paint = true;
++      } else if (published != paced_sequence_) {
++        do_paint = true;
++      } else {
++        // The next frame is late: the display keeps the last one.
++        do_paint = false;
++      }
++    }
++  }
+   PaintResult paint_result = PaintResult::kNotPresented;
+   bool request_repaint_at_tick = false;
+   bool request_repaint_immediately = false;
+@@ -292,6 +339,36 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+       WaitForUITickFromUIThread();
+ 
+       paint_result = PaintAndPresent(draw_ui);
++      // Captures and other consumers take the newest frame again.
++      hold_guest_output_.store(false, std::memory_order_relaxed);
++      if (paint_result == PaintResult::kPresented ||
++          paint_result == PaintResult::kPresentedSuboptimal) {
++        const uint64_t sequence =
++            last_consumed_guest_sequence_.load(std::memory_order_relaxed);
++        if (paced) {
++          if (sequence != paced_sequence_) {
++            paced_sequence_ = sequence;
++            paced_presents_ = 1;
++          } else {
++            ++paced_presents_;
++          }
++        }
++        // Pacing statistics: present intervals, and refreshes per frame.
++        xbox360ps5::gpu_diag::host_presents.Mark();
++        if (sequence == stats_sequence_) {
++          ++stats_presents_;
++        } else {
++          if (stats_sequence_ && sequence > stats_sequence_) {
++            xbox360ps5::gpu_diag::shown_refreshes[std::min<uint32_t>(
++                                                      stats_presents_, 4)]
++                .fetch_add(1, std::memory_order_relaxed);
++            xbox360ps5::gpu_diag::shown_refreshes[0].fetch_add(
++                sequence - stats_sequence_ - 1, std::memory_order_relaxed);
++          }
++          stats_sequence_ = sequence;
++          stats_presents_ = 1;
++        }
++      }
+       if (surface_paint_connection_state_ ==
+           SurfacePaintConnectionState::kConnectedOutdated) {
+         // Request another PaintFromUIThread which will try to recover from the
+@@ -369,6 +446,7 @@ bool Presenter::RefreshGuestOutput(
+   writable_properties.display_aspect_ratio_x = display_aspect_ratio_x;
+   writable_properties.display_aspect_ratio_y = display_aspect_ratio_y;
+   writable_properties.is_8bpc = false;
++  writable_properties.sequence = guest_output_sequence_ + 1;
+   bool is_active = writable_properties.IsActive();
+   if (is_active) {
+     if (!RefreshGuestOutputImpl(guest_output_mailbox_writable_,
+@@ -431,6 +509,8 @@ bool Presenter::RefreshGuestOutput(
+   // Count this frame so the UI thread can tell the guest output is driving the
+   // paint cadence and UI drawers don't request extra repaints on top of it.
+   guest_output_refresh_count_.fetch_add(1, std::memory_order_relaxed);
++  guest_output_sequence_published_.store(++guest_output_sequence_,
++                                         std::memory_order_release);
+   guest_output_last_refresh_ticks_.store(
+       std::chrono::steady_clock::now().time_since_epoch().count(),
+       std::memory_order_relaxed);
+@@ -503,6 +583,15 @@ void Presenter::SetGuestOutputPaintConfigFromUIThread(
      modified = true;
      request_repaint = true;
    }
@@ -7775,11 +8383,54 @@ index 3fd166235..b8875d06f 100644
    if (modified) {
      {
        std::unique_lock<std::mutex> config_lock(
+@@ -646,8 +735,13 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
+       guest_output_mailbox_acquired_and_ready_.load(std::memory_order_relaxed);
+   // Desired acquired = current ready.
+   // Desired ready = current ready (changed only by the producer).
++  // PS5X360E: present_frame_repeat keeps showing the acquired frame until it
++  // has had its refreshes; a newer ready frame waits in the mailbox.
++  const bool hold = hold_guest_output_.load(std::memory_order_relaxed);
+   uint32_t desired_acquired_and_ready =
+-      (old_acquired_and_ready & ~uint32_t(3)) | (old_acquired_and_ready >> 2);
++      hold ? old_acquired_and_ready
++           : (old_acquired_and_ready & ~uint32_t(3)) |
++                 (old_acquired_and_ready >> 2);
+   // Either the same image as during the last consumption, or a new one, is
+   // satisfying. However, if it's new, using memory_order_acq_rel to acquire the
+   // new ready image (to make it acquired) and to release the old acquired image
+@@ -657,7 +751,9 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
+              old_acquired_and_ready, desired_acquired_and_ready,
+              std::memory_order_acq_rel, std::memory_order_relaxed)) {
+     desired_acquired_and_ready =
+-        (old_acquired_and_ready & ~uint32_t(3)) | (old_acquired_and_ready >> 2);
++        hold ? old_acquired_and_ready
++             : (old_acquired_and_ready & ~uint32_t(3)) |
++                   (old_acquired_and_ready >> 2);
+   }
+   uint32_t mailbox_index = desired_acquired_and_ready & 3;
+   // Give the current acquired image to the caller, or UINT32_MAX if it's
+@@ -669,6 +765,8 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
+   if (properties_out) {
+     *properties_out = properties;
+   }
++  last_consumed_guest_sequence_.store(properties.sequence,
++                                      std::memory_order_relaxed);
+   return std::move(consumer_lock);
+ }
+ 
 diff --git a/src/xenia/ui/presenter.h b/src/xenia/ui/presenter.h
-index 93f9250e6..6e89a8981 100644
+index 93f9250e6..e34a95b13 100644
 --- a/src/xenia/ui/presenter.h
 +++ b/src/xenia/ui/presenter.h
-@@ -271,7 +271,21 @@ class Presenter {
+@@ -47,6 +47,7 @@
+ 
+ // For implementation use.
+ DECLARE_bool(present_render_pass_clear);
++DECLARE_uint32(present_frame_repeat);
+ 
+ namespace xe {
+ namespace ui {
+@@ -271,7 +272,21 @@ class Presenter {
      bool GetDither() const { return dither_; }
      void SetDither(bool new_dither) { dither_ = new_dither; }
  
@@ -7801,6 +8452,36 @@ index 93f9250e6..6e89a8981 100644
      // Tools, rather than the emulator itself, must not allow overscan cutoff
      // and must use the kBilinear effect as the image must be as close to the
      // original front buffer as possible.
+@@ -378,6 +393,8 @@ class Presenter {
+     uint32_t display_aspect_ratio_x;
+     uint32_t display_aspect_ratio_y;
+     bool is_8bpc;
++    // PS5X360E: which guest frame this is (counts up), for frame pacing.
++    uint64_t sequence = 0;
+ 
+     GuestOutputProperties() { SetToInactive(); }
+ 
+@@ -978,6 +995,20 @@ class Presenter {
+   // presentation, so the UI thread can tell whether the guest output is driving
+   // the paint cadence.
+   std::atomic<uint64_t> guest_output_refresh_count_{0};
++  // PS5X360E: present_frame_repeat. Guest frames published (written by the
++  // guest output thread, read by the UI thread), whether the consumer keeps
++  // the acquired frame, and the paced frame and its presents so far (painting
++  // thread only).
++  uint64_t guest_output_sequence_ = 0;
++  std::atomic<uint64_t> guest_output_sequence_published_{0};
++  std::atomic<bool> hold_guest_output_{false};
++  std::atomic<uint64_t> last_consumed_guest_sequence_{0};
++  uint64_t paced_sequence_ = 0;
++  uint32_t paced_presents_ = 0;
++  // For the pacing statistics: the frame of the previous present and how many
++  // presents it had.
++  uint64_t stats_sequence_ = 0;
++  uint32_t stats_presents_ = 0;
+   // steady_clock ticks of the last refresh, written by the guest output thread.
+   std::atomic<std::chrono::steady_clock::rep> guest_output_last_refresh_ticks_{
+       0};
 diff --git a/src/xenia/ui/shaders/post_fxaa.ps.slang b/src/xenia/ui/shaders/post_fxaa.ps.slang
 new file mode 100644
 index 000000000..74595c091

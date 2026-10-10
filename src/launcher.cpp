@@ -43,6 +43,8 @@ DECLARE_uint32(internal_display_resolution_x);
 DECLARE_uint32(internal_display_resolution_y);
 DECLARE_uint32(framerate_limit);  // PS5X360E: 32-bit in Xenia Edge.
 DECLARE_uint32(guest_vblank_rate_override);
+DECLARE_uint32(guest_vblank_rate_millihz);
+DECLARE_uint32(present_frame_repeat);
 DECLARE_uint32(kernel_display_gamma_type);
 DECLARE_bool(present_letterbox);
 DECLARE_bool(depth_float24_convert_in_pixel_shader);
@@ -190,6 +192,9 @@ const std::vector<Option>& Options() {
       {"render_scale", &S::render_scale, 0, W::start, 0, true, "Resolução de renderização",
        "O jogo desenha em 2x a resolução original (720p vira 1440p): imagem bem mais nítida, mais trabalho para o vídeo e mais memória. Alguns efeitos podem sair errados em 2x; volte a 1x se aparecerem.",
        {"1x (720p, original)", "2x (1440p, pesado)"}},
+      {"frame_pacing", &S::frame_pacing, 0, W::start, 0, true, "Ritmo dos quadros",
+       "Para jogos que rodam a 30 quadros: mostra cada quadro por exatamente duas atualizações da tela, para um movimento uniforme sem trancos. Jogos a 60 quadros ficam limitados a 30; deixe em Automático para eles.",
+       {"Automático", "30 FPS uniforme"}},
       {"vsync", &S::vsync, 0, W::start, 1, true, "VSync",
        "Controla a sincronização vertical emulada. O ritmo automático permanece em 60 Hz mesmo quando desligado, para evitar acelerar o jogo.", off_on},
       {"gamma", &S::gamma, 0, W::launch, 0, true, "Gama do console emulado",
@@ -214,8 +219,8 @@ const std::vector<Option>& Options() {
        "Quanto de memória é reenviado ao vídeo quando o jogo escreve nela. 16 KiB reenviou menos nos testes; valores maiores trocam avisos de escrita por mais cópia.",
        {"16 KiB", "64 KiB", "256 KiB"}},
       {"occlusion", &S::occlusion, 1, W::start, 0, true, "Consultas de visibilidade",
-       "Como o emulador responde quando o jogo pergunta se um objeto está visível (brilho do sol, objetos escondidos). Rápida: pergunta ao vídeo sem esperar. Falsa: responde sem perguntar, mais leve, alguns efeitos podem errar. Precisa: espera a resposta, mais lenta.",
-       {"Rápida", "Falsa (mais leve)", "Rápida alternativa", "Precisa (mais lenta)"}},
+       "Como o emulador responde quando o jogo pergunta se um objeto está visível (brilho do sol, objetos escondidos). Rápida: pergunta ao vídeo sem esperar. Falsa: responde sem perguntar, mais leve, alguns efeitos podem errar. Precisa: espera a resposta, mais lenta. Precisa sem espera: a resposta real assim que o vídeo a tem, sem parar a emulação.",
+       {"Rápida", "Falsa (mais leve)", "Rápida alternativa", "Precisa (mais lenta)", "Precisa sem espera"}},
       {"readback", &S::readback, 1, W::live, 0, true, "Leitura da imagem pelo jogo",
        "Alguns jogos leem de volta a imagem desenhada (foto do save, alguns efeitos). Desligada é o mais rápido. Use Rápida ou Completa só se um jogo mostrar imagens pretas ou efeitos faltando.",
        {"Desligada", "Rápida", "Completa (lenta)"}},
@@ -334,8 +339,11 @@ GameOverrides GamePreset(const std::string& title_id) {
       // alternative fast visibility queries fixed its collision sparks.
       // Accurate visibility queries keep lens flares of lights out of view (the
       // hallway light in the elevator) from staying on screen (user,
-      // alpha.39; at 2x still near 30 FPS in the car sequence).
-      {"4541094A", {{"readback", 1}, {"fast_locks", 1}, {"memory_boost", 1}, {"occlusion", 3}}},
+      // alpha.39); strict cost 55-90 ms a second of GPU waits in some scenes,
+      // so the same real results without waiting (async, alpha.41). Even 30
+      // FPS pacing for its 30 FPS.
+      {"4541094A", {{"readback", 1}, {"fast_locks", 1}, {"memory_boost", 1}, {"occlusion", 4},
+                    {"frame_pacing", 1}}},
   };
   GameOverrides preset;
   for (const auto& [id, values] : built_in) if (Lower(title_id) == Lower(id)) preset = values;
@@ -418,8 +426,9 @@ void Settings::Apply() const {
   cvars::log_level = detailed_logs ? 3 : 1;
   // Read by the core each time they matter, so they also apply to a running game.
   cvars::anisotropic_override = anisotropic ? anisotropic + 1 : -1;  // 2x is 2 ... 16x is 5.
-  static const char* const kOcclusion[] = {"fast", "fake", "fast-alt", "strict"};
-  if (cvars::occlusion_query != kOcclusion[occlusion & 3]) cvars::occlusion_query = kOcclusion[occlusion & 3];
+  static const char* const kOcclusion[] = {"fast", "fake", "fast-alt", "strict", "async"};
+  const int occlusion_mode = occlusion >= 0 && occlusion <= 4 ? occlusion : 0;
+  if (cvars::occlusion_query != kOcclusion[occlusion_mode]) cvars::occlusion_query = kOcclusion[occlusion_mode];
   // PS5X360E: Xenia Edge copies resolves back when the CPU touches them; only "none" turns it off.
   cvars::readback_resolve = readback % 3 != 0;
   // PS5X360E: Xenia Edge always reads memexport results back; the setting is kept but unused.
@@ -450,9 +459,15 @@ void Settings::Apply() const {
   cvars::use_fast_dot_product = fast_dot != 0;
   cvars::disable_context_promotion = no_promotion != 0;
   // Read each time they matter.
-  cvars::framerate_limit = video_clock ? 120 : 60;
+  // PS5X360E: even 30 FPS pacing: each guest frame shown for exactly two
+  // display refreshes, and guest vblanks at the display's 59.94 Hz so frames
+  // come exactly once per two refreshes. Not with the 120 Hz video clock.
+  const bool paced_30 = frame_pacing == 1 && !video_clock;
+  cvars::framerate_limit = video_clock ? 120 : (paced_30 ? 0 : 60);
   // PS5X360E: the 120 Hz video clock again (Edge's own vblanks are 50/60 only).
   cvars::guest_vblank_rate_override = video_clock ? 120 : 0;
+  cvars::guest_vblank_rate_millihz = paced_30 ? 59940 : 0;
+  cvars::present_frame_repeat = paced_30 ? 2 : 0;
   cvars::present_letterbox = stretch == 0;
   // Read as the emulator starts.
   cvars::depth_float24_convert_in_pixel_shader = depth_precision != 0;

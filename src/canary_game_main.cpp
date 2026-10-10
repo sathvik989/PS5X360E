@@ -1798,6 +1798,20 @@ int main(int argc, char** argv) {
                        double(w - write_arms) / summary_samples, double(r - read_arms) / summary_samples);
                 write_arms = w; read_arms = r;
               }
+              // Frame pacing: intervals of guest vblanks, the game's swaps,
+              // swaps processed and host presents (in display refreshes), and
+              // how many refreshes each guest frame was on screen.
+              {
+                namespace d = xbox360ps5::gpu_diag;
+                XELOGW("Pacing: guest vblank {}", d::vblank_intervals.TakeText());
+                XELOGW("Pacing: game swaps {}", d::guest_vdswap.TakeText());
+                XELOGW("Pacing: GPU swaps {}", d::guest_swaps.TakeText());
+                XELOGW("Pacing: host presents {}", d::host_presents.TakeText());
+                XELOGW("Pacing: refreshes per guest frame: never shown {}, 1 {}, 2 {}, 3 {}, 4+ {}",
+                       d::shown_refreshes[0].exchange(0), d::shown_refreshes[1].exchange(0),
+                       d::shown_refreshes[2].exchange(0), d::shown_refreshes[3].exchange(0),
+                       d::shown_refreshes[4].exchange(0));
+              }
               // GPU busy time, submissions and waits over the same period.
               {
                 const std::string gpu =
