@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 #include "xbox360ps5/dualsense_input.hpp"
 #include "xenia/ui/virtual_key.h"
+#include "xenia/base/logging.h"
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 using xe::X_STATUS;
 using xe::X_RESULT;
@@ -91,7 +93,17 @@ X_RESULT DualSenseInput::GetState(uint32_t user, X_INPUT_STATE* out) {
   return X_ERROR_SUCCESS;
 }
 X_RESULT DualSenseInput::GetCapabilities(uint32_t user, uint32_t flags, X_INPUT_CAPABILITIES* out) {
-  if (!out || (flags & ~uint32_t(X_INPUT_FLAG_GAMEPAD))) return X_ERROR_BAD_ARGUMENTS;
+  // The input system hands the guest's flags on: GAMEPAD|KEYBOARD when the guest
+  // passed 0 (any device), ANYDEVICE (0xFF), ANY_USER (bit 30). Refusing all but
+  // GAMEPAD told those games no controller was connected (PS5X360 0.6.0). Only a
+  // query that leaves gamepads out is not answered by this driver.
+  if (!out) return X_ERROR_BAD_ARGUMENTS;
+  if ((flags & 0xFF) && !(flags & X_INPUT_FLAG_GAMEPAD)) return X_ERROR_DEVICE_NOT_CONNECTED;
+  if (flags != X_INPUT_FLAG_GAMEPAD) {
+    static std::atomic<bool> reported{false};
+    if (!reported.exchange(true))
+      XELOGW("Controller: answering a capabilities query with flags {:08X}", flags);
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   if (user != user_ || !connected_) return X_ERROR_DEVICE_NOT_CONNECTED;
   *out = {};
@@ -107,9 +119,16 @@ X_RESULT DualSenseInput::SetState(uint32_t user, X_INPUT_VIBRATION* vibration) {
   { std::lock_guard<std::mutex> lock(mutex_);
     if (user != user_ || !connected_) return X_ERROR_DEVICE_NOT_CONNECTED;
   }
-  if (!rumble_) return X_RESULT_FROM_WIN32(50);  // Motor output not connected yet.
-  return rumble_(vibration->left_motor_speed, vibration->right_motor_speed)
-      ? X_ERROR_SUCCESS : X_ERROR_FUNCTION_FAILED;
+  // A connected pad takes the command even when its motors do not run, as an
+  // Xbox 360 pad without rumble does. A failure here made the input system try
+  // the next driver and answer "not connected", and games that check the result
+  // of XInputSetState stopped reading this pad (PS5X360 0.6.0).
+  if (rumble_ && !rumble_(vibration->left_motor_speed, vibration->right_motor_speed)) {
+    static std::atomic<bool> reported{false};
+    if (!reported.exchange(true))
+      XELOGW("Controller: the PS5 refused a vibration command for player {}; the pad stays connected", user_ + 1);
+  }
+  return X_ERROR_SUCCESS;
 }
 X_RESULT DualSenseInput::GetKeystroke(uint32_t user, uint32_t, X_INPUT_KEYSTROKE* out) {
   if (!out) return X_ERROR_BAD_ARGUMENTS;
