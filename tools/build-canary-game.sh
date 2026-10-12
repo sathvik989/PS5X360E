@@ -28,6 +28,17 @@ for pair in 'libSceAgc:agc_canary_link_stub.c' 'libSceAgcDriver:agc_driver_canar
   "$sdk/bin/prospero-lld" --shared -soname "$library.prx" -o "build/radv-stubs/$library.so" "build/radv-stubs/$library.o"
 done
 
+# PS5X360E: mbedTLS 3.6.7 for the Kinect phone camera's HTTPS server (PS5X360 0.6.0).
+# Fetched here rather than by ps5x360e-build.sh, so an older copy of that script works.
+mbedtls_rev=068ff080b369adfac81509f9b57b2afabaf82dc5
+if [[ "$(git -C .deps/mbedtls rev-parse HEAD 2>/dev/null)" != "$mbedtls_rev" ]]; then
+  rm -rf .deps/mbedtls
+  git init -q .deps/mbedtls
+  git -C .deps/mbedtls fetch -q --depth 1 https://github.com/Mbed-TLS/mbedtls "$mbedtls_rev"
+  git -C .deps/mbedtls checkout -q --detach FETCH_HEAD
+  rm -f "$build/build.ninja"  # configure again: the mbedTLS sources are globbed then
+fi
+
 # Explicit defaults keep an experimental configure from leaking into the next
 # normal build. Separate output directories preserve release executables.
 # Source and shader lists are globbed when configuring: a file added since
@@ -100,4 +111,5 @@ tool="$work/host/ps5-native-tool"
 python3 build/native-runtime-stage/tools/verify-image.py "$work/llvm-pie.elf" "$work/eboot.elf"
 "$tool" self --sign --in "$work/eboot.elf" --out "$work/eboot.bin" --magic 0x1D3D154F
 ls -la "$work/eboot.bin"
-# PS5X360E: the complete app folder (dist/PPSA50360) is made by tools/package-ps5x360e.sh.
+# PS5X360E: the complete app folder to copy to the PS5, dist/PPSA50360.
+bash "$root/tools/package-ps5x360e.sh"

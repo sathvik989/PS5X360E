@@ -116,9 +116,6 @@ if [[ ! -d /ws/Castation/native-ps5/.git ]]; then
 fi
 echo "   castation at $(git -C /ws/Castation/native-ps5 rev-parse --short HEAD) (public head; see note above)"
 
-# mbedTLS for the Kinect phone camera's HTTPS server on the console (PS5X360 0.6.0).
-clone_at https://github.com/Mbed-TLS/mbedtls "$R/.deps/mbedtls" 068ff080b369adfac81509f9b57b2afabaf82dc5  # v3.6.7
-
 echo "== 3/7 PS5 payload SDK and zlib (PS5_Vulkan tools/setup-native-dependencies.sh)"
 ( cd "$REFS/PS5_Vulkan" && bash tools/setup-native-dependencies.sh )
 
@@ -183,8 +180,6 @@ echo "== 7/7 Building the PS5 title"
 	XE_HOST_SHADER_CC="$H/xenia-shader-cc" SLANGC_PATH="$SLANGC_PATH" \
 	bash tools/build-canary-game.sh )
 
-echo "== Packaging the PS5X360E app folder (PPSA50360)"
-( cd "$R" && bash tools/package-ps5x360e.sh )
 
 echo
 echo "== DONE"
