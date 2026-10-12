@@ -8323,7 +8323,7 @@ index 27b8bf7..924072a 100644
    const uint64_t deadline_ms =
        timeout_ms == std::chrono::milliseconds::max()
 diff --git a/src/xenia/kernel/xsocket.cc b/src/xenia/kernel/xsocket.cc
-index a8eac6c..ffedc74 100644
+index a8eac6c..c9d3cfd 100644
 --- a/src/xenia/kernel/xsocket.cc
 +++ b/src/xenia/kernel/xsocket.cc
 @@ -148,9 +148,12 @@ uint32_t AsioErrorToWSAError(const asio::error_code& ec) {
@@ -8392,9 +8392,9 @@ index a8eac6c..ffedc74 100644
 +    }
 +    if (!ec) {
 +      XELOGW(
-+          "XSocket::Bind: the console refused type {} protocol {} address {} "
++          "XSocket::Bind: the console refused type {} protocol {} address {:08X} "
 +          "port {} ({}); bound another local endpoint instead",
-+          uint32_t(type_), uint32_t(proto_), addr.to_string(), port,
++          uint32_t(type_), uint32_t(proto_), addr.to_uint(), port,
 +          refused.message());
 +    } else {
 +      XELOGE(
