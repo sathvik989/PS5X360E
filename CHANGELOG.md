@@ -3,6 +3,15 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.45+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Frame generation target** (Settings > Performance, under Frame generation): "Display rate"
+  as before, or **30 FPS**: a game running between 10 and 27 FPS (NFS's 20-25 stretches) is
+  filled up to an even 30 FPS, each picture shown for exactly two 60 Hz refreshes, instead of
+  up to 60. Above 27 FPS the game's own frames are shown. Saved in framegen.conf as
+  `ps5_frame_target=30`; a restart applies it. Simulated: 20, 22 and 25 FPS come out at 30.0,
+  29.9 and 29.8 pictures a second, two refreshes each.
+
 ## 0.2-alpha.44+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Its own app: PPSA50360, named PS5X360E.** It installs beside PS5X360 (PPSA50011) and runs

@@ -1194,6 +1194,7 @@ struct FramegenChoiceState {
   int last_on = 2;     // the multiplier written while off: the mode it had when last on
   std::string output;  // the output rate line's value as the file has it ("": no such line)
   std::string pacing;  // the pacing line's value, written back as it is ("": no such line)
+  std::string target;  // PS5X360E: "30" for an even 30 FPS output, "display" or "" otherwise
 };
 FramegenChoiceState& FramegenChoice() {
   static FramegenChoiceState choice = [] {
@@ -1207,6 +1208,7 @@ FramegenChoiceState& FramegenChoice() {
     state.mode = config.enabled ? state.last_on : 0;
     state.output = config.output_text;
     state.pacing = config.pacing_text;
+    state.target = config.target_text;
     return state;
   }();
   return choice;
@@ -1223,8 +1225,11 @@ const FramegenChoiceState& FramegenAtStart() {
   return at_start;
 }
 bool FramegenOnAtStart() { return FramegenAtStart().mode != 0; }
+bool FramegenTarget30(const FramegenChoiceState& choice) { return choice.target == "30"; }
+bool FramegenTarget30() { return FramegenTarget30(FramegenChoice()); }
 bool FramegenChanged() {
   return FramegenMode() != FramegenAtStart().mode ||
+         FramegenTarget30() != FramegenTarget30(FramegenAtStart()) ||
          FramegenHighOutput() != FramegenHighOutput(FramegenAtStart());
 }
 const char* FramegenModeName(int mode) {
@@ -1236,6 +1241,7 @@ const char* FramegenModeName(int mode) {
 constexpr int kFramegenRow = -1;
 constexpr int kFsiRow = -2;
 constexpr int kFramegenOutputRow = -3;
+constexpr int kFramegenTargetRow = -4;
 // Writes the three lines. Line 1 stays the switch the builds before modes read; the output
 // rate line is written back as it was unless `output` is a new choice.
 bool WriteFramegen(int mode, const std::string& output) {
@@ -1243,7 +1249,7 @@ bool WriteFramegen(int mode, const std::string& output) {
   auto& choice = FramegenChoice();
   const int multiplier = mode ? mode : choice.last_on;  // 1 automatic, 2 to 4
   const std::string file = ps5x360::framegen::FormatConfig(
-      mode != 0, multiplier == 1 ? 0u : uint32_t(multiplier), output, choice.pacing);
+      mode != 0, multiplier == 1 ? 0u : uint32_t(multiplier), output, choice.pacing, choice.target);
   const char* temporary = "/app0/framegen.conf.new";
   std::ofstream stream(temporary, std::ios::trunc | std::ios::binary);
   stream << file;
@@ -1262,6 +1268,14 @@ bool WriteFramegen(int mode, const std::string& output) {
 }
 bool SetFramegenMode(int mode) { return WriteFramegen(mode, FramegenChoice().output); }
 bool SetFramegenHighOutput(bool high) { return WriteFramegen(FramegenMode(), high ? "120" : "60"); }
+bool SetFramegenTarget30(bool on) {
+  auto& choice = FramegenChoice();
+  const std::string previous = choice.target;
+  choice.target = on ? "30" : "display";
+  if (WriteFramegen(FramegenMode(), choice.output)) return true;
+  choice.target = previous;
+  return false;
+}
 
 void Launcher::CloseSettings() {
   if (settings_changed_) { settings_.Save(); settings_.Apply(); settings_changed_ = false; }
@@ -1467,6 +1481,7 @@ void Launcher::Press(Key key) {
               if (Options()[size_t(n)].category == category_) category_rows_.push_back(n);
             if (category_ == 1) {
               category_rows_.push_back(kFramegenRow);
+              category_rows_.push_back(kFramegenTargetRow);
               category_rows_.push_back(kFramegenOutputRow);
               category_rows_.push_back(kFsiRow);
             }
@@ -1500,6 +1515,10 @@ void Launcher::Press(Key key) {
                                     "No se pudo guardar la configuración."));
         } else if (category_rows_[size_t(option_row_)] == kFramegenRow) {
           if (!SetFramegenMode((FramegenMode() + (key == Key::left ? 4 : 1)) % 5))
+            SetMessage(FramegenText("Não foi possível gravar a configuração.", "Could not save the setting.",
+                                    "No se pudo guardar la configuración."));
+        } else if (category_rows_[size_t(option_row_)] == kFramegenTargetRow) {
+          if (!SetFramegenTarget30(!FramegenTarget30()))
             SetMessage(FramegenText("Não foi possível gravar a configuração.", "Could not save the setting.",
                                     "No se pudo guardar la configuración."));
         } else if (category_rows_[size_t(option_row_)] == kFramegenOutputRow) {
@@ -2591,6 +2610,16 @@ void Launcher::DrawOptionsSheet(Canvas& c) {
       c.Text(FramegenModeName(mode), x + 796, y + 10, 22, focused ? kAccent : mode ? kWarning : kMuted, 1.0f, 2, 320);
       continue;
     }
+    if (category_rows_[size_t(n)] == kFramegenTargetRow) {
+      c.Fill(x + 40, y, 780, 44, focused ? kSurfaceHigh : kSurface, focused ? 1.0f : 0.6f, 10);
+      if (focused) c.Edge(x + 40, y, 780, 44, kAccent, 0.9f, 10, 2.0f);
+      c.Text(FramegenText("Alvo da geração de frames", "Frame generation target", "Objetivo de la generación"),
+             x + 64, y + 10, 22, focused ? kText : kBody, 1.0f, 0, 440);
+      const bool target30 = FramegenTarget30();
+      c.Text(target30 ? "30 FPS" : FramegenText("Taxa da tela", "Display rate", "Frecuencia de la pantalla"),
+             x + 796, y + 10, 22, focused ? kAccent : target30 ? kWarning : kMuted, 1.0f, 2, 320);
+      continue;
+    }
     if (category_rows_[size_t(n)] == kFramegenOutputRow) {
       c.Fill(x + 40, y, 780, 44, focused ? kSurfaceHigh : kSurface, focused ? 1.0f : 0.6f, 10);
       if (focused) c.Edge(x + 40, y, 780, 44, kAccent, 0.9f, 10, 2.0f);
@@ -2632,6 +2661,20 @@ void Launcher::DrawOptionsSheet(Canvas& c) {
         "Crea fotogramas intermedios entre dos fotogramas del juego. 2x: un fotograma (30 FPS se muestra a 60). 3x y 4x: dos o tres fotogramas, para pantallas de 120 Hz; cada fotograma extra añade latencia. Automática elige según el ritmo del juego y la pantalla, y también funciona cuando la tasa del juego varía (40 FPS, de 31 a 47). No acelera el juego y puede difuminar el HUD y los movimientos rápidos. El contador de FPS muestra Game, Output y FG."),
         x + 56, 632, 20, kBody, 750);
     c.Text(std::string(Tr("Recomendado: ")) + FramegenText("Desligada", "Off", "Desactivada"), x + 56, 860, 20, kAccent, 1.0f, 0, 750);
+    c.Text(Tr("O emulador reinicia para aplicar, ao fechar as configurações."), x + 56, 892, 20, kMuted, 1.0f, 0, 750);
+    float hint = c.Hint('x', Tr("Alterar"), x + 56, 1004);
+    hint = c.Hint('o', Tr("Voltar"), hint, 1004);
+    c.Hint('v', Tr("Mover"), hint, 1004);
+    return;
+  }
+  if (category_rows_[size_t(option_row_)] == kFramegenTargetRow) {
+    c.Fill(x + 40, 612, 780, 1, kWhite, 0.10f);
+    c.Wrapped(FramegenText(
+        "Até onde a geração de frames completa o jogo. Taxa da tela: até 60 FPS (um jogo a 30 aparece a 60). 30 FPS: um jogo entre 10 e 27 FPS (por exemplo 20 a 25) é completado até 30 FPS uniformes, cada quadro mostrado por duas atualizações da tela; acima disso aparecem os quadros do próprio jogo. Vale com a geração ligada (Automática recomendada).",
+        "How far frame generation fills the game. Display rate: up to 60 FPS (a 30 FPS game is shown at 60). 30 FPS: a game between 10 and 27 FPS (20 to 25, say) is filled up to an even 30 FPS, each picture shown for two refreshes; above that the game's own frames are shown. Applies with frame generation on (Automatic recommended).",
+        "Hasta dónde la generación completa el juego. Frecuencia de la pantalla: hasta 60 FPS (un juego a 30 se muestra a 60). 30 FPS: un juego entre 10 y 27 FPS (de 20 a 25, por ejemplo) se completa hasta 30 FPS uniformes, cada imagen mostrada durante dos actualizaciones; por encima se muestran los fotogramas del propio juego. Vale con la generación activada (Automática recomendada)."),
+        x + 56, 632, 20, kBody, 750);
+    c.Text(std::string(Tr("Recomendado: ")) + FramegenText("Taxa da tela", "Display rate", "Frecuencia de la pantalla"), x + 56, 860, 20, kAccent, 1.0f, 0, 750);
     c.Text(Tr("O emulador reinicia para aplicar, ao fechar as configurações."), x + 56, 892, 20, kMuted, 1.0f, 0, 750);
     float hint = c.Hint('x', Tr("Alterar"), x + 56, 1004);
     hint = c.Hint('o', Tr("Voltar"), hint, 1004);

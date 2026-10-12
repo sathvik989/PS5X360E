@@ -11809,10 +11809,10 @@ index 0000000..f99deb7
 \ No newline at end of file
 diff --git a/src/xenia/ui/vulkan/framegen/adaptive_pacing.hpp b/src/xenia/ui/vulkan/framegen/adaptive_pacing.hpp
 new file mode 100644
-index 0000000..3d329c3
+index 0000000..2d7d54a
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/adaptive_pacing.hpp
-@@ -0,0 +1,278 @@
+@@ -0,0 +1,287 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Adaptive frame generation pacing: generated pictures for a game whose frame rate is not an
 +// exact divisor of the display rate (40 FPS on 60 Hz, a rate that moves between 31 and 47).
@@ -11833,6 +11833,9 @@ index 0000000..3d329c3
 +//   40 FPS on 60 Hz   spans of {2/3} and {1/3, B} in turn: 1.5 outputs per game frame
 +//   45 FPS on 60 Hz   3/4, 1/2, {1/4, B} over three spans
 +//   30 FPS on 60 Hz   {1/2, B}
++// PS5X360E: with an output target (an even 30 FPS on 60 Hz), one output is `slot` refreshes
++// (two), and the same clock runs at the target's rate:
++//   22 FPS, target 30  outputs of 2 refreshes, 1.36 a game frame: B or a picture between
 +// Header-only and free of Vulkan: test_adaptive.inc runs it on a PC.
 +#pragma once
 +#include <algorithm>
@@ -11904,8 +11907,10 @@ index 0000000..3d329c3
 +  //                the clock asks beyond it is shown by holding a picture for more refreshes
 +  // The arrival is always taken into the estimate, so the path can start at once when strict
 +  // pacing lets go of a single frame.
++  //   target_fps   PS5X360E: 0 for the display's rate, or an output rate below it (30): each
++  //                output is then held for display_hz / target_fps refreshes
 +  AdaptivePlan Arrive(uint64_t arrival_ns, uint64_t now_ns, uint64_t step, double display_hz,
-+                      bool allowed, bool history, uint32_t cap = 3) {
++                      bool allowed, bool history, uint32_t cap = 3, uint32_t target_fps = 0) {
 +    AdaptivePlan plan;
 +    if (!std::isfinite(display_hz) || display_hz < 30 || display_hz > 250 || !arrival_ns) {
 +      Reset();
@@ -11935,13 +11940,17 @@ index 0000000..3d329c3
 +
 +    if (!allowed) return Off(plan, AdaptiveReason::NotAllowed);
 +    if (count_ < kMinSamples) return Off(plan, AdaptiveReason::Warming);
++    // The output rate: the display's, or the target's (whole refreshes per output).
++    const uint32_t slot =
++        target_fps ? std::max<uint32_t>(1, uint32_t(std::lround(display_hz / target_fps))) : 1;
++    const double output_hz = display_hz / slot;
 +    const double rate = 1e9 / interval_ns_;
 +    const double slack = active_ ? kHysteresisFps : 0.0;
 +    if (rate < kMinFps - slack) return Off(plan, AdaptiveReason::TooSlow);
-+    if (rate > display_hz - kHeadroomFps + slack) return Off(plan, AdaptiveReason::TooFast);
++    if (rate > output_hz - kHeadroomFps + slack) return Off(plan, AdaptiveReason::TooFast);
 +
-+    // The span is paced here.
-+    const double refresh_ns = 1e9 / display_hz;
++    // The span is paced here. One output lasts `slot` refreshes.
++    const double refresh_ns = 1e9 / display_hz * slot;
 +    const uint64_t start = std::max(busy_until_ns_, now_ns);
 +    plan.active = active_ = true;
 +    if (!history) {
@@ -12000,9 +12009,9 @@ index 0000000..3d329c3
 +    for (uint32_t i = 0; i < n; ++i) {
 +      const int8_t picture = phases[i] >= 1.0 - kSnap ? int8_t(-1) : int8_t(Index(phases[i], best));
 +      if (plan.count && plan.outputs[plan.count - 1].picture == picture) {
-+        ++plan.outputs[plan.count - 1].refreshes;  // the same picture again: it stays up
++        plan.outputs[plan.count - 1].refreshes += slot;  // the same picture again: it stays up
 +      } else {
-+        plan.outputs[plan.count++] = {picture, 1};
++        plan.outputs[plan.count++] = {picture, uint8_t(slot)};
 +      }
 +    }
 +    busy_until_ns_ = start + uint64_t(double(n) * refresh_ns);
@@ -12093,10 +12102,10 @@ index 0000000..3d329c3
 +}  // namespace ps5x360::framegen
 diff --git a/src/xenia/ui/vulkan/framegen/framegen_config.hpp b/src/xenia/ui/vulkan/framegen/framegen_config.hpp
 new file mode 100644
-index 0000000..fd1ff2d
+index 0000000..c7cf5ae
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/framegen_config.hpp
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,164 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// The frame generation settings file (/app0/framegen.conf), shared by the launcher (which
 +// writes it), the presenter (which reads it once, before the swapchain) and the host test.
@@ -12105,6 +12114,10 @@ index 0000000..fd1ff2d
 +//                                    before modes, which read nothing else
 +//   ps5_frame_multiplier=auto        optional: auto, 2, 3 or 4. Missing or unknown: 2
 +//   ps5_frame_output_hz=60           optional: auto, 60 or 120. Missing or unknown: 60
++//   ps5_frame_target=display         optional (PS5X360E): display or 30. 30: the generated
++//                                    pictures fill a slower game up to an even 30 FPS (each
++//                                    output held two 60 Hz refreshes) instead of the display's
++//                                    rate; the steady-rate path is not used then.
 +//   ps5_frame_pacing=auto            optional: auto or strict. Missing or unknown: auto.
 +//                                    auto: in the Automatic mode, pictures are also generated
 +//                                    when the game's frames are not of one length (adaptive
@@ -12130,6 +12143,8 @@ index 0000000..fd1ff2d
 +  bool adaptive_pacing = true;  // ps5_frame_pacing is not "strict"
 +  bool has_pacing = false;      // the line was there, with a known value
 +  std::string pacing_text;      // its value as written, kept by a writer the same way
++  uint32_t target_fps = 0;      // PS5X360E: 0 the display's rate, 30 an even 30 FPS
++  std::string target_text;      // its value as written ("": no such line)
 +};
 +
 +constexpr const char* kSwitchOn = "ps5_frame_interpolation=true";
@@ -12137,6 +12152,7 @@ index 0000000..fd1ff2d
 +constexpr const char* kMultiplierKey = "ps5_frame_multiplier=";
 +constexpr const char* kOutputKey = "ps5_frame_output_hz=";
 +constexpr const char* kPacingKey = "ps5_frame_pacing=";
++constexpr const char* kTargetKey = "ps5_frame_target=";
 +
 +inline const char* MultiplierText(uint32_t multiplier) {
 +  return multiplier == 0 ? "auto" : multiplier == 3 ? "3" : multiplier == 4 ? "4" : "2";
@@ -12185,6 +12201,14 @@ index 0000000..fd1ff2d
 +      } else {
 +        config.unknown_value = true;
 +      }
++    } else if (line.rfind(kTargetKey, 0) == 0) {
++      const std::string value = line.substr(std::strlen(kTargetKey));
++      config.target_text = value;
++      if (value == "display" || value == "30") {
++        config.target_fps = value == "30" ? 30 : 0;
++      } else {
++        config.unknown_value = true;
++      }
 +    } else if (line.rfind(kPacingKey, 0) == 0) {
 +      const std::string value = line.substr(std::strlen(kPacingKey));
 +      config.pacing_text = value;
@@ -12203,7 +12227,8 @@ index 0000000..fd1ff2d
 +// `output_text` is written as it is when not empty (a value the launcher did not set). The
 +// pacing line is written only when the file had one (`pacing_text` not empty), as it was.
 +inline std::string FormatConfig(bool enabled, uint32_t multiplier, const std::string& output_text,
-+                                const std::string& pacing_text = std::string()) {
++                                const std::string& pacing_text = std::string(),
++                                const std::string& target_text = std::string()) {
 +  std::string text = enabled ? kSwitchOn : kSwitchOff;
 +  text += "\n";
 +  text += kMultiplierKey;
@@ -12212,6 +12237,11 @@ index 0000000..fd1ff2d
 +  text += kOutputKey;
 +  text += output_text.empty() ? "60" : output_text;
 +  text += "\n";
++  if (!target_text.empty()) {
++    text += kTargetKey;
++    text += target_text;
++    text += "\n";
++  }
 +  if (!pacing_text.empty()) {
 +    text += kPacingKey;
 +    text += pacing_text;
@@ -12237,7 +12267,7 @@ index 0000000..fd1ff2d
 +// Every mode: the path takes over whenever strict pacing is not engaged, unless the file says
 +// ps5_frame_pacing=strict.
 +inline bool AdaptivePacingEnabled(const Config& config) {
-+  return config.valid && config.enabled && config.adaptive_pacing;
++  return config.valid && config.enabled && (config.adaptive_pacing || config.target_fps);
 +}
 +}  // namespace ps5x360::framegen
 diff --git a/src/xenia/ui/vulkan/framegen/pacing_adapter.hpp b/src/xenia/ui/vulkan/framegen/pacing_adapter.hpp
@@ -12504,10 +12534,10 @@ index 0000000..b789360
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp b/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp
 new file mode 100644
-index 0000000..d047777
+index 0000000..260da37
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp
-@@ -0,0 +1,456 @@
+@@ -0,0 +1,459 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Included in exactly one presenter translation unit. No frozen class members.
 +#pragma once
@@ -12578,6 +12608,8 @@ index 0000000..d047777
 +  cvars::ps5_frame_interpolation = valid && config.enabled;
 +  XELOGW("Framegen private config: {} enabled={} valid={} (restart required)",
 +         path, bool(cvars::ps5_frame_interpolation), valid);
++  if (config.target_fps)
++    XELOGW("Framegen private config: target {} FPS (adaptive pacing only)", config.target_fps);
 +  if (config.has_multiplier || config.has_output || config.has_pacing || config.unknown_value)
 +    XELOGW("Framegen private config: multiplier={}{} output_hz={}{} pacing={}{}{}",
 +           ps5x360::framegen::MultiplierText(config.multiplier),
@@ -12672,7 +12704,8 @@ index 0000000..d047777
 +    const uint64_t step = serial && next_serial > serial ? next_serial - serial : 0;
 +    plan = adaptive.Arrive(stamp.ns, now_ns, step, display_hz, !strict && !pacing.SafetyPaused(),
 +                           history && interpolation_history,
-+                           ps5x360::framegen::AdaptiveCap(FramegenConfig()));
++                           ps5x360::framegen::AdaptiveCap(FramegenConfig()),
++                           FramegenConfig().target_fps);
 +    if (!plan.active) {
 +      using Reason = ps5x360::framegen::AdaptiveReason;
 +      if (adaptive_run) {
@@ -50541,7 +50574,7 @@ index fd3e34d..ec38ab0 100644
      bool ext_KHR_xcb_surface = false;  // #6
  #endif
 diff --git a/src/xenia/ui/vulkan/vulkan_presenter.cc b/src/xenia/ui/vulkan/vulkan_presenter.cc
-index 9cf803f..4d9896f 100644
+index 9cf803f..5f6f1aa 100644
 --- a/src/xenia/ui/vulkan/vulkan_presenter.cc
 +++ b/src/xenia/ui/vulkan/vulkan_presenter.cc
 @@ -17,6 +17,10 @@
@@ -50713,7 +50746,7 @@ index 9cf803f..4d9896f 100644
      }
    }
    const VulkanDevice::Functions& dfn = vulkan_device->functions();
-@@ -1469,6 +1541,167 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
+@@ -1469,6 +1541,169 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
  
  Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
      bool execute_ui_drawers) {
@@ -50762,7 +50795,9 @@ index 9cf803f..4d9896f 100644
 +      // of cadence and may be invalidated while the generator is dormant.
 +      const bool admitted = fg->pacing.Observe(now, serial,
 +          pinned->extent().width, pinned->extent().height, fg->display_hz,
-+          true, true, this);
++          // PS5X360E: with a 30 FPS target only the adaptive path paces (the
++          // steady-rate path would fill a steady 30 up to the display's rate).
++          true, FramegenConfig().target_fps == 0, this);
 +      // Adaptive pacing sees every arrival and takes the span only when strict pacing is not
 +      // engaged for it (and the mode and the settings file allow it).
 +      adaptive_span = fg->AdaptiveArrive(this, serial, now, fg->pacing.Engaged());
@@ -50881,7 +50916,7 @@ index 9cf803f..4d9896f 100644
    // Begin the submission in place of the one not currently potentially used on
    // the GPU.
    const uint64_t current_paint_submission_index =
-@@ -1510,9 +1743,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1510,9 +1745,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
    VkSemaphore acquire_semaphore = paint_submission.acquire_semaphore();
  
    uint32_t swapchain_image_index;
@@ -50894,7 +50929,7 @@ index 9cf803f..4d9896f 100644
    switch (acquire_result) {
      case VK_SUCCESS:
      case VK_SUBOPTIMAL_KHR:
-@@ -1576,7 +1812,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1576,7 +1814,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
    GuestOutputProperties guest_output_properties;
    GuestOutputPaintConfig guest_output_paint_config;
    std::shared_ptr<GuestOutputImage> guest_output_image;
@@ -50907,7 +50942,7 @@ index 9cf803f..4d9896f 100644
      uint32_t guest_output_mailbox_index;
      std::unique_lock<std::mutex> guest_output_consumer_lock(
          ConsumeGuestOutput(guest_output_mailbox_index, &guest_output_properties,
-@@ -1600,6 +1840,41 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1600,6 +1842,41 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
          guest_output_properties, paint_context_.swapchain_extent.width,
          paint_context_.swapchain_extent.height, max_framebuffer_extent.width,
          max_framebuffer_extent.height, guest_output_paint_config);
@@ -50949,7 +50984,7 @@ index 9cf803f..4d9896f 100644
      if (guest_output_flow.effect_count) {
        // Store the main target reference to the guest output image so it's not
        // destroyed while it's still potentially in use by main target painting
-@@ -1653,6 +1928,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1653,6 +1930,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
          paint_context_
              .guest_output_image_paint_refs[guest_output_image_paint_ref_index] =
              std::make_pair(uint64_t(0), guest_output_image);
@@ -50957,7 +50992,7 @@ index 9cf803f..4d9896f 100644
          // Create the descriptors of the new image.
          VkDescriptorImageInfo guest_output_image_descriptor_image_info;
          guest_output_image_descriptor_image_info.sampler = VK_NULL_HANDLE;
-@@ -1837,6 +2113,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1837,6 +2115,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
        }
  
        if (guest_output_flow.effect_count) {
@@ -50965,7 +51000,7 @@ index 9cf803f..4d9896f 100644
          // Actually draw the guest output.
          paint_context_
              .guest_output_image_paint_refs[guest_output_image_paint_ref_index]
-@@ -1855,6 +2132,32 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1855,6 +2134,32 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
            paint_context_.guest_output_intermediate_image_last_submission =
                current_paint_submission_index;
          }
@@ -50998,7 +51033,7 @@ index 9cf803f..4d9896f 100644
          for (size_t i = 0; i < guest_output_flow.effect_count; ++i) {
            bool is_final_effect = i + 1 >= guest_output_flow.effect_count;
  
-@@ -1936,11 +2239,14 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1936,11 +2241,14 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
                  PaintContext::kGuestOutputDescriptorSetGuestOutput0Sampled +
                  guest_output_image_paint_ref_index);
            }
@@ -51015,7 +51050,7 @@ index 9cf803f..4d9896f 100644
                0, nullptr);
  
            GuestOutputPaintRectangleConstants effect_rect_constants;
-@@ -2082,7 +2388,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -2082,7 +2390,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
      swapchain_image_clear_needed = false;
    }
  
@@ -51024,7 +51059,7 @@ index 9cf803f..4d9896f 100644
      // Draw the UI.
      VulkanUIDrawContext ui_draw_context(
          *this, paint_context_.swapchain_extent.width,
-@@ -2102,10 +2408,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -2102,10 +2410,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
    VkCommandBuffer command_buffers[2];
    uint32_t command_buffer_count = 0;
@@ -51037,7 +51072,7 @@ index 9cf803f..4d9896f 100644
                           : SIZE_MAX;
    if (ui_setup_command_buffer_index != SIZE_MAX) {
      PaintContext::UISetupCommandBuffer& ui_setup_command_buffer =
-@@ -2169,7 +2475,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -2169,7 +2477,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
      // To avoid that, recreate the swapchain - don't return just kNotPresented.
      return PaintResult::kNotPresentedConnectionOutdated;
    }
@@ -51046,7 +51081,7 @@ index 9cf803f..4d9896f 100644
      // Also update the completion timeline providing submission indices to UI
      // draw callbacks if submission is successful.
      const VkResult ui_signal_submit_result =
-@@ -2196,7 +2502,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -2196,7 +2504,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
      const VulkanDevice::Queue::Acquisition queue_acquisition =
          vulkan_device_->AcquireQueue(paint_context_.present_queue_family, 0);
      present_result =
@@ -51055,7 +51090,7 @@ index 9cf803f..4d9896f 100644
    }
    switch (present_result) {
      case VK_SUCCESS:
-@@ -2232,9 +2538,155 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -2232,9 +2540,155 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
        // kNotPresented.
        return PaintResult::kNotPresentedConnectionOutdated;
    }
@@ -51211,7 +51246,7 @@ index 9cf803f..4d9896f 100644
    const VulkanDevice::Functions& dfn = vulkan_device_->functions();
    const VkDevice device = vulkan_device_->device();
  
-@@ -2680,6 +3132,593 @@ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(
+@@ -2680,6 +3134,593 @@ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(
    return pipeline;
  }
  
