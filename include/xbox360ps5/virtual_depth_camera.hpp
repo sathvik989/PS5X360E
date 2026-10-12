@@ -2,7 +2,7 @@
 // Research virtual camera: estimated poses rasterized as a depth silhouette.
 // This is not measured depth and does not guarantee Kinect SDK body recognition.
 #pragma once
-#include "xbox360ps5/motion_input.hpp"
+#include "xbox360ps5/virtual_skeleton.hpp"
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -29,8 +29,9 @@ class VirtualDepthCamera {
     if (!pose.tracked) return;
     struct Point{float x,y,z,confidence;};
     std::array<Point,20> points{};
-    for(size_t i=0;i<20;++i){const auto& j=pose.joints[i];const float z=std::clamp(2.5f+j.z,1.f,5.f);
-      points[i]={320+525*j.x/z,240-525*(j.y+.1f)/z,z,j.confidence};}
+    for(size_t i=0;i<20;++i){const auto& j=pose.joints[i];float x,y,z;
+      SkeletonSpace(j,x,y,z);
+      points[i]={320-525*x/z,240-525*y/z,z,j.confidence};}
     auto capsule=[&](size_t a,size_t b,float radius){
       const auto& p=points[a];const auto& q=points[b];
       if(p.confidence<.4f||q.confidence<.4f)return;

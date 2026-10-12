@@ -20,6 +20,10 @@ inline int SupportedUiLanguage(int id) { return id == 9 || id == 5 ? id : 1; }
 inline const char* Tr(const char* key) {
   struct Entry { const char* pt; const char* en; const char* es; };
   static constexpr Entry entries[] = {
+    {"Renderizador", "Renderer", "Renderizador"},
+    {"OpenGL: apenas filtro bilinear, sem suavizar degradês.", "OpenGL: bilinear filtering only, without dithering.", "OpenGL: solo filtro bilineal, sin tramado."},
+    {"API gráfica usada para desenhar os jogos. A troca reinicia o emulador. Vulkan e OpenGL usam caches separados; a compatibilidade pode variar entre eles.", "Graphics API used to draw games. Changing it restarts the emulator. Vulkan and OpenGL use separate caches; compatibility may differ between them.", "API gráfica utilizada para dibujar los juegos. Cambiarla reinicia el emulador. Vulkan y OpenGL usan cachés separadas; la compatibilidad puede variar entre ambos."},
+    {"O renderizador OpenGL de jogos não está incluído nesta build.", "The OpenGL game renderer is not included in this build.", "El renderizador OpenGL para juegos no está incluido en esta compilación."},
     {"Proporção da imagem", "Picture proportions", "Proporción de la imagen"},
     {"Manter: a imagem do jogo guarda a proporção original, com barras se preciso. Esticar: preenche a tela inteira, deformando jogos que não são 16:9.", "Keep: the game's picture keeps its original proportions, with bars if needed. Stretch: it fills the whole screen, distorting games that are not 16:9.", "Mantener: la imagen del juego conserva su proporción original, con barras si hace falta. Estirar: llena toda la pantalla, deformando los juegos que no son 16:9."},
     {"Manter", "Keep", "Mantener"},
@@ -379,6 +383,32 @@ inline const char* Tr(const char* key) {
     {" sem capa no XboxUnity", " without a cover on XboxUnity", " sin carátula en XboxUnity"},
     {" com erro (", " failed (", " con error ("},
     {"Todos os jogos identificados já têm capa", "All identified games already have covers", "Todos los juegos identificados ya tienen carátula"},
+    {"DLCs", "DLCs", "DLCs"},
+    {"Aguarde a instalação do DLC terminar.", "Wait until DLC installation finishes.", "Espera a que termine la instalación del DLC."},
+    {"Copie os pacotes para PPSA50011/dlc ou para a pasta dlc do jogo. Só aparecem DLCs com o mesmo ID do título.", "Copy packages to PPSA50011/dlc or the game's dlc folder. Only DLCs matching this title ID are listed.", "Copia los paquetes a PPSA50011/dlc o a la carpeta dlc del juego. Solo aparecen DLCs con el mismo ID del título."},
+    {"Instalado", "Installed", "Instalado"},
+    {"Instalar", "Install", "Instalar"},
+    {"Nenhum pacote DLC compatível encontrado.", "No matching DLC packages found.", "No se encontraron paquetes DLC compatibles."},
+    {"Abra o jogo uma vez para identificar o título.", "Launch this game once to identify its title.", "Abre el juego una vez para identificar su título."},
+    {"Instalando DLC...", "Installing DLC...", "Instalando DLC..."},
+    {"Destino: ", "Destination: ", "Destino: "},
+    {"DLC instalado.", "DLC installed.", "DLC instalado."},
+    {"Pacote DLC inválido ou ID de título diferente.", "Invalid DLC package or title mismatch.", "Paquete DLC inválido o ID del título diferente."},
+    {"O destino já existe ou não permite concluir a instalação.", "Destination exists or cannot be published.", "El destino ya existe o no permite finalizar la instalación."},
+    {"Caminho de conteúdo inválido.", "Unsafe content path.", "Ruta de contenido inválida."},
+    {"Não foi possível criar a pasta temporária.", "Cannot create staging directory.", "No se pudo crear la carpeta temporal."},
+    {"O pacote mudou durante a cópia ou não pode ser lido.", "Source package changed or cannot be read.", "El paquete cambió durante la copia o no se puede leer."},
+    {"Falha ao copiar o pacote.", "Package copy failed.", "Error al copiar el paquete."},
+    {"Instalação interrompida.", "Installation interrupted.", "Instalación interrumpida."},
+    {"Falha na validação da cópia do pacote.", "Copied package validation failed.", "Error al validar la copia del paquete."},
+    {"Falha na validação do pacote instalado.", "Installed package validation failed.", "Error al validar el paquete instalado."},
+    {"Não foi possível criar a pasta de conteúdo.", "Cannot create content directory.", "No se pudo crear la carpeta de contenido."},
+    {"Não foi possível iniciar a instalação do DLC.", "Cannot start DLC installation.", "No se pudo iniciar la instalación del DLC."},
+    {"Limite da busca de DLCs atingido.", "DLC scan limit reached.", "Se alcanzó el límite de búsqueda de DLCs."},
+    {"Algumas pastas de DLCs não puderam ser lidas.", "Some DLC folders could not be read.", "No se pudieron leer algunas carpetas de DLCs."},
+    {"Busca de DLCs concluída.", "DLC scan complete.", "Búsqueda de DLCs completada."},
+    {"Instalador de DLCs indisponível.", "DLC installer is unavailable.", "Instalador de DLCs no disponible."},
+    {"Verificando o pacote copiado.", "Verifying copied package.", "Verificando el paquete copiado."},
   };
   const int language = ui_language.load(std::memory_order_relaxed);
   if (language == 9) return key;

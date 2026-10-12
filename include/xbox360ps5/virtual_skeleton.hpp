@@ -23,6 +23,21 @@ constexpr uint32_t kEnrollmentUnknown = 0xFFFFFFFF, kUserIndexNone = 0xFE;
 // The pose is relative to the hips, so the body does not walk around.
 constexpr float kSensorHeight = 0.8f, kHipHeight = 0.9f, kBodyDistance = 2.5f;
 
+// A new sender must not inherit the previous player's tracking identity.
+// Called under the guest source mutex, once per delivered sensor period.
+struct SkeletonIdentity {
+  uint32_t tracking_id = 0, session = 0;
+  bool tracked = false;
+  uint32_t Update(const Frame& pose) {
+    if (pose.tracked && (!tracked || session != pose.session)) {
+      if (!++tracking_id) tracking_id = 1;
+    }
+    session = pose.session;
+    tracked = pose.tracked;
+    return tracked ? tracking_id : 0;
+  }
+};
+
 inline void StoreU32(uint8_t* at, uint32_t value) {
   at[0] = uint8_t(value >> 24); at[1] = uint8_t(value >> 16);
   at[2] = uint8_t(value >> 8); at[3] = uint8_t(value);
@@ -47,7 +62,9 @@ inline void SkeletonSpace(const Joint& joint, float& x, float& y, float& z) {
 // 0 writes a frame without a body.
 inline void WriteSkeletonFrame(uint8_t* frame, const Frame& pose,
                                uint32_t frame_number, uint64_t milliseconds,
-                               uint32_t tracking_id) {
+                               uint32_t tracking_id,
+                               uint32_t enrollment = kEnrollmentUnknown,
+                               uint32_t user_index = kUserIndexNone) {
   std::memset(frame, 0, kSkeletonFrameBytes);
   StoreU32(frame + 0x00, uint32_t(milliseconds >> 32));
   StoreU32(frame + 0x04, uint32_t(milliseconds));
@@ -64,6 +81,10 @@ inline void WriteSkeletonFrame(uint8_t* frame, const Frame& pose,
   uint8_t* body = frame + kSkeletonDataOffset;
   StoreU32(body + 0x00, kSkeletonTracked);
   StoreU32(body + 0x04, tracking_id);
+  if (enrollment < 8 && user_index < 4) {
+    StoreU32(body + 0x08, enrollment);
+    StoreU32(body + 0x0C, user_index);
+  }
   float x, y, z;
   // The library reports the centre of the body; the spine joint stands for it.
   SkeletonSpace(pose.joints[1], x, y, z);
@@ -94,6 +115,8 @@ inline std::vector<uint32_t> FindSkeletonGetNextFrame(const uint8_t* code,
   constexpr uint32_t kCopyFrame = 0x38A00AB0;   // li r5, 0xAB0
   constexpr size_t kFunctionSpan = 0x280;
   std::vector<uint32_t> found;
+  if (!code || (base & 3) || bytes > uint64_t(UINT32_MAX) + 1 - base)
+    return found;
   for (size_t at = 0; at + 4 <= bytes; at += 4) {
     if (word(at) != kCopyFrame) continue;
     size_t start = at;
@@ -102,6 +125,8 @@ inline std::vector<uint32_t> FindSkeletonGetNextFrame(const uint8_t* code,
     bool wait_limit = false, to_ticks = false, not_connected = false;
     for (size_t n = start; n < start + kFunctionSpan && n + 4 <= bytes; n += 4) {
       const uint32_t w = word(n), op = w >> 26, low = w & 0xFFFF;
+      // Do not borrow signature marks from the next function.
+      if (n != start && w == kProlog) break;
       // cmplwi crN, r3, 0x1F40: the wait is the function's first argument.
       wait_limit |= op == 10 && ((w >> 16) & 31) == 3 && low == 0x1F40;
       to_ticks |= op == 7 && low == 0xD8F0;        // mulli ?, ?, -10000

@@ -88,6 +88,9 @@ if(CMAKE_CROSSCOMPILING)
     "${XBOX360PS5_ROOT}/src/autotest.cpp"
     "${XBOX360PS5_ROOT}/src/game_patches.cpp"
     "${XBOX360PS5_ROOT}/src/title_switch.cpp"
+    "${XBOX360PS5_ROOT}/src/dlc_install.cpp"
+    "${XBOX360PS5_ROOT}/src/disc_catalog.cpp"
+    "${XBOX360PS5_ROOT}/src/disc_library.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/memory_ps5.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/exception_handler.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/dualsense_input.cpp"
@@ -106,8 +109,9 @@ if(CMAKE_CROSSCOMPILING)
   target_include_directories(xbox360ps5-title-objects PRIVATE
     "${XBOX360PS5_ROOT}/include" "${XENIA_CANARY}" "${XENIA_CANARY}/src"
     "${XENIA_CANARY}/third_party" "${XENIA_CANARY}/third_party/fmt/include"
+    "${XENIA_CANARY}/third_party/glslang"
     "${XENIA_CANARY}/third_party/Vulkan-Headers/include")
-  target_compile_definitions(xbox360ps5-title-objects PRIVATE XBOX360PS5_CANARY=1 NDEBUG
+  target_compile_definitions(xbox360ps5-title-objects PRIVATE XBOX360PS5_CANARY=1 NDEBUG VULKAN_HPP_NO_TO_STRING
     XBOX360PS5_VERSION="${XBOX360PS5_VERSION}")
   if(XBOX360PS5_EXPERIMENTAL_DIAGNOSTICS)
     target_compile_definitions(xbox360ps5-title-objects PRIVATE XBOX360PS5_EXPERIMENTAL_DIAGNOSTICS=1)

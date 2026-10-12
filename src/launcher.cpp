@@ -3,6 +3,11 @@
 #include "xbox360ps5/build_version.hpp"
 #include "xbox360ps5/cover_geometry.hpp"
 #include "xbox360ps5/launcher.hpp"
+#include "disc_library.hpp"
+#include "dlc_manager.hpp"
+#include "update_manager.hpp"
+#include "xenia/ui/vulkan/framegen/framegen_config.hpp"
+#include "xbox360ps5/renderer.hpp"
 #include "xbox360ps5/canary_audio.hpp"
 #include "xbox360ps5/gpu_diagnostics.hpp"
 #include "xenia/base/cvar.h"
@@ -34,6 +39,7 @@ DECLARE_bool(gpu_allow_invalid_fetch_constants);
 DECLARE_int32(anisotropic_override);
 DECLARE_string(occlusion_query);
 DECLARE_bool(readback_resolve);  // PS5X360E: a bool in Xenia Edge (Canary: none/fast/full).
+DECLARE_string(render_target_path);  // PS5X360E: Edge's "performance"/"accuracy" (Canary: render_target_path_vulkan).
 DECLARE_bool(async_shader_compilation);
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(delay_via_maybeyield);
@@ -76,6 +82,36 @@ namespace fs = std::filesystem;
 const fs::path kStorage = "/download0/xbox360ps5";
 const char* const kFont = "/app0/assets/fonts/NotoSans-Regular.ttf";
 const char* const kHeadingFont = "/app0/assets/fonts/NotoSans-SemiBold.ttf";
+// Accurate render targets: Xenia's Vulkan "fsi" path. Kept outside Settings to
+// preserve the shipped title and launcher ABI; read once per process, before
+// the GPU is set up (the render target cache takes the path at that point).
+const char* const kFsiFile = "/app0/render-target-fsi.conf";
+bool& FsiChoice() {
+  static bool requested = [] {
+    std::ifstream input(kFsiFile);
+    std::string line;
+    if (!std::getline(input, line)) return false;
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    return line == "render_target_path_vulkan=fsi";
+  }();
+  return requested;
+}
+bool FsiAtStart() {
+  static const bool at_start = FsiChoice();
+  return at_start;
+}
+bool SetFsiRequested(bool enabled) {
+  FsiAtStart();
+  const char* temporary = "/app0/render-target-fsi.conf.new";
+  std::ofstream output(temporary, std::ios::trunc);
+  output << "render_target_path_vulkan=" << (enabled ? "fsi" : "fbo") << "\n";
+  output.close();
+  if (!output) { std::remove(temporary); return false; }
+  if (std::rename(temporary, kFsiFile) != 0) { std::remove(temporary); return false; }
+  XELOGW("Accurate render targets (FSI) requested={} (restart required)", enabled);
+  FsiChoice() = enabled;
+  return true;
+}
 
 // Colours: graphite surfaces, near-white type and one emerald accent.
 constexpr uint32_t kInk = 0x0a0c11, kSheet = 0x12161d, kSurface = 0x1a1f28, kSurfaceHigh = 0x252c38,
@@ -169,6 +205,9 @@ const std::vector<Option>& Options() {
   static const std::vector<const char*> off_on = {"Desligado", "Ligado"};
   static const std::vector<const char*> dead = {"0%", "5%", "10%", "15%", "20%", "25%"};
   static const std::vector<Option> options = {
+      {"renderer", &S::renderer, 0, W::start, 0, false, "Renderizador",
+       "API gráfica usada para desenhar os jogos. A troca reinicia o emulador. Vulkan e OpenGL usam caches separados; a compatibilidade pode variar entre eles.",
+       {"Vulkan", "OpenGL"}},
       {"image_filter", &S::image_filter, 0, W::live, 0, true, "Filtro de imagem",
        "Como a imagem do jogo é ampliada até a tela. Simples: mais leve e fiel. CAS: deixa a imagem mais nítida. FSR: upscale da AMD, bordas mais limpas. Quase não pesa.",
        {"Simples", "CAS (nitidez)", "FSR (upscale)"}},
@@ -354,7 +393,14 @@ GameOverrides GamePreset(const std::string& title_id) {
   return preset;
 }
 Settings ForGame(const Settings& general, const std::string& title_id, const GameOverrides& own) {
-  return WithOverrides(WithOverrides(general, GamePreset(title_id)), own);
+  auto effective = WithOverrides(WithOverrides(general, GamePreset(title_id)), own);
+  // Unsupported presenter effects must not turn a valid GL frame black.
+  // Keep stored Vulkan preferences and game overrides intact.
+  if (effective.renderer == int(Renderer::kOpenGL)) {
+    effective.image_filter = 0;
+    effective.dither = 0;
+  }
+  return effective;
 }
 GameOverrides LoadGameOverrides(const std::string& title_id) {
   return title_id.empty() ? GameOverrides() : Checked(ReadValues(kStorage / "game-settings" / (title_id + ".txt")));
@@ -415,6 +461,9 @@ void Settings::Save() const {
          << "\nlogging_policy=1\nresolution_scale=" << resolution_scale << "\n";
   for (const auto& option : Options()) output << option.key << "=" << this->*option.field << "\n";
 }
+namespace {
+bool FramegenOnAtStart();  // below, with the frame generation choice
+}
 void Settings::Apply() const {
   cvars::gpu_allow_invalid_fetch_constants = true;
   ui_language.store(SupportedUiLanguage(interface_language ? interface_language : console_language));
@@ -443,6 +492,10 @@ void Settings::Apply() const {
   (void)memexport;
   cvars::async_shader_compilation = async_shaders != 0;
   cvars::clear_memory_page_state = clear_pages != 0;
+  // The core falls back to host render targets by itself when the device lacks
+  // fragment shader interlock; the pipeline storage then keeps its .fbo name.
+  // PS5X360E: Xenia Edge names its fragment-shader-interlock path "accuracy".
+  cvars::render_target_path = FsiAtStart() ? "accuracy" : "performance";
   gpu_diag::read_released_pages = released_memory != 0;
   xe::hid::cvars::vibration = vibration != 0;
   xe::hid::cvars::left_stick_deadzone_percentage = deadzone_left * 0.05;
@@ -470,7 +523,9 @@ void Settings::Apply() const {
   // PS5X360E: even 30 FPS pacing: each guest frame shown for exactly two
   // display refreshes, and guest vblanks at the display's 59.94 Hz so frames
   // come exactly once per two refreshes. Not with the 120 Hz video clock.
-  const bool paced_30 = frame_pacing == 1 && !video_clock;
+  // Frame generation paces its own presents (adaptive pacing): the even pacing
+  // stays off while it is on, so the two never hold the same picture twice.
+  const bool paced_30 = frame_pacing == 1 && !video_clock && !FramegenOnAtStart();
   cvars::framerate_limit = video_clock ? 120 : (paced_30 ? 0 : 60);
   // PS5X360E: the 120 Hz video clock again (Edge's own vblanks are 50/60 only).
   cvars::guest_vblank_rate_override = video_clock ? 120 : 0;
@@ -486,6 +541,11 @@ void Settings::Apply() const {
   static const char* const kXma[] = {"new", "old", "master"};
   if (cvars::xma_decoder != kXma[xma_decoder % 3]) cvars::xma_decoder = kXma[xma_decoder % 3];
   cvars::use_dedicated_xma_thread = xma_inline == 0;
+  // Record applied cvars, including defaults omitted by the session's changed
+  // options list. A preset file alone does not prove what the GPU will read.
+  XELOGW("Applied GPU settings: resolve readback {} (choice {}, async {}), render targets {}, video clock {} Hz",
+         cvars::readback_resolve, readback, cvars::readback_resolve_async,
+         cvars::render_target_path, cvars::framerate_limit);
 }
 const char* Settings::ScaleName(int scale) {
   return scale >= 3 ? Tr("3x (2160p, muito pesado)") : scale == 2 ? Tr("2x (1440p, pesado)") : Tr("1x (720p, original)");
@@ -671,6 +731,12 @@ void Launcher::Scan() {
     // Before the first launch the id comes from the game's own header.
     if (game.title_id.empty() || game.title_id == "00000000")
       game.title_id = game.kind == "XEX" ? ReadXexTitleId(game.path) : game.kind == "ISO" ? ReadIsoTitleId(game.path) : game.title_id;
+    // Grouped entries retain the original Disc 1 path/cache identity.
+    const bool grouped = game.kind == "XEX" && fs::path(game.folder) != game.path.parent_path();
+    if (grouped) {
+      game.name = fs::path(game.folder).filename().string();
+      game.title_id = ReadXexTitleId(game.path);  // Do not inherit a stale cached ID.
+    }
     // Cover: a picture the user put beside the game, a downloaded one, the
     // game's cached icon, or the thumbnail inside a package.
     std::vector<uint8_t> bytes;
@@ -678,6 +744,13 @@ void Launcher::Scan() {
     for (const char* extension : {".png", ".jpg", ".jpeg"}) {
       if (game.cover >= 0) break;
       if (ReadFile(beside.string() + extension, bytes)) game.cover = LoadCover(bytes);
+    }
+    if (grouped && game.cover < 0) {
+      const fs::path parent_cover = fs::path(game.folder) / "cover";
+      for (const char* extension : {".png", ".jpg", ".jpeg"}) {
+        if (game.cover >= 0) break;
+        if (ReadFile(parent_cover.string() + extension, bytes)) game.cover = LoadCover(bytes);
+      }
     }
     // Downloaded by the title, or sent from a computer (tools/console.py covers).
     if (game.cover < 0 && !game.title_id.empty() && ReadFile(CoverFile(game.title_id), bytes)) game.cover = LoadCover(bytes);
@@ -707,12 +780,22 @@ void Launcher::Scan() {
       add({name, executable, "XEX", directory.string()}, {});
       if (directory != root) return;  // Nothing below a game is another game.
     }
+    std::set<fs::path> grouped_directories;
+    std::string disc_error;
+    if (const auto group = multidisc::InspectExtractedDiscGroup(directory, disc_error)) {
+      GameEntry game{directory.filename().string(), group->launch_path, "XEX", directory.string()};
+      game.size = std::to_string(group->disc_count) + " discs";
+      add(std::move(game), {});
+      grouped_directories.insert(group->directories.begin(), group->directories.end());
+    } else if (!disc_error.empty()) {
+      XELOGW("LAUNCHER disc grouping refused {}: {}", directory.string(), disc_error);
+    }
     for (const auto& entry : entries) {
       const fs::path& path = entry.path();
       const std::string extension = Lower(path.extension().string());
       if (entry.is_directory(error)) {
         // A package's data folder sits beside its header file.
-        if (depth < 6 && extension != ".data") scan(path, depth + 1, root);
+        if (depth < 6 && extension != ".data" && !grouped_directories.count(path)) scan(path, depth + 1, root);
       } else if (extension == ".iso") {
         GameEntry game{path.stem().string(), path, "ISO", directory.string()};
         game.size = SizeText(entry.file_size(error));
@@ -880,13 +963,28 @@ void Launcher::RecordLaunch(const GameEntry& game, uint32_t title_id, const std:
 }
 
 void Launcher::ChangeOption(const Option& option, int step) {
+  if (settings_.renderer == int(Renderer::kOpenGL) &&
+      (option.field == &Settings::image_filter || option.field == &Settings::dither)) {
+    SetMessage(Tr("OpenGL: apenas filtro bilinear, sem suavizar degradês."));
+    return;
+  }
   const int count = int(option.choices.size());
   int& value = settings_.*option.field;
+  if (std::strcmp(option.key, "renderer") == 0 &&
+      !RendererAvailable((value + step + count) % count)) {
+    SetMessage(Tr("O renderizador OpenGL de jogos não está incluído nesta build."));
+    return;
+  }
   value = (value + step + count) % count;
   settings_.Save();
   settings_.Apply();
 }
 void Launcher::ChangeGameOption(const Option& option, int step) {
+  if (settings_.renderer == int(Renderer::kOpenGL) &&
+      (option.field == &Settings::image_filter || option.field == &Settings::dither)) {
+    SetMessage(Tr("OpenGL: apenas filtro bilinear, sem suavizar degradês."));
+    return;
+  }
   // Round through "as the general option" and then each choice.
   const int count = int(option.choices.size());
   const auto found = overrides_.find(option.key);
@@ -916,8 +1014,117 @@ std::vector<std::pair<std::string, std::string>> Launcher::Games() const {
   return games;
 }
 
+dlc2::Found& DlcPage();  // the DLCs tab's list, defined with RefreshDlcs
+const char* FramegenText(const char* pt, const char* en, const char* es);
+namespace {
+// The Updates tab (title updates) and what it shows. Kept here, not in the class: the class
+// layout is shared with objects that are not rebuilt.
+struct UpdateSheet {
+  tu::Found page;
+  std::vector<tu::Inbox> inboxes;
+  std::filesystem::path root;
+  uint32_t title = 0, media = 0;
+  int row = 0;
+  std::string result;
+};
+UpdateSheet& Updates() {
+  static UpdateSheet sheet;
+  return sheet;
+}
+// Updates are looked for in the updates folders and, since that is where people put them, in
+// the dlc folders too.
+template <class Roots>
+std::vector<tu::Inbox> UpdateInboxes(const std::filesystem::path& game, const Roots& roots) {
+  std::vector<tu::Inbox> inboxes = {{"/app0/updates", true}, {game.parent_path() / "updates", true},
+                                    {"/app0/dlc", false}, {game.parent_path() / "dlc", false}};
+  for (const auto& root : roots) {
+    inboxes.push_back({std::filesystem::path(root) / "updates", true});
+    inboxes.push_back({std::filesystem::path(root) / "dlc", false});
+  }
+  return inboxes;
+}
+void RefreshUpdates() {
+  auto& sheet = Updates();
+  if (tu::copier().Busy()) return;
+  sheet.page = sheet.title ? tu::Find(sheet.title, sheet.root, sheet.inboxes) : tu::Found{};
+  sheet.row = std::clamp(sheet.row, 0, std::max(0, int(sheet.page.items.size()) - 1));
+}
+template <class Roots>
+void OpenUpdates(const std::filesystem::path* game, uint32_t title, const std::filesystem::path& root,
+                 const Roots& roots) {
+  auto& sheet = Updates();
+  if (tu::copier().Busy()) return;
+  std::error_code error;
+  std::filesystem::create_directories("/app0/updates", error);  // where a new update is copied to
+  sheet.result.clear();
+  sheet.title = game && !root.empty() ? title : 0;
+  sheet.root = root;
+  sheet.inboxes = sheet.title ? UpdateInboxes(*game, roots) : std::vector<tu::Inbox>{};
+  sheet.media = sheet.title ? tu::GameMedia(*game, title) : 0;
+  RefreshUpdates();
+}
+template <class Surface>
+void DrawUpdates(Surface& c, float x);
+}  // namespace
 bool Launcher::TakeLaunch(GameEntry& game) {
-  if (!launch_pending_) return false;
+  if (!launch_pending_ || (dlc_hooks_.status && dlc_hooks_.status().busy)) return false;
+  static std::string checked, label;      // the launch whose dlc folders were looked at
+  static std::vector<dlc2::Item> waiting;  // its DLCs not installed yet
+  static size_t found = 0;
+  static uint32_t title = 0;
+  auto& copier = dlc2::copier();
+  if (copier.Busy()) {
+    if (!label.empty()) loading_ = label + "  " + std::to_string(int(copier.Progress() * 100)) + "%";
+    return false;
+  }
+  static std::vector<tu::Item> update;  // its update not installed yet: none or one
+  static std::string update_note;       // the update this launch runs with, for the log
+  auto& updater = tu::copier();
+  if (updater.Busy()) {
+    if (!label.empty()) loading_ = label + "  " + std::to_string(int(updater.Progress() * 100)) + "%";
+    return false;
+  }
+  const std::string current = launch_.path.string();
+  if (checked != current) {
+    checked = current;
+    waiting.clear();
+    update.clear();
+    update_note.clear();
+    found = 0;
+    title = uint32_t(std::strtoul(launch_.title_id.c_str(), nullptr, 16));
+    if (launch_.title_id.size() == 8 && title && !save_root_.empty()) {
+      std::vector<std::filesystem::path> inboxes = {"/app0/dlc", launch_.path.parent_path() / "dlc"};
+      for (const auto& root : settings_.game_paths) inboxes.emplace_back(std::filesystem::path(root) / "dlc");
+      for (const auto& item : dlc2::Find(title, save_root_, inboxes).items)
+        if (item.state == dlc2::State::available) waiting.push_back(item);
+      found = waiting.size();
+      const tu::Found updates = tu::Find(title, save_root_, UpdateInboxes(launch_.path, settings_.game_paths));
+      if (const tu::Item* pending = tu::Pending(updates, tu::GameMedia(launch_.path, title))) update.push_back(*pending);
+      for (const auto& item : updates.items)
+        if (item.state == tu::State::active) update_note = "v" + tu::VersionText(item.version) + " " + item.file + " (active)";
+      if (!update.empty()) update_note = "v" + tu::VersionText(update.front().version) + " " + update.front().file + " (installed at this launch)";
+    }
+  }
+  copier.TakeResult();
+  updater.TakeResult();
+  if (!update.empty()) {
+    const tu::Item next = update.front();
+    update.clear();
+    label = launch_.name + "  ·  " + FramegenText("Atualização ", "Update ", "Actualización ") + tu::VersionText(next.version);
+    loading_ = label;
+    if (updater.Start(next, save_root_, title)) return false;  // copying; asked again next frame
+  }
+  while (!waiting.empty()) {
+    const dlc2::Item next = waiting.front();
+    waiting.erase(waiting.begin());
+    label = launch_.name + "  \u00b7  DLC " + std::to_string(found - waiting.size()) + "/" + std::to_string(found) + ": " + next.name;
+    loading_ = label;
+    if (copier.Start(next, save_root_, title)) return false;  // copying; asked again next frame
+  }
+  XELOGW("LAUNCHER title update for {} ({}): {}", launch_.name, launch_.title_id, update_note.empty() ? "none" : update_note);
+  checked.clear();
+  label.clear();
+  loading_ = launch_.name;
   launch_pending_ = false;
   game = launch_;
   return true;
@@ -959,15 +1166,117 @@ void Launcher::RefreshPerGame() {
   }
   per_game_row_ = std::clamp(per_game_row_, 0, std::max(0, int(per_game_.size()) - 1));
 }
+
+// Kept outside Settings to preserve the shipped title and launcher ABI.
+// The presenter reads the same file once, before creating its swapchain.
+const char* FramegenText(const char* pt, const char* en, const char* es);
+// The Kinect QR code: the settings server's /camera page with the key. It opens the camera page
+// served by the console itself (after a one-time certificate install on a new phone).
+const QrCode& CameraQr(const std::string& plain, const std::string& key) {
+  static std::string url;
+  static QrCode qr;
+  const std::string now = plain.empty() || key.empty() ? std::string() : plain + "camera?k=" + key;
+  if (now != url) { url = now; qr = now.empty() ? QrCode() : MakeQrCode(now); }
+  return qr;
+}
+const char* CameraQrText() {
+  return FramegenText(
+      "Aponte a câmera do celular para o código: ele vira o sensor Kinect, sem PC. Na primeira vez, o celular instala o certificado do PS5 (a página explica).",
+      "Point the phone's camera at the code: the phone becomes the Kinect sensor, no PC needed. The first time, the phone installs the PS5 certificate (the page explains).",
+      "Apunta la cámara del móvil al código: el móvil será el sensor Kinect, sin PC. La primera vez, el móvil instala el certificado de la PS5 (la página lo explica).");
+}
+const char* FramegenText(const char* pt, const char* en, const char* es) {
+  const int language = ui_language.load();
+  return language == 9 ? pt : language == 5 ? es : en;
+}
+// Frame generation as the menu shows it, read from /app0/framegen.conf (framegen_config.hpp
+// has the file's three lines). Kept here, not in the class or the Settings.
+struct FramegenChoiceState {
+  int mode = 0;        // 0 off, 1 automatic, 2 2x, 3 3x, 4 4x
+  int last_on = 2;     // the multiplier written while off: the mode it had when last on
+  std::string output;  // the output rate line's value as the file has it ("": no such line)
+  std::string pacing;  // the pacing line's value, written back as it is ("": no such line)
+};
+FramegenChoiceState& FramegenChoice() {
+  static FramegenChoiceState choice = [] {
+    FramegenChoiceState state;
+    std::ifstream input("/app0/framegen.conf", std::ios::binary);
+    std::string file((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    if (file.size() > 1023) file.resize(1023);  // as much as the presenter reads
+    const ps5x360::framegen::Config config = ps5x360::framegen::ParseConfig(file);
+    if (!config.valid) return state;  // a first line the presenter rejects: off, nothing kept
+    state.last_on = config.multiplier == 0 ? 1 : int(config.multiplier);
+    state.mode = config.enabled ? state.last_on : 0;
+    state.output = config.output_text;
+    state.pacing = config.pacing_text;
+    return state;
+  }();
+  return choice;
+}
+int FramegenMode() { return FramegenChoice().mode; }
+// The output asked for: the 120 Hz mode when the display and the installation have it.
+bool FramegenHighOutput(const FramegenChoiceState& choice) {
+  return choice.output == "auto" || choice.output == "120";
+}
+bool FramegenHighOutput() { return FramegenHighOutput(FramegenChoice()); }
+// What the presenter of this process read: a different choice restarts on close.
+const FramegenChoiceState& FramegenAtStart() {
+  static const FramegenChoiceState at_start = FramegenChoice();
+  return at_start;
+}
+bool FramegenOnAtStart() { return FramegenAtStart().mode != 0; }
+bool FramegenChanged() {
+  return FramegenMode() != FramegenAtStart().mode ||
+         FramegenHighOutput() != FramegenHighOutput(FramegenAtStart());
+}
+const char* FramegenModeName(int mode) {
+  return mode == 0 ? FramegenText("Desligada", "Off", "Desactivada")
+       : mode == 1 ? FramegenText("Automática", "Automatic", "Automática")
+       : mode == 3 ? "3x" : mode == 4 ? "4x" : "2x";
+}
+// The Performance page shows these sentinel rows after the table's own options.
+constexpr int kFramegenRow = -1;
+constexpr int kFsiRow = -2;
+constexpr int kFramegenOutputRow = -3;
+// Writes the three lines. Line 1 stays the switch the builds before modes read; the output
+// rate line is written back as it was unless `output` is a new choice.
+bool WriteFramegen(int mode, const std::string& output) {
+  FramegenAtStart();
+  auto& choice = FramegenChoice();
+  const int multiplier = mode ? mode : choice.last_on;  // 1 automatic, 2 to 4
+  const std::string file = ps5x360::framegen::FormatConfig(
+      mode != 0, multiplier == 1 ? 0u : uint32_t(multiplier), output, choice.pacing);
+  const char* temporary = "/app0/framegen.conf.new";
+  std::ofstream stream(temporary, std::ios::trunc | std::ios::binary);
+  stream << file;
+  stream.close();
+  if (!stream) { std::remove(temporary); return false; }
+  if (std::rename(temporary, "/app0/framegen.conf") != 0) {
+    std::remove(temporary); return false;
+  }
+  XELOGW("Frame generation requested={} multiplier={} output_hz={} (restart required)", mode != 0,
+         ps5x360::framegen::MultiplierText(multiplier == 1 ? 0u : uint32_t(multiplier)),
+         output.empty() ? "60" : output);
+  choice.mode = mode;
+  if (mode) choice.last_on = mode;
+  choice.output = output;
+  return true;
+}
+bool SetFramegenMode(int mode) { return WriteFramegen(mode, FramegenChoice().output); }
+bool SetFramegenHighOutput(bool high) { return WriteFramegen(FramegenMode(), high ? "120" : "60"); }
+
 void Launcher::CloseSettings() {
   if (settings_changed_) { settings_.Save(); settings_.Apply(); settings_changed_ = false; }
   // An option that is only read as the emulator starts: start again.
-  if (StartOptionsDiffer(settings_, started_)) restart_ = true;
+  if (StartOptionsDiffer(settings_, started_) || FramegenChanged() ||
+      FsiChoice() != FsiAtStart()) restart_ = true;
   restored_ = false;
   mode_ = Mode::shelf;
 }
 
 void Launcher::Press(Key key) {
+  // Interaction can finish the entrance immediately; never delay a pad action.
+  intro_ = 1.0f;
   if (!loading_.empty()) return;
   message_.clear();
   const int count = int(view_.size());
@@ -991,16 +1300,62 @@ void Launcher::Press(Key key) {
       break;
     }
     case Mode::game: {
-      if (key == Key::l1 || key == Key::r1) { game_tab_ = (game_tab_ + (key == Key::r1 ? 1 : 3)) % 4; if (game_tab_ == 3) RefreshAchievements(); break; }
+      if (key == Key::l1 || key == Key::r1) { game_tab_ = (game_tab_ + (key == Key::r1 ? 1 : 5)) % 6; if (game_tab_ == 3) RefreshAchievements(); if (game_tab_ == 4) RefreshDlcs(); if (game_tab_ == 5) OpenUpdates(Selected() ? &Selected()->path : nullptr, SelectedTitleId(), save_root_, settings_.game_paths); break; }
       // Closing goes back to where the sheet was opened from.
       const auto close = [this] { mode_ = game_return_; game_return_ = Mode::shelf; if (mode_ == Mode::settings) RefreshPerGame(); };
       if (game_tab_ == 0) {
         if (key == Key::cross && Selected()) {
+          if ((dlc_hooks_.status && dlc_hooks_.status().busy) || dlc2::copier().Busy()) { message_ = Tr("Aguarde a instalação do DLC terminar."); break; }
+          if (tu::copier().Busy()) { message_ = FramegenText("Aguarde a instalação da atualização terminar.", "Wait for the update to finish installing.", "Espera a que termine la instalación de la actualización."); break; }
           launch_ = *Selected(); launch_pending_ = true; loading_ = launch_.name;
           mode_ = Mode::shelf; game_return_ = Mode::shelf;
         }
         if (key == Key::right) game_tab_ = 1;
         if (key == Key::circle || key == Key::triangle) close();
+        break;
+      }
+      if (game_tab_ == 5) {
+        auto& sheet = Updates();
+        const bool busy = tu::copier().Busy();
+        const int rows = int(sheet.page.items.size());
+        if (key == Key::up && rows) sheet.row = (sheet.row + rows - 1) % rows;
+        if (key == Key::down && rows) sheet.row = (sheet.row + 1) % rows;
+        if (!busy && key == Key::square) { sheet.result.clear(); RefreshUpdates(); }
+        if (!busy && key == Key::cross && rows && !save_root_.empty()) {
+          const tu::Item item = sheet.page.items[size_t(sheet.row)];
+          if (item.state == tu::State::available) {
+            sheet.result = tu::copier().Start(item, save_root_, sheet.title) ? "" : "start-failed";
+          } else {
+            const bool enable = item.state == tu::State::disabled;
+            const bool moved = enable ? tu::Activate(item, save_root_, sheet.title)
+                                      : tu::Disable(item.path, save_root_, sheet.title);
+            RefreshUpdates();
+            sheet.result = !moved ? "move-failed" : enable ? "enabled" : "disabled";
+          }
+        }
+        if (key == Key::circle) close();
+        break;
+      }
+      if (game_tab_ == 4) {
+        const bool busy = dlc2::copier().Busy();
+        const int rows = int(DlcPage().items.size());
+        if (key == Key::up && rows) dlc_row_ = (dlc_row_ + rows - 1) % rows;
+        if (key == Key::down && rows) dlc_row_ = (dlc_row_ + 1) % rows;
+        if (!busy && key == Key::square) RefreshDlcs();
+        if (!busy && key == Key::cross && rows && !save_root_.empty()) {
+          const dlc2::Item item = DlcPage().items[size_t(dlc_row_)];
+          const uint32_t title = SelectedTitleId();
+          std::string result;
+          if (item.state == dlc2::State::available) {
+            result = dlc2::copier().Start(item, save_root_, title) ? "" : "start-failed";
+          } else {
+            const bool enable = item.state == dlc2::State::disabled;
+            result = dlc2::Move(item, save_root_, title, enable) ? (enable ? "enabled" : "disabled") : "move-failed";
+            RefreshDlcs();
+          }
+          dlc_result_ = result;
+        }
+        if (key == Key::circle) close();
         break;
       }
       if (game_tab_ == 3) {
@@ -1112,6 +1467,11 @@ void Launcher::Press(Key key) {
             category_rows_.clear();
             for (int n = 0; n < int(Options().size()); ++n)
               if (Options()[size_t(n)].category == category_) category_rows_.push_back(n);
+            if (category_ == 1) {
+              category_rows_.push_back(kFramegenRow);
+              category_rows_.push_back(kFramegenOutputRow);
+              category_rows_.push_back(kFsiRow);
+            }
             mode_ = Mode::options;
           }
         }
@@ -1135,8 +1495,23 @@ void Launcher::Press(Key key) {
       const int rows = int(category_rows_.size());
       if (key == Key::up && rows) option_row_ = (option_row_ + rows - 1) % rows;
       if (key == Key::down && rows) option_row_ = (option_row_ + 1) % rows;
-      if ((key == Key::left || key == Key::right || key == Key::cross) && rows)
-        ChangeOption(Options()[size_t(category_rows_[size_t(option_row_)])], key == Key::left ? -1 : 1);
+      if ((key == Key::left || key == Key::right || key == Key::cross) && rows) {
+        if (category_rows_[size_t(option_row_)] == kFsiRow) {
+          if (!SetFsiRequested(!FsiChoice()))
+            SetMessage(FramegenText("Não foi possível gravar a configuração.", "Could not save the setting.",
+                                    "No se pudo guardar la configuración."));
+        } else if (category_rows_[size_t(option_row_)] == kFramegenRow) {
+          if (!SetFramegenMode((FramegenMode() + (key == Key::left ? 4 : 1)) % 5))
+            SetMessage(FramegenText("Não foi possível gravar a configuração.", "Could not save the setting.",
+                                    "No se pudo guardar la configuración."));
+        } else if (category_rows_[size_t(option_row_)] == kFramegenOutputRow) {
+          if (!SetFramegenHighOutput(!FramegenHighOutput()))
+            SetMessage(FramegenText("Não foi possível gravar a configuração.", "Could not save the setting.",
+                                    "No se pudo guardar la configuración."));
+        } else {
+          ChangeOption(Options()[size_t(category_rows_[size_t(option_row_)])], key == Key::left ? -1 : 1);
+        }
+      }
       if (key == Key::circle || key == Key::square) mode_ = Mode::settings;
       break;
     }
@@ -1271,10 +1646,11 @@ struct Launcher::Canvas {
   ImDrawList* list;
   float scale, alpha, dt;
   const Launcher::Fonts* fonts;
+  float offset_y = 0.0f;
   ImU32 Color(uint32_t rgb, float a = 1.0f) const {
     return IM_COL32(rgb >> 16 & 255, rgb >> 8 & 255, rgb & 255, int(255 * std::clamp(a * alpha, 0.0f, 1.0f)));
   }
-  ImVec2 At(float x, float y) const { return ImVec2(x * scale, y * scale); }
+  ImVec2 At(float x, float y) const { return ImVec2(x * scale, (y + offset_y) * scale); }
   ImFont* Font(float size) const {
     ImFont* font = size <= 21 ? fonts->f20 : size <= 25 ? fonts->f24 : size <= 30 ? fonts->f28 : size <= 38 ? fonts->f36 : fonts->f48;
     return font ? font : ImGui::GetFont();
@@ -1392,7 +1768,7 @@ void DrawCover(const Launcher::Canvas& c, const std::vector<std::unique_ptr<xe::
 void Launcher::Draw(ImGuiIO& io) {
   const float dt = std::clamp(io.DeltaTime, 0.0f, 0.1f);
   time_ += dt;
-  intro_ = std::min(1.0f, intro_ + dt / 0.45f);
+  intro_ = std::min(1.0f, intro_ + dt / 0.60f);
   // Downloaded covers show up as soon as the download ends.
   if (covers_.TakeFinished() && loading_.empty()) Scan();
   // Missing covers are fetched as soon as the shelf shows.
@@ -1434,7 +1810,6 @@ void Launcher::Draw(ImGuiIO& io) {
     ImGui::End();
     return;
   }
-  c.alpha = intro_;
   DrawShelf(c);
   if (sheet_ > 0.01f) {
     // The shelf dims behind an open sheet.
@@ -1524,12 +1899,12 @@ void DrawCase(const Launcher::Canvas& c, const std::vector<std::unique_ptr<xe::u
   const CoverArt art = has_cover && size_t(game.cover) < arts.size() ? arts[size_t(game.cover)] : CoverArt{};
   const ImTextureID texture = has_cover ? reinterpret_cast<ImTextureID>(textures[size_t(game.cover)].get()) : ImTextureID();
 
-  // The plastic shell shows as a green rim around the paper insert.
+  // A neutral shell keeps the cover clean; green light is drawn on its edge.
   const float rim = 4.0f * c.scale;
   c.list->AddQuadFilled(ImVec2(q.tl.x - rim, q.tl.y - rim), ImVec2(q.tr.x + rim, q.tr.y - rim),
                         ImVec2(q.br.x + rim, q.br.y + rim * 0.5f), ImVec2(q.bl.x - rim, q.bl.y + rim * 0.5f),
-                        shade(kCaseGreen, 0.62f));
-  c.list->AddLine(ImVec2(q.tl.x - rim, q.tl.y - rim), ImVec2(q.tr.x + rim, q.tr.y - rim), shade(0xd8ffc0, 1.0f, 0.55f),
+                        shade(0x18231f, 0.85f));
+  c.list->AddLine(ImVec2(q.tl.x - rim, q.tl.y - rim), ImVec2(q.tr.x + rim, q.tr.y - rim), shade(0xbad1c5, 1.0f, 0.22f),
                   1.5f * c.scale);
 
   // The side face: from the front's edge, back towards the vanishing point.
@@ -1597,6 +1972,14 @@ void DrawCase(const Launcher::Canvas& c, const std::vector<std::unique_ptr<xe::u
 
 void Launcher::DrawShelf(Canvas& c) {
   const int count = int(view_.size());
+  // Short staged entrance: heading, cases, then game information and controls.
+  const auto enter = [&](float delay, float duration) {
+    const float t = std::clamp((intro_ * 0.60f - delay) / duration, 0.0f, 1.0f);
+    return 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
+  };
+  const float header = enter(0.0f, 0.28f);
+  c.alpha = header;
+  c.offset_y = -10.0f * (1.0f - header);
   // Top bar: the name, the filters and what is connected.
   c.Text("PS5X360", 96, 54, 28, kText);
   c.Fill(96, 96, 44, 4, kAccent, 1.0f, 2);
@@ -1615,6 +1998,9 @@ void Launcher::DrawShelf(Canvas& c) {
   right -= c.Chip(pad_connected_ ? Tr("Controle conectado") : Tr("Sem controle"), right, 50, pad_connected_ ? kAccent : kWarning, true) + 12;
   for (const auto& profile : profiles_) if (profile.active) c.Chip(profile.name, right, 50, kText, true);
 
+  const float cases = enter(0.05f, 0.40f);
+  c.alpha = cases;
+  c.offset_y = 22.0f * (1.0f - cases);
   const float floor = 690;
   if (games_.empty()) {
     c.Text(Tr("Sua prateleira está vazia"), 960, 380, 48, kText, 1.0f, 1);
@@ -1668,20 +2054,24 @@ void Launcher::DrawShelf(Canvas& c) {
       const ImU32 dark = IM_COL32(0, 0, 0, int(150 * c.alpha)), clear = IM_COL32(0, 0, 0, 0);
       Gradient(c.list, ImVec2(q.bl.x - 6 * c.scale, q.bl.y), ImVec2(q.br.x + 6 * c.scale, q.br.y),
                ImVec2(q.br.x + spread, q.br.y + reach), ImVec2(q.bl.x - spread, q.bl.y + reach), dark, dark, clear, clear);
-      if (chosen) {
-        for (int glow = 5; glow >= 1; --glow) {
-          const float g = glow * 4.0f * c.scale;
-          c.list->AddQuad(ImVec2(q.tl.x - g, q.tl.y - g), ImVec2(q.tr.x + g, q.tr.y - g), ImVec2(q.br.x + g, q.br.y + g),
-                          ImVec2(q.bl.x - g, q.bl.y + g), c.Color(kAccent, 0.07f), 4.0f * c.scale);
-        }
-      }
       // The spine shows on the middle case too, so the shelf reads as boxes.
       const auto box=covers3d::Project(distance,floor);
       DrawCase(c, textures_, arts_, games_[size_t(view_[size_t(n)])], q,
                1.0f - 0.5f * std::min(1.0f, std::fabs(distance)), true,box.spine,
                Projected(c,box.side),Projected(c,box.top));
-      if (chosen) c.list->AddQuad(q.tl, q.tr, q.br, q.bl, c.Color(kWhite, 0.75f), 2.0f * c.scale);
+      // Layered strokes make a feathered glow without a translucent green panel.
+      const float pulse = chosen ? 0.94f + 0.06f * std::sin(time_ * 2.0f) : 1.0f;
+      const float strength = (chosen ? 1.0f : 0.24f) * pulse;
+      for (const auto& layer : std::array<std::pair<float, float>, 4>{
+               std::pair{14.0f, 0.035f}, {9.0f, 0.055f}, {5.0f, 0.12f}, {2.0f, 0.72f}}) {
+        c.list->AddQuad(q.tl, q.tr, q.br, q.bl, c.Color(0x64ff9c, strength * layer.second),
+                        layer.first * c.scale);
+      }
+      if (chosen) c.list->AddQuad(q.tl, q.tr, q.br, q.bl, c.Color(0xc6ffe0, 0.85f * pulse), c.scale);
     }
+    const float details = enter(0.10f, 0.40f);
+    c.alpha = details;
+    c.offset_y = 12.0f * (1.0f - details);
     // The selected game in words, at the lower left; its place in the list at the right.
     c.Text(game.name, 96, 790, 48, kText, 1.0f, 0, 1300);
     std::string line = game.kind;
@@ -1694,6 +2084,9 @@ void Launcher::DrawShelf(Canvas& c) {
     c.Text(position, 1824, 800, 36, kText, 1.0f, 2);
     c.Text(Tr(kFilters[filter_]), 1824, 850, 20, kFaint, 1.0f, 2);
   }
+  const float controls = enter(0.15f, 0.40f);
+  c.alpha = controls;
+  c.offset_y = 10.0f * (1.0f - controls);
   if (!message_.empty()) c.Text(message_, 96, 916, 24, kWarning, 1.0f, 0, 1700);
   else if(Selected() && Lower(Selected()->name).find("garden warfare")!=std::string::npos)
     c.Text(Tr("Este jogo exige serviços online. Autenticação Xbox Live/EA não está disponível."),96,916,24,kWarning,1,0,1700);
@@ -1710,6 +2103,8 @@ void Launcher::DrawShelf(Canvas& c) {
   if (count > 1) x = c.Hint('h', Tr("Trocar de jogo"), x, 990);
   x = c.Hint('m', Tr("Recarregar lista"), x, 990);
   c.Text(Tr("L1 / R1   Filtro"), 1824, 992, 20, kMuted, 1.0f, 2);
+  c.alpha = 1.0f;
+  c.offset_y = 0.0f;
 }
 
 void Launcher::DrawGameSheet(Canvas& c) {
@@ -1725,21 +2120,29 @@ void Launcher::DrawGameSheet(Canvas& c) {
   c.Text(Tr("ID do título  ") + (game.title_id.empty() ? std::string(Tr("ainda não identificado")) : game.title_id), x + 260, 160, 20, kMuted, 1.0f, 0, 540);
   c.Text(game.path.string(), x + 260, 192, 20, kFaint, 1.0f, 0, 540);
 
-  // Three pages: play, the game's patches and its own settings.
+  // Game pages share the same controller navigation.
   {
-    const char* const tabs[] = {"Jogar", "Patches", "Configurações", "Conquistas"};
+    const char* const tabs[] = {Tr("Jogar"), Tr("Patches"), Tr("Configurações"), Tr("Conquistas"), Tr("DLCs"),
+                                FramegenText("Atualizações", "Updates", "Actualizaciones")};
+    // Six names do not fit the sheet at full size in every language: they shrink together.
+    float names = 0;
+    for (const char* tab : tabs) names += c.Width(tab, 28);
+    const float fit = std::min(1.0f, (748 - c.Width("L1 / R1", 20)) / (names + 26 * float(std::size(tabs))));
+    const float size = 28 * fit, gap = 26 * fit;
     float tab_x = x + 56;
-    for (int n = 0; n < 4; ++n) {
-      const float width = c.Width(Tr(tabs[n]), 28);
-      c.Text(Tr(tabs[n]), tab_x, 272, 28, n == game_tab_ ? kText : kFaint);
+    for (int n = 0; n < int(std::size(tabs)); ++n) {
+      const float width = c.Width(tabs[n], size);
+      c.Text(tabs[n], tab_x, 272 + (28 - size) * 0.6f, size, n == game_tab_ ? kText : kFaint);
       if (n == game_tab_) c.Fill(tab_x, 310, width, 3, kAccent, 0.9f, 2);
-      tab_x += width + 26;
+      tab_x += width + gap;
     }
     c.Text("L1 / R1", tab_x, 278, 20, kFaint);
   }
   if (game_tab_ == 0) { DrawGamePlay(c, x); return; }
   if (game_tab_ == 2) { DrawGameOptions(c, x); return; }
   if (game_tab_ == 3) { DrawAchievements(c, x); return; }
+  if (game_tab_ == 4) { DrawDlcs(c, x); return; }
+  if (game_tab_ == 5) { DrawUpdates(c, x); return; }
   const int rows = int(patch_rows_.size());
   if (!rows) {
     const char* reason = game.title_id.empty()
@@ -1806,6 +2209,227 @@ void Launcher::DrawAchievements(Canvas& c, float x) {
   float hint = c.Hint('t', Tr("Jogador"), x + 56, 1004); c.Hint('o', Tr("Voltar"), hint, 1004);
 }
 
+uint32_t Launcher::SelectedTitleId() const {
+  const auto* game = Selected();
+  if (!game || game->title_id.size() != 8) return 0;
+  uint32_t id = 0;
+  for (unsigned char ch : game->title_id) {
+    unsigned digit = ch >= '0' && ch <= '9' ? ch - '0' : ch >= 'a' && ch <= 'f' ? ch - 'a' + 10 : ch >= 'A' && ch <= 'F' ? ch - 'A' + 10 : 16;
+    if (digit > 15) return 0;
+    id = (id << 4) | digit;
+  }
+  return id;
+}
+
+// The DLCs tab's list (one game at a time; the launcher draws on one thread).
+dlc2::Found& DlcPage() {
+  static dlc2::Found page;
+  return page;
+}
+void Launcher::RefreshDlcs() {
+  if (dlc2::copier().Busy()) return;
+  dlcs_.clear();
+  dlc_result_.clear();
+  DlcPage() = {};
+  const auto* game = Selected();
+  const uint32_t title = SelectedTitleId();
+  if (game && title) {
+    std::vector<std::filesystem::path> inboxes = {"/app0/dlc", game->path.parent_path() / "dlc"};
+    for (const auto& root : settings_.game_paths) inboxes.emplace_back(std::filesystem::path(root) / "dlc");
+    DlcPage() = dlc2::Find(title, save_root_, inboxes);
+  }
+  dlc_row_ = std::clamp(dlc_row_, 0, std::max(0, int(DlcPage().items.size()) - 1));
+}
+
+namespace {
+const char* DlcMessage(const std::string& message) {
+  static const std::pair<const char*, const char*> messages[] = {
+    {"DLC installed.", "DLC instalado."},
+    {"Invalid DLC package or title mismatch.", "Pacote DLC inválido ou ID de título diferente."},
+    {"Destination exists or cannot be published.", "O destino já existe ou não permite concluir a instalação."},
+    {"Unsafe content path.", "Caminho de conteúdo inválido."},
+    {"Cannot create staging directory.", "Não foi possível criar a pasta temporária."},
+    {"Source package changed or cannot be read.", "O pacote mudou durante a cópia ou não pode ser lido."},
+    {"Package copy failed.", "Falha ao copiar o pacote."},
+    {"Installation interrupted.", "Instalação interrompida."},
+    {"Copied package validation failed.", "Falha na validação da cópia do pacote."},
+    {"Installed package validation failed.", "Falha na validação do pacote instalado."},
+    {"Cannot create content directory.", "Não foi possível criar a pasta de conteúdo."},
+    {"Cannot start DLC installation.", "Não foi possível iniciar a instalação do DLC."},
+    {"DLC scan limit reached.", "Limite da busca de DLCs atingido."},
+    {"Some DLC folders could not be read.", "Algumas pastas de DLCs não puderam ser lidas."},
+    {"No matching DLC packages found.", "Nenhum pacote DLC compatível encontrado."},
+    {"DLC scan complete.", "Busca de DLCs concluída."},
+    {"DLC installer is unavailable.", "Instalador de DLCs indisponível."},
+    {"Verifying copied package.", "Verificando o pacote copiado."},
+    {"Installing DLC.", "Instalando DLC..."},
+  };
+  for (const auto& entry : messages) if (message == entry.first) return Tr(entry.second);
+  return message.c_str();
+}
+}
+
+void Launcher::DrawDlcs(Canvas& c, float x) {
+  auto& copier = dlc2::copier();
+  const bool busy = copier.Busy();
+  if (!busy) {
+    if (const int result = copier.TakeResult()) {
+      RefreshDlcs();
+      dlc_result_ = result > 0 ? "installed" : "copy-failed:" + std::to_string(-result);
+    }
+  }
+  c.Wrapped(FramegenText(
+      "Ativada: o jogo encontra a DLC. Desativada: fica guardada, mas o jogo não a vê. Copie pacotes novos para PPSA50011/dlc ou para a pasta dlc do jogo: eles são instalados sozinhos quando você aperta Jogar (ou aqui, com X).",
+      "On: the game finds the DLC. Off: kept, but the game does not see it. Copy new packages to PPSA50011/dlc or to the game's dlc folder: they install by themselves when you press Play (or here, with X).",
+      "Activada: el juego encuentra el DLC. Desactivada: se guarda, pero el juego no lo ve. Copia paquetes nuevos en PPSA50011/dlc o en la carpeta dlc del juego: se instalan solos al pulsar Jugar (o aquí, con X)."),
+    x + 56, 330, 21, kMuted, 740);
+  const auto& page = DlcPage();
+  const int rows = int(page.items.size());
+  const int first = std::clamp(dlc_row_ - 3, 0, std::max(0, rows - 6));
+  for (int n = first; n < std::min(rows, first + 6); ++n) {
+    const auto& item = page.items[size_t(n)];
+    const float y = 440 + (n - first) * 56.0f;
+    const bool selected = n == dlc_row_;
+    if (selected) c.Fill(x + 48, y, 768, 50, kSurfaceHigh, 1, 8);
+    c.Text(item.name, x + 64, y + 10, 22, selected ? kText : kBody, 1, 0, 560);
+    const bool on = item.state == dlc2::State::active, off = item.state == dlc2::State::disabled;
+    c.Text(on ? FramegenText("Ativada", "On", "Activada") : off ? FramegenText("Desativada", "Off", "Desactivada")
+                                                          : FramegenText("Não instalada", "Not installed", "No instalada"),
+           x + 796, y + 12, 20, on ? kAccent : off ? kMuted : kBody, 1, 2);
+  }
+  if (!rows)
+    c.Wrapped(SelectedTitleId() ? FramegenText("Nenhuma DLC deste jogo encontrada.", "No DLC for this game found.", "No se encontraron DLC de este juego.")
+                                : Tr("Abra o jogo uma vez para identificar o título."),
+              x + 56, 440, 24, kMuted, 730);
+  if (page.other_game || page.not_dlc || page.not_package) {
+    char ignored[320];
+    std::snprintf(ignored, sizeof(ignored),
+                  FramegenText("Ignorados nas pastas dlc: %d de outro jogo (outro ID), %d que não são DLC (ex.: atualização de título), %d que não são pacotes do Xbox 360.",
+                               "Ignored in the dlc folders: %d of another game (other ID), %d not DLC (e.g. title updates), %d not Xbox 360 packages.",
+                               "Ignorados en las carpetas dlc: %d de otro juego (otro ID), %d que no son DLC (p. ej. actualizaciones), %d que no son paquetes de Xbox 360."),
+                  page.other_game, page.not_dlc, page.not_package);
+    c.Wrapped(ignored, x + 56, 780, 19, kFaint, 740);
+  }
+  if (busy) {
+    const float progress = float(std::clamp(copier.Progress(), 0.0, 1.0));
+    c.Text(std::string(FramegenText("Instalando ", "Installing ", "Instalando ")) + copier.Name() + "  " +
+               std::to_string(int(progress * 100)) + "%", x + 56, 840, 22, kAccent, 1, 0, 740);
+    c.Fill(x + 56, 876, 740, 5, kSurfaceHigh); c.Fill(x + 56, 876, 740 * progress, 5, kAccent);
+  } else if (!dlc_result_.empty()) {
+    const char* text = dlc_result_ == "enabled" ? FramegenText("DLC ativada: o jogo vai encontrá-la.", "DLC on: the game will find it.", "DLC activada: el juego la encontrará.")
+      : dlc_result_ == "disabled" ? FramegenText("DLC desativada: o jogo não a vê, e o arquivo continua guardado.", "DLC off: the game does not see it; the file is kept.", "DLC desactivada: el juego no la ve; el archivo se conserva.")
+      : dlc_result_ == "installed" ? FramegenText("DLC instalada e ativada.", "DLC installed and on.", "DLC instalada y activada.")
+      : dlc_result_ == "move-failed" ? FramegenText("Não foi possível mover o arquivo da DLC.", "Could not move the DLC file.", "No se pudo mover el archivo del DLC.")
+      : FramegenText("A instalação falhou: confira o espaço livre e o arquivo.", "Installing failed: check free space and the file.", "La instalación falló: revisa el espacio libre y el archivo.");
+    c.Wrapped(std::string(text) + (dlc_result_.rfind("copy-failed", 0) == 0 ? " (" + dlc_result_.substr(12) + ")" : ""),
+              x + 56, 840, 22, kBody, 740);
+  }
+  c.Text(Tr("Destino: ") + save_root_.string(), x + 56, 928, 20, kFaint, 1, 0, 740);
+  float hint = x + 56;
+  if (!busy && rows) {
+    const auto state = page.items[size_t(std::clamp(dlc_row_, 0, rows - 1))].state;
+    hint = c.Hint('x', state == dlc2::State::active ? FramegenText("Desativar", "Turn off", "Desactivar")
+                     : state == dlc2::State::disabled ? FramegenText("Ativar", "Turn on", "Activar") : Tr("Instalar"), hint, 1004);
+  }
+  if (!busy) hint = c.Hint('s', Tr("Recarregar lista"), hint, 1004);
+  c.Hint('o', Tr("Voltar"), hint, 1004);
+}
+
+namespace {
+template <class Surface>  // Launcher::Canvas is private to the class
+void DrawUpdates(Surface& c, float x) {
+  auto& sheet = Updates();
+  auto& copier = tu::copier();
+  const bool busy = copier.Busy();
+  if (!busy) {
+    if (const int result = copier.TakeResult()) {
+      RefreshUpdates();
+      sheet.result = result > 0 ? "installed" : "copy-failed:" + std::to_string(-result);
+    }
+  }
+  c.Wrapped(FramegenText(
+      "Uma atualização fica ativa por vez. Copie o arquivo para PPSA50011/updates ou para a pasta updates do jogo: a mais nova é instalada sozinha ao apertar Jogar (ou aqui, com X). Patches feitos para o jogo sem atualização não valem com ela ativa.",
+      "One update is active at a time. Copy the file to PPSA50011/updates or to the game's updates folder: the newest installs by itself when you press Play (or here, with X). Patches made for the game without an update do not apply while one is active.",
+      "Solo una actualización está activa a la vez. Copia el archivo en PPSA50011/updates o en la carpeta updates del juego: la más nueva se instala sola al pulsar Jugar (o aquí, con X). Los parches hechos para el juego sin actualización no se aplican con ella activa."),
+    x + 56, 330, 21, kMuted, 740);
+  const auto& page = sheet.page;
+  const int rows = int(page.items.size());
+  const int first = std::clamp(sheet.row - 2, 0, std::max(0, rows - 5));
+  for (int n = first; n < std::min(rows, first + 5); ++n) {
+    const auto& item = page.items[size_t(n)];
+    const float y = 470 + (n - first) * 56.0f;
+    const bool selected = n == sheet.row;
+    if (selected) c.Fill(x + 48, y, 768, 50, kSurfaceHigh, 1, 8);
+    c.Text("v" + tu::VersionText(item.version) + "  ·  " + item.file, x + 64, y + 10, 22, selected ? kText : kBody, 1, 0, 520);
+    const bool on = item.state == tu::State::active, off = item.state == tu::State::disabled;
+    // An installed update keeps showing its state; the note below says when it does not fit.
+    const bool other = !on && !off && !tu::Fits(item, sheet.media);
+    c.Text(on ? FramegenText("Ativa", "On", "Activa") : off ? FramegenText("Desativada", "Off", "Desactivada")
+              : other ? FramegenText("Outra edição do jogo", "Another edition", "Otra edición")
+                      : FramegenText("Não instalada", "Not installed", "No instalada"),
+           x + 796, y + 12, 20, on ? kAccent : off || other ? kMuted : kBody, 1, 2);
+  }
+  if (!rows)
+    c.Wrapped(sheet.title ? FramegenText("Nenhuma atualização deste jogo encontrada.", "No update for this game found.", "No se encontró ninguna actualización de este juego.")
+                          : Tr("Abra o jogo uma vez para identificar o título."),
+              x + 56, 470, 24, kMuted, 730);
+  if (rows && !tu::Fits(page.items[size_t(std::clamp(sheet.row, 0, rows - 1))], sheet.media)) {
+    char other[360];
+    std::snprintf(other, sizeof(other),
+                  FramegenText("Esta atualização é de outra edição do jogo (mídia %08X; a sua é %08X). O emulador provavelmente não vai aplicá-la.",
+                               "This update is for another edition of the game (media %08X; yours is %08X). The emulator will probably not apply it.",
+                               "Esta actualización es de otra edición del juego (medio %08X; el tuyo es %08X). El emulador probablemente no la aplicará."),
+                  page.items[size_t(std::clamp(sheet.row, 0, rows - 1))].media, sheet.media);
+    c.Wrapped(other, x + 56, 762, 19, kBody, 740);
+  } else if (page.other_game || page.not_update || page.not_package) {
+    char ignored[320];
+    std::snprintf(ignored, sizeof(ignored),
+                  FramegenText("Ignorados nas pastas updates: %d de outro jogo (outro ID), %d que não são atualização (ex.: DLC), %d que não são pacotes do Xbox 360.",
+                               "Ignored in the updates folders: %d of another game (other ID), %d not updates (e.g. DLC), %d not Xbox 360 packages.",
+                               "Ignorados en las carpetas updates: %d de otro juego (otro ID), %d que no son actualizaciones (p. ej. DLC), %d que no son paquetes de Xbox 360."),
+                  page.other_game, page.not_update, page.not_package);
+    c.Wrapped(ignored, x + 56, 762, 19, kFaint, 740);
+  }
+  if (busy) {
+    const float progress = float(std::clamp(copier.Progress(), 0.0, 1.0));
+    c.Text(std::string(FramegenText("Instalando atualização  ", "Installing update  ", "Instalando actualización  ")) +
+               std::to_string(int(progress * 100)) + "%", x + 56, 840, 22, kAccent, 1, 0, 740);
+    c.Fill(x + 56, 876, 740, 5, kSurfaceHigh); c.Fill(x + 56, 876, 740 * progress, 5, kAccent);
+  } else if (!sheet.result.empty()) {
+    const std::string& r = sheet.result;
+    const char* message = r == "enabled" ? FramegenText("Atualização ativada: o jogo abre com ela.", "Update on: the game starts with it.", "Actualización activada: el juego arranca con ella.")
+      : r == "disabled" ? FramegenText("Atualização desativada: o jogo abre sem ela, e o arquivo continua guardado.", "Update off: the game starts without it; the file is kept.", "Actualización desactivada: el juego arranca sin ella; el archivo se conserva.")
+      : r == "installed" ? FramegenText("Atualização instalada e ativada.", "Update installed and on.", "Actualización instalada y activada.")
+      : r == "move-failed" ? FramegenText("Não foi possível mover o arquivo da atualização.", "Could not move the update file.", "No se pudo mover el archivo de la actualización.")
+      : FramegenText("A instalação falhou: confira o espaço livre e o arquivo.", "Installing failed: check free space and the file.", "La instalación falló: revisa el espacio libre y el archivo.");
+    c.Wrapped(std::string(message) + (r.rfind("copy-failed", 0) == 0 ? " (" + r.substr(12) + ")" : ""), x + 56, 840, 22, kBody, 740);
+  }
+  c.Text(Tr("Destino: ") + sheet.root.string(), x + 56, 928, 20, kFaint, 1, 0, 740);
+  float hint = x + 56;
+  if (!busy && rows) {
+    const auto state = page.items[size_t(std::clamp(sheet.row, 0, rows - 1))].state;
+    hint = c.Hint('x', state == tu::State::active ? FramegenText("Desativar", "Turn off", "Desactivar")
+                     : state == tu::State::disabled ? FramegenText("Ativar", "Turn on", "Activar") : Tr("Instalar"), hint, 1004);
+  }
+  if (!busy) hint = c.Hint('s', Tr("Recarregar lista"), hint, 1004);
+  c.Hint('o', Tr("Voltar"), hint, 1004);
+}
+}  // namespace
+
+template <class Surface>  // Launcher::Canvas is private to the class
+void DrawQrCard(Surface& c, const QrCode& qr, float qx, float qy, float card) {
+  const float module = float(int((card - 16) / float(qr.size))), inset = (card - module * float(qr.size)) / 2;
+  c.Fill(qx, qy, card, card, kWhite, 1.0f, 8);
+  for (int my = 0; my < qr.size; ++my) {
+    for (int mx = 0; mx < qr.size;) {
+      if (!qr.At(mx, my)) { ++mx; continue; }
+      int run = 1;
+      while (mx + run < qr.size && qr.At(mx + run, my)) ++run;
+      c.Fill(qx + inset + float(mx) * module, qy + inset + float(my) * module, float(run) * module, module, 0x000000);
+      mx += run;
+    }
+  }
+}
 void Launcher::DrawGameOptions(Canvas& c, float x) {
   const GameEntry& game = *Selected();
   float hint = x + 56;
@@ -1866,7 +2490,13 @@ void Launcher::DrawGameOptions(Canvas& c, float x) {
   const Option& option = options[size_t(game_rows_[size_t(game_option_row_)])];
   c.Fill(x + 40, 774, 780, 1, kWhite, 0.10f);
   c.list->PushClipRect(c.At(x + 40, 780), c.At(x + 820, 930), true);
-  c.Wrapped(Tr(option.about), x + 56, 786, 20, kBody, 750);
+  const QrCode& camera_qr = std::string_view(option.key) == "motion_phone" ? CameraQr(web_plain_, web_key_) : QrCode();
+  if (camera_qr.size) {
+    DrawQrCard(c, camera_qr, x + 56, 786, 138);
+    c.Wrapped(CameraQrText(), x + 212, 786, 20, kBody, 594);
+  } else {
+    c.Wrapped(Tr(option.about), x + 56, 786, 20, kBody, 750);
+  }
   c.list->PopClipRect();
   const char* when = option.when == OptionWhen::start ? Tr("O emulador reinicia sozinho ao abrir este jogo.")
                    : option.when == OptionWhen::launch ? Tr("Vale a partir da próxima vez que o jogo abrir.")
@@ -1941,9 +2571,40 @@ void Launcher::DrawOptionsSheet(Canvas& c) {
     c.Text(position, x + 820, 104, 20, kFaint, 1.0f, 2);
   }
   for (int n = first; n < rows && n < first + shown; ++n) {
-    const Option& option = options[size_t(category_rows_[size_t(n)])];
     const float y = 156 + (n - first) * 48.0f;
     const bool focused = n == option_row_;
+    if (category_rows_[size_t(n)] == kFsiRow) {
+      c.Fill(x + 40, y, 780, 44, focused ? kSurfaceHigh : kSurface, focused ? 1.0f : 0.6f, 10);
+      if (focused) c.Edge(x + 40, y, 780, 44, kAccent, 0.9f, 10, 2.0f);
+      c.Text(FramegenText("Renderização precisa (FSI, teste)", "Accurate render targets (FSI, test)",
+                          "Renderizado preciso (FSI, prueba)"),
+             x + 64, y + 10, 22, focused ? kText : kBody, 1.0f, 0, 440);
+      const bool on = FsiChoice();
+      c.Text(on ? FramegenText("Ligada", "On", "Activada") : FramegenText("Desligada", "Off", "Desactivada"),
+             x + 796, y + 10, 22, focused ? kAccent : on ? kWarning : kMuted, 1.0f, 2, 320);
+      continue;
+    }
+    if (category_rows_[size_t(n)] == kFramegenRow) {
+      c.Fill(x + 40, y, 780, 44, focused ? kSurfaceHigh : kSurface, focused ? 1.0f : 0.6f, 10);
+      if (focused) c.Edge(x + 40, y, 780, 44, kAccent, 0.9f, 10, 2.0f);
+      c.Text(FramegenText("Geração de frames (teste)", "Frame generation (test)", "Generación de fotogramas (prueba)"),
+             x + 64, y + 10, 22, focused ? kText : kBody, 1.0f, 0, 440);
+      const int mode = FramegenMode();
+      c.Text(FramegenModeName(mode), x + 796, y + 10, 22, focused ? kAccent : mode ? kWarning : kMuted, 1.0f, 2, 320);
+      continue;
+    }
+    if (category_rows_[size_t(n)] == kFramegenOutputRow) {
+      c.Fill(x + 40, y, 780, 44, focused ? kSurfaceHigh : kSurface, focused ? 1.0f : 0.6f, 10);
+      if (focused) c.Edge(x + 40, y, 780, 44, kAccent, 0.9f, 10, 2.0f);
+      c.Text(FramegenText("Saída de vídeo da geração (teste)", "Frame generation output (test)",
+                          "Salida de vídeo de la generación (prueba)"),
+             x + 64, y + 10, 22, focused ? kText : kBody, 1.0f, 0, 440);
+      const bool high = FramegenHighOutput();
+      c.Text(high ? FramegenText("Até 120 Hz", "Up to 120 Hz", "Hasta 120 Hz") : "60 Hz",
+             x + 796, y + 10, 22, focused ? kAccent : high ? kWarning : kMuted, 1.0f, 2, 320);
+      continue;
+    }
+    const Option& option = options[size_t(category_rows_[size_t(n)])];
     c.Fill(x + 40, y, 780, 44, focused ? kSurfaceHigh : kSurface, focused ? 1.0f : 0.6f, 10);
     if (focused) c.Edge(x + 40, y, 780, 44, kAccent, 0.9f, 10, 2.0f);
     c.Text(Tr(option.label), x + 64, y + 10, 22, focused ? kText : kBody, 1.0f, 0, 440);
@@ -1951,9 +2612,57 @@ void Launcher::DrawOptionsSheet(Canvas& c) {
     c.Text(Tr(option.choices[size_t(value)]), x + 796, y + 10, 22,
            focused ? kAccent : value == option.recommended ? kMuted : kWarning, 1.0f, 2, 320);
   }
+  if (category_rows_[size_t(option_row_)] == kFsiRow) {
+    c.Fill(x + 40, 612, 780, 1, kWhite, 0.10f);
+    c.Wrapped(FramegenText(
+        "Emula a memória de imagem do Xbox 360 dentro dos shaders (o modo ROV do Xenia no PC). Mais fiel em partículas, transparências e formatos de cor raros; mais pesada. Vale para todos os jogos enquanto estiver ligada; se o vídeo do PS5 não tiver o recurso, o modo normal continua.",
+        "Emulates the Xbox 360 image memory inside the shaders (Xenia's ROV mode on PC). More faithful particles, transparency and rare color formats; heavier. Applies to every game while on; if the PS5 video driver lacks the feature, the normal mode stays.",
+        "Emula la memoria de imagen de la Xbox 360 dentro de los shaders (el modo ROV de Xenia en PC). Más fiel en partículas, transparencias y formatos de color raros; más pesado. Vale para todos los juegos mientras esté activado; si el vídeo de la PS5 no tiene la función, sigue el modo normal."),
+        x + 56, 632, 20, kBody, 750);
+    c.Text(std::string(Tr("Recomendado: ")) + FramegenText("Desligada", "Off", "Desactivada"), x + 56, 860, 20, kAccent, 1.0f, 0, 750);
+    c.Text(Tr("O emulador reinicia para aplicar, ao fechar as configurações."), x + 56, 892, 20, kMuted, 1.0f, 0, 750);
+    float hint = c.Hint('x', Tr("Alterar"), x + 56, 1004);
+    hint = c.Hint('o', Tr("Voltar"), hint, 1004);
+    c.Hint('v', Tr("Mover"), hint, 1004);
+    return;
+  }
+  if (category_rows_[size_t(option_row_)] == kFramegenRow) {
+    c.Fill(x + 40, 612, 780, 1, kWhite, 0.10f);
+    c.Wrapped(FramegenText(
+        "Cria quadros intermediários entre dois quadros do jogo. 2x: um quadro (30 FPS aparece a 60). 3x e 4x: dois ou três quadros, para telas de 120 Hz; cada quadro a mais acrescenta atraso. Automática escolhe pelo ritmo do jogo e pela tela, e também funciona quando a taxa do jogo varia (40 FPS, de 31 a 47). Não acelera o jogo e pode borrar o HUD e movimentos rápidos. O contador de FPS mostra Game, Output e FG.",
+        "Creates in-between frames from two game frames. 2x: one frame (30 FPS is shown at 60). 3x and 4x: two or three frames, for 120 Hz displays; each extra frame adds latency. Automatic picks from the game's pace and the display, and also works when the game's rate is uneven (40 FPS, 31 to 47). It does not speed up the game and can blur the HUD and fast motion. The FPS counter shows Game, Output and FG.",
+        "Crea fotogramas intermedios entre dos fotogramas del juego. 2x: un fotograma (30 FPS se muestra a 60). 3x y 4x: dos o tres fotogramas, para pantallas de 120 Hz; cada fotograma extra añade latencia. Automática elige según el ritmo del juego y la pantalla, y también funciona cuando la tasa del juego varía (40 FPS, de 31 a 47). No acelera el juego y puede difuminar el HUD y los movimientos rápidos. El contador de FPS muestra Game, Output y FG."),
+        x + 56, 632, 20, kBody, 750);
+    c.Text(std::string(Tr("Recomendado: ")) + FramegenText("Desligada", "Off", "Desactivada"), x + 56, 860, 20, kAccent, 1.0f, 0, 750);
+    c.Text(Tr("O emulador reinicia para aplicar, ao fechar as configurações."), x + 56, 892, 20, kMuted, 1.0f, 0, 750);
+    float hint = c.Hint('x', Tr("Alterar"), x + 56, 1004);
+    hint = c.Hint('o', Tr("Voltar"), hint, 1004);
+    c.Hint('v', Tr("Mover"), hint, 1004);
+    return;
+  }
+  if (category_rows_[size_t(option_row_)] == kFramegenOutputRow) {
+    c.Fill(x + 40, 612, 780, 1, kWhite, 0.10f);
+    c.Wrapped(FramegenText(
+        "A taxa pedida ao vídeo do PS5. Até 120 Hz deixa 3x e 4x mostrarem um quadro por atualização numa tela de 120 Hz, e um jogo a 60 FPS aparecer a 120. Só funciona se esta instalação declarar 120 Hz (param.json) e a tela aceitar; senão a saída continua a 60 Hz sozinha.",
+        "The rate asked of the PS5 video output. Up to 120 Hz lets 3x and 4x show one frame per refresh on a 120 Hz display, and a 60 FPS game be shown at 120. It only works if this installation declares 120 Hz (param.json) and the display accepts it; otherwise the output stays at 60 Hz by itself.",
+        "La frecuencia pedida a la salida de vídeo de la PS5. Hasta 120 Hz permite que 3x y 4x muestren un fotograma por actualización en una pantalla de 120 Hz, y que un juego a 60 FPS se muestre a 120. Solo funciona si esta instalación declara 120 Hz (param.json) y la pantalla lo acepta; si no, la salida sigue a 60 Hz por sí sola."),
+        x + 56, 632, 20, kBody, 750);
+    c.Text(std::string(Tr("Recomendado: ")) + "60 Hz", x + 56, 860, 20, kAccent, 1.0f, 0, 750);
+    c.Text(Tr("O emulador reinicia para aplicar, ao fechar as configurações."), x + 56, 892, 20, kMuted, 1.0f, 0, 750);
+    float hint = c.Hint('x', Tr("Alterar"), x + 56, 1004);
+    hint = c.Hint('o', Tr("Voltar"), hint, 1004);
+    c.Hint('v', Tr("Mover"), hint, 1004);
+    return;
+  }
   const Option& option = options[size_t(category_rows_[size_t(option_row_)])];
   c.Fill(x + 40, 612, 780, 1, kWhite, 0.10f);
-  c.Wrapped(Tr(option.about), x + 56, 632, 20, kBody, 750);
+  const QrCode& camera_qr = std::string_view(option.key) == "motion_phone" ? CameraQr(web_plain_, web_key_) : QrCode();
+  if (camera_qr.size) {
+    DrawQrCard(c, camera_qr, x + 56, 632, 200);
+    c.Wrapped(CameraQrText(), x + 276, 632, 20, kBody, 530);
+  } else {
+    c.Wrapped(Tr(option.about), x + 56, 632, 20, kBody, 750);
+  }
   // What is recommended, and when a change takes effect.
   c.Text(std::string(Tr("Recomendado: ")) + Tr(option.choices[size_t(option.recommended)]), x + 56, 860, 20, kAccent, 1.0f, 0, 750);
   const char* when = option.when == OptionWhen::start ? Tr("O emulador reinicia para aplicar, ao fechar as configurações.")

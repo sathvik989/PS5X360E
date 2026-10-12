@@ -3626,7 +3626,7 @@ index e6b7d53..0f0eb95 100644
      SharedMemory::WatchHandle base_watch_handle_ = nullptr;
      SharedMemory::WatchHandle mips_watch_handle_ = nullptr;
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index 76fc1a4..d372fc1 100644
+index 76fc1a4..a87cad0 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,7 +8,11 @@
@@ -3718,7 +3718,32 @@ index 76fc1a4..d372fc1 100644
  // Generated with `xb buildshaders`.
  namespace shaders {
  #include "xenia/gpu/shaders/bytecode/vulkan_spirv/apply_gamma_pwl_cs.h"
-@@ -1642,8 +1698,29 @@ void VulkanCommandProcessor::ShutdownContext() {
+@@ -191,6 +247,24 @@ void VulkanCommandProcessor::InitializeShaderStorage(
+                                            std::move(completion_callback));
+ }
+ 
++std::future<bool> VulkanCommandProcessor::RequestPipelineCacheSnapshot() {
++  auto completion = std::make_shared<std::promise<bool>>();
++  auto result = completion->get_future();
++  // The promise is captured by value, so it outlives a caller that gave up.
++  CallInThread([this, completion]() {
++    bool saved = false;
++    try {
++      saved = pipeline_cache_ && pipeline_cache_->SavePipelineCacheSnapshot();
++    } catch (...) {
++    }
++    try {
++      completion->set_value(saved);
++    } catch (...) {
++    }
++  });
++  return result;
++}
++
+ void VulkanCommandProcessor::RestoreEdramSnapshot(const void* snapshot) {
+   // Starting a new frame because descriptors may be needed.
+   if (!BeginSubmission(true)) {
+@@ -1642,8 +1716,29 @@ void VulkanCommandProcessor::ShutdownContext() {
  }
  
  void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
@@ -3748,7 +3773,7 @@ index 76fc1a4..d372fc1 100644
    if (index >= XE_GPU_REG_SHADER_CONSTANT_000_X &&
        index <= XE_GPU_REG_SHADER_CONSTANT_511_W) {
      if (frame_open_) {
-@@ -1916,8 +1993,14 @@ bool VulkanCommandProcessor::FaultCopyResolveToGuestRam(
+@@ -1916,8 +2011,14 @@ bool VulkanCommandProcessor::FaultCopyResolveToGuestRam(
    if (submit_result != VK_SUCCESS) {
      return false;
    }
@@ -3763,7 +3788,7 @@ index 76fc1a4..d372fc1 100644
    dfn.vkResetFences(device, 1, &resolve_fault_fence_);
    if (wait_result != VK_SUCCESS) {
      return false;
-@@ -1973,6 +2056,20 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -1973,6 +2074,20 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
    // Before the presenter check, so the paths that return early end the frame
    // too.
    NoteResolveFrame();
@@ -3784,7 +3809,7 @@ index 76fc1a4..d372fc1 100644
  
    CollectCompletedGpuTimeQueries();
    static constexpr uint32_t kRenderPassWindowFrames = 60;
-@@ -2019,7 +2116,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2019,7 +2134,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
  
    auto aspect = graphics_system_->GetScaledAspectRatio();
  
@@ -3793,7 +3818,7 @@ index 76fc1a4..d372fc1 100644
        frontbuffer_width_scaled, frontbuffer_height_scaled, aspect.first,
        aspect.second,
        [this, frontbuffer_width_scaled, frontbuffer_height_scaled,
-@@ -2200,7 +2297,14 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2200,7 +2315,14 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
          uint32_t& gamma_ramp_frame_index_ref =
              use_pwl_gamma_ramp ? gamma_ramp_pwl_current_frame_
                                 : gamma_ramp_256_entry_table_current_frame_;
@@ -3809,7 +3834,7 @@ index 76fc1a4..d372fc1 100644
            constexpr uint32_t kGammaRampSize256EntryTable =
                sizeof(uint32_t) * 256;
            constexpr uint32_t kGammaRampSizePWL = sizeof(uint16_t) * 2 * 3 * 128;
-@@ -2571,12 +2675,18 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2571,12 +2693,18 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
          // Need to submit all the commands before giving the image back to the
          // presenter so it can submit its own commands for displaying it to the
          // queue, and also need to submit the release barrier.
@@ -3828,7 +3853,7 @@ index 76fc1a4..d372fc1 100644
    EndSubmission(true);
  }
  
-@@ -2587,6 +2697,7 @@ void VulkanCommandProcessor::OnPrimaryBufferEnd() {
+@@ -2587,6 +2715,7 @@ void VulkanCommandProcessor::OnPrimaryBufferEnd() {
  
    if (cvars::submit_on_primary_buffer_end && submission_open_ &&
        !scratch_buffer_used_ && CanEndSubmissionImmediately()) {
@@ -3836,7 +3861,7 @@ index 76fc1a4..d372fc1 100644
      EndSubmission(false);
    }
  }
-@@ -3824,6 +3935,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3824,6 +3953,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
        (pixel_shader != nullptr && pixel_shader->bindings_ready()
             ? pixel_shader->GetUsedTextureMaskAfterTranslation()
             : 0);
@@ -3849,7 +3874,7 @@ index 76fc1a4..d372fc1 100644
    texture_cache_->RequestTextures(used_texture_mask);
  
    // Update the graphics pipeline, and if the new graphics pipeline has a
-@@ -4128,6 +4245,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4128,6 +4263,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
            return false;
          }
        }
@@ -3862,7 +3887,7 @@ index 76fc1a4..d372fc1 100644
      }
    }
  
-@@ -4262,6 +4385,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4262,6 +4403,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
    }
  
    if (!memexport_ranges_.empty()) {
@@ -3873,7 +3898,7 @@ index 76fc1a4..d372fc1 100644
      if (route_to_host) {
        // Producer draw: output landed in host_buffer_ (guest RAM), already CPU
        // coherent, so no readback. Just record the written pages. Consumers then
-@@ -4369,6 +4496,169 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
+@@ -4369,6 +4514,169 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
    memexport_staged_.clear();
  }
  
@@ -4043,7 +4068,7 @@ index 76fc1a4..d372fc1 100644
  bool VulkanCommandProcessor::EnsureMemexportRangeInDeviceBuffer(
      uint32_t base_bytes, uint32_t size_bytes, bool whole_range) {
    // Readers of the device buffer need memexport output copied across from
-@@ -4765,6 +5055,35 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4765,6 +5073,35 @@ bool VulkanCommandProcessor::IssueCopy() {
      return false;
    }
    ++submission_in_progress_.resolve_count;
@@ -4079,7 +4104,7 @@ index 76fc1a4..d372fc1 100644
  
    // The resolve wrote the device buffer. Drop any stale memexport marks so the
    // output isn't overwritten with guest RAM by a later texture load.
-@@ -4782,9 +5101,17 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4782,9 +5119,17 @@ bool VulkanCommandProcessor::IssueCopy() {
          is_scaled = false;
          written_length = mirrored_length;
        }
@@ -4097,7 +4122,7 @@ index 76fc1a4..d372fc1 100644
  
    // Pop debug marker for resolve operation.
    if (debug_markers_enabled_) {
-@@ -4793,9 +5120,212 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4793,9 +5138,212 @@ bool VulkanCommandProcessor::IssueCopy() {
  
    SubmitRequestedResolve();
  
@@ -4310,7 +4335,7 @@ index 76fc1a4..d372fc1 100644
  void VulkanCommandProcessor::EnsureQueryResources() {
    // VIZ surveys need the pool even when ZPD reports are faked.
    if ((zpd_mode_ == ZPDMode::kFake && !cvars::occlusion_query_viz) ||
-@@ -4919,7 +5449,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4919,7 +5467,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
        is_pool_exhausted = !host_query_pool_->has_free_indices();
      }
  
@@ -4319,7 +4344,7 @@ index 76fc1a4..d372fc1 100644
        return QueryOpenResult::kPoolExhausted;
      }
  
-@@ -4945,6 +5475,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4945,6 +5493,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
          saved_framebuffer = current_framebuffer_;
          EndRenderPass();
        }
@@ -4327,7 +4352,7 @@ index 76fc1a4..d372fc1 100644
        if (!EndSubmission(false)) {
          return QueryOpenResult::kFailed;
        }
-@@ -4971,7 +5502,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4971,7 +5520,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
          XELOGI("ZPD: Stall awaiting submission={} completed_before={}",
                 wait_for, completed_submission);
        }
@@ -4336,7 +4361,7 @@ index 76fc1a4..d372fc1 100644
        PumpQueryResolves();
      }
  
-@@ -5145,6 +5676,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+@@ -5145,6 +5694,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
  bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                 uint64_t wait_for_submission) {
    assert_not_zero(wait_for_submission);
@@ -4349,7 +4374,7 @@ index 76fc1a4..d372fc1 100644
  
    // The resolve is still in the open submission. Pipelines being created
    // asynchronously have to finish before it can be executed.
-@@ -5158,16 +5695,19 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5158,16 +5713,19 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
              "ZPD/Async: Draining Vulkan async pipeline creation for strict "
              "retirement");
        }
@@ -4370,7 +4395,7 @@ index 76fc1a4..d372fc1 100644
    }
  
    PumpQueryResolves();
-@@ -5176,6 +5716,24 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5176,6 +5734,24 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
    return !report || !report->pending_segments;
  }
  
@@ -4395,7 +4420,7 @@ index 76fc1a4..d372fc1 100644
  bool VulkanCommandProcessor::EnsureVIZPredicateBuffer() {
    if (viz_predicate_buffer_ != VK_NULL_HANDLE) {
      return true;
-@@ -5313,7 +5871,7 @@ void VulkanCommandProcessor::AwaitVIZQueryResolve(
+@@ -5313,7 +5889,7 @@ void VulkanCommandProcessor::AwaitVIZQueryResolve(
    }
  
    if (wait_for_submission > GetCompletedSubmission()) {
@@ -4404,7 +4429,7 @@ index 76fc1a4..d372fc1 100644
    }
  
    PumpQueryResolves();
-@@ -5385,7 +5943,7 @@ void VulkanCommandProcessor::LogRecentSubmissions(const char* context) {
+@@ -5385,7 +5961,7 @@ void VulkanCommandProcessor::LogRecentSubmissions(const char* context) {
  }
  
  void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
@@ -4413,7 +4438,7 @@ index 76fc1a4..d372fc1 100644
    // Only report once, no need to retry a wait that won't succeed anyway.
    if (device_lost_) {
      return;
-@@ -5393,6 +5951,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
+@@ -5393,6 +5969,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
  
    if (await_submission >= GetCurrentSubmission()) {
      if (submission_open_) {
@@ -4421,7 +4446,7 @@ index 76fc1a4..d372fc1 100644
        EndSubmission(false);
      }
      // A submission won't be ended if it hasn't been started, or if ending
-@@ -5400,7 +5959,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
+@@ -5400,7 +5977,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
      await_submission = GetCurrentSubmission() - 1;
    }
  
@@ -4430,7 +4455,7 @@ index 76fc1a4..d372fc1 100644
  
    const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
  
-@@ -5524,7 +6083,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5524,7 +6101,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
        is_opening_frame
            ? closed_frame_submissions_[frame_current_ % kMaxFramesInFlight]
            : 0;
@@ -4439,7 +4464,7 @@ index 76fc1a4..d372fc1 100644
    const uint64_t completed_submission = GetCompletedSubmission();
    if (device_lost_ || completed_submission < await_submission) {
      return false;
-@@ -5678,6 +6237,81 @@ bool VulkanCommandProcessor::CanEndSubmissionImmediately() const {
+@@ -5678,6 +6255,81 @@ bool VulkanCommandProcessor::CanEndSubmissionImmediately() const {
           !pipeline_cache_->IsCreatingPipelines();
  }
  
@@ -4521,7 +4546,7 @@ index 76fc1a4..d372fc1 100644
  void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    if (!vulkan_device->properties().timestampPeriod) {
-@@ -5724,13 +6358,22 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
+@@ -5724,13 +6376,22 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
                                    sizeof(uint64_t),
                                    VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
          timestamps[1] > timestamps[0]) {
@@ -4545,7 +4570,7 @@ index 76fc1a4..d372fc1 100644
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5885,6 +6528,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5885,6 +6546,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
          gpu_time_pool_available && !gpu_time_query_submissions_[gpu_time_slot];
      if (gpu_time_pool_available && !gpu_time_recorded) {
        ++gpu_time_untimed_submissions_;
@@ -4553,7 +4578,7 @@ index 76fc1a4..d372fc1 100644
      }
      if (gpu_time_recorded) {
        dfn.vkCmdResetQueryPool(command_buffer.buffer, gpu_time_query_pool_,
-@@ -5954,6 +6598,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5954,6 +6616,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        }
        return false;
      }
@@ -4562,7 +4587,7 @@ index 76fc1a4..d372fc1 100644
      current_submission_wait_stage_masks_.clear();
      for (VkSemaphore semaphore : current_submission_wait_semaphores_) {
        submissions_in_flight_semaphores_.emplace_back(submission_index,
-@@ -6879,20 +7525,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6879,20 +7543,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
          std::memcpy(mapping, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X],
                      sizeof(float) * 4 * 256);
        } else {
@@ -4586,7 +4611,7 @@ index 76fc1a4..d372fc1 100644
        }
      }
      // Pixel shader float constants.
-@@ -6906,20 +7541,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6906,20 +7559,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
        if (!mapping) {
          return false;
        }
@@ -4611,10 +4636,29 @@ index 76fc1a4..d372fc1 100644
      // Bool and loop constants.
      if (!(current_constant_buffers_up_to_date_ &
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.h b/src/xenia/gpu/vulkan/vulkan_command_processor.h
-index 5fdd917..1a1d254 100644
+index 5fdd917..0040180 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.h
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.h
-@@ -238,6 +238,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -18,6 +18,7 @@
+ #include <cstring>
+ #include <deque>
+ #include <functional>
++#include <future>
+ #include <memory>
+ #include <mutex>
+ #include <string>
+@@ -166,6 +167,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
+       std::function<void()> completion_callback = nullptr) override;
+ 
+   void RestoreEdramSnapshot(const void* snapshot) override;
++  // PS5X360E (from PS5X360 0.5.9): saves the pipeline cache on the GPU thread,
++  // for the title's exit and restart paths; the future says whether it was
++  // written.
++  std::future<bool> RequestPipelineCacheSnapshot();
+ 
+   void PollCompletedSubmission() override;
+ 
+@@ -238,6 +243,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
                                            uint32_t size_bytes,
                                            bool whole_range = false);
  
@@ -4629,7 +4673,7 @@ index 5fdd917..1a1d254 100644
    // If not started yet, begins a render pass from the render target cache.
    // Submission must be open.
    void SubmitBarriersAndEnterRenderTargetCacheRenderPass(
-@@ -320,8 +328,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -320,8 +333,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
  
    // For command_processor_resolve_readwatch.inc.
    bool EndResolveSubmission() {
@@ -4644,7 +4688,7 @@ index 5fdd917..1a1d254 100644
    uint64_t GetResolveSubmittedThrough() const {
      return resolve_submitted_through_.load(std::memory_order_acquire);
    }
-@@ -365,7 +378,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -365,7 +383,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
    void StageMemexportReadback();
    void FlushMemexportStagingReadback();
    void AwaitMemexportSubmission(uint64_t submission) {
@@ -4653,7 +4697,7 @@ index 5fdd917..1a1d254 100644
    }
    // Export ranges staged but not yet copied out, in record order - a later
    // copy of an overlapping range has to win.
-@@ -379,6 +392,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -379,6 +397,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
    std::vector<MemexportStagedRange> memexport_staged_;
    // For EnsureMemexportRangeInDeviceBuffer.
    std::vector<VkBufferCopy> memexport_copy_regions_;
@@ -4667,7 +4711,7 @@ index 5fdd917..1a1d254 100644
  
    void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                   uint32_t frontbuffer_height) override;
-@@ -394,6 +414,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -394,6 +419,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
                   bool major_mode_explicit) override;
    bool IssueCopy() override;
  
@@ -4675,7 +4719,7 @@ index 5fdd917..1a1d254 100644
    void InitializeTrace() override;
    bool DumpEdramSnapshotToFile(const std::filesystem::path& path) override;
  
-@@ -520,7 +541,17 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -520,7 +546,17 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // Rechecks submission number and reclaims per-submission resources. Pass 0 as
    // the submission to await to simply check status, or pass
    // GetCurrentSubmission() to wait for all queue operations to be completed.
@@ -4694,7 +4738,7 @@ index 5fdd917..1a1d254 100644
    // If is_guest_command is true, a new full frame - with full cleanup of
    // resources and, if needed, starting capturing - is opened if pending (as
    // opposed to simply resuming after mid-frame synchronization). Returns
-@@ -576,6 +607,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -576,6 +612,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
    void PumpQueryResolves() override;
    bool AwaitQueryResolve(ReportHandle report_handle,
                           uint64_t wait_for_submission) override;
@@ -4703,7 +4747,7 @@ index 5fdd917..1a1d254 100644
  
    bool EnsureVIZPredicateBuffer();
    // Drains the queued predicate copies.
-@@ -702,7 +735,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -702,7 +740,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
  
    // A timestamp pair per in-flight submission, so the summed GPU busy time is
    // comparable against the Metal backend's completion-handler figure.
@@ -4712,7 +4756,7 @@ index 5fdd917..1a1d254 100644
    VkQueryPool gpu_time_query_pool_ = VK_NULL_HANDLE;
    uint64_t gpu_time_query_submissions_[kGpuTimeQuerySubmissions] = {};
    uint32_t gpu_time_query_slot_ = 0;
-@@ -714,6 +747,34 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -714,6 +752,34 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // which sums per-submission intervals and misleads without it.
    uint64_t gpu_time_submissions_window_start_ = 0;
    uint64_t gpu_time_window_start_ns_ = 0;
@@ -4747,7 +4791,7 @@ index 5fdd917..1a1d254 100644
    void CreateGpuTimeQueryPool();
    void DestroyGpuTimeQueryPool();
    void CollectCompletedGpuTimeQueries();
-@@ -1093,6 +1154,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -1093,6 +1159,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // .inc for ScaledResolveReadbackInfo.
    bool DownscaleScaledResolve(uint32_t written_address,
                                const ScaledResolveReadbackInfo& scaled_info);
@@ -5264,7 +5308,7 @@ index 54cab57..a778345 100644
  
  #endif  // XENIA_KERNEL_KERNEL_FLAGS_H_
 diff --git a/src/xenia/kernel/kernel_state.cc b/src/xenia/kernel/kernel_state.cc
-index a91eb94..10150b0 100644
+index a91eb94..2654da7 100644
 --- a/src/xenia/kernel/kernel_state.cc
 +++ b/src/xenia/kernel/kernel_state.cc
 @@ -44,6 +44,13 @@ DEFINE_uint32(kernel_build_version, 1888, "Define current kernel version",
@@ -5362,6 +5406,25 @@ index a91eb94..10150b0 100644
    emulator_->on_patch_apply();
    if (module->xex_module()) {
      module->xex_module()->Precompile();
+@@ -791,7 +817,8 @@ X_RESULT KernelState::ApplyTitleUpdate(
+       XELOGW(
+           "Skipping incompatible title update for {} due to signature mismatch",
+           title_module->name());
+-      if (!GetExecutableModule()) {
++      // PS5X360E: no display window on the PS5 (the launcher shows it).
++      if (!GetExecutableModule() && emulator_->display_window()) {
+         emulator_->display_window()->app_context().CallInUIThread([&]() {
+           new xe::ui::HostNotificationWindow(
+               emulator_->imgui_drawer(), "Warning!",
+@@ -809,7 +836,7 @@ X_RESULT KernelState::ApplyTitleUpdate(
+ 
+     // First module that is loaded is always main executable. That way we can
+     // prevent random message spam in case of loading/unloading.
+-    if (!GetExecutableModule()) {
++    if (!GetExecutableModule() && emulator_->display_window()) {
+       emulator_->display_window()->app_context().CallInUIThread([&]() {
+         new xe::ui::HostNotificationWindow(
+             emulator_->imgui_drawer(), "Warning!",
 diff --git a/src/xenia/kernel/util/ldi_decompressor.cc b/src/xenia/kernel/util/ldi_decompressor.cc
 new file mode 100644
 index 0000000..b6a4f19
@@ -6390,7 +6453,7 @@ index cb378fc..9b323cb 100644
       - Only calls a second function with the params unk3, 0, and 0x1c in that
       order
 diff --git a/src/xenia/kernel/xam/xam_ui.cc b/src/xenia/kernel/xam/xam_ui.cc
-index 59f08fc..07c2f67 100644
+index 59f08fc..ab291e8 100644
 --- a/src/xenia/kernel/xam/xam_ui.cc
 +++ b/src/xenia/kernel/xam/xam_ui.cc
 @@ -16,6 +16,7 @@
@@ -6401,7 +6464,17 @@ index 59f08fc..07c2f67 100644
  #include "xenia/kernel/kernel_state.h"
  #include "xenia/kernel/title_id_utils.h"
  #include "xenia/kernel/util/shim_utils.h"
-@@ -89,7 +90,7 @@ X_RESULT xeXamDispatchDialog(T* dialog,
+@@ -24,6 +25,9 @@
+ #include "xenia/kernel/xam/xam_private.h"
+ #include "xenia/ui/file_picker.h"
+ #include "xenia/ui/imgui_dialog.h"
++#if XE_PLATFORM_PS5
++#include "xenia/ui/controller_keyboard_dialog.h"
++#endif
+ #include "xenia/ui/imgui_drawer.h"
+ #include "xenia/ui/imgui_guest_notification.h"
+ 
+@@ -89,7 +93,7 @@ X_RESULT xeXamDispatchDialog(T* dialog,
      return result;
    };
    auto post = []() {
@@ -6410,7 +6483,7 @@ index 59f08fc..07c2f67 100644
        xe::threading::Sleep(kUIDelayMillis);
        kernel_state()->BroadcastNotification(kXNotificationSystemUI, false);
      });
-@@ -156,7 +157,7 @@ X_RESULT xeXamDispatchWithoutDialog(std::function<X_RESULT()> run_callback,
+@@ -156,7 +160,7 @@ X_RESULT xeXamDispatchWithoutDialog(std::function<X_RESULT()> run_callback,
      xe::threading::Sleep(std::chrono::milliseconds(25));
    };
    auto post = []() {
@@ -6419,7 +6492,7 @@ index 59f08fc..07c2f67 100644
        xe::threading::Sleep(kUIDelayMillis);
        kernel_state()->BroadcastNotification(kXNotificationSystemUI, false);
      });
-@@ -175,6 +176,25 @@ X_RESULT xeXamDispatchWithoutDialog(std::function<X_RESULT()> run_callback,
+@@ -175,6 +179,25 @@ X_RESULT xeXamDispatchWithoutDialog(std::function<X_RESULT()> run_callback,
    }
  }
  
@@ -6445,7 +6518,7 @@ index 59f08fc..07c2f67 100644
  template <typename T>
  X_RESULT xeXamDispatchDialogAsync(T* dialog,
                                    std::function<void(T*)> close_callback) {
-@@ -362,6 +382,17 @@ static dword_result_t XamShowMessageBoxUi(
+@@ -362,6 +385,17 @@ static dword_result_t XamShowMessageBoxUi(
    }
  
    X_RESULT result;
@@ -6463,11 +6536,151 @@ index 59f08fc..07c2f67 100644
    switch (flags & 0xF) {
      case XMBox_NOICON: {
      } break;
-@@ -478,6 +509,23 @@ dword_result_t XamShowKeyboardUI_entry(
+@@ -467,6 +501,131 @@ dword_result_t XNotifyQueueUI_entry(dword_t exnq, dword_t dwUserIndex,
+ }
+ DECLARE_XAM_EXPORT1(XNotifyQueueUI, kUI, kSketchy);
+ 
++#if XE_PLATFORM_PS5
++// PS5X360E (from PS5X360 0.5.9): XamShowKeyboardUI with the controller
++// keyboard. Guest strings are read now (never deferred into the caller's
++// stack), every guest page is checked before use, and the dialog is waited for
++// the way Xenia Edge waits for its other dialogs (the fiber parks).
++X_RESULT ShowControllerKeyboard(uint32_t user_index,
++                                lpu16string_t default_text,
++                                lpu16string_t title,
++                                lpu16string_t description,
++                                lpu16string_t buffer, uint32_t buffer_length,
++                                pointer_t<XAM_OVERLAPPED> overlapped) {
++  namespace keyboard = xe::ui::controller_keyboard;
++  auto* state = kernel_state();
++  const auto* emulator = state->emulator();
++  auto* drawer = emulator->imgui_drawer();
++  auto* window = emulator->display_window();
++  const auto valid_range = [state](uint32_t address, uint64_t bytes,
++                                   uint32_t access) {
++    return keyboard::ValidRange(address, bytes, [state, access](uint32_t at) {
++      auto* heap = state->memory()->LookupHeap(at);
++      HeapAllocationInfo info{};
++      return heap && heap->QueryRegionInfo(at, &info) &&
++             (info.state & kMemoryAllocationCommit) &&
++             (info.protect & access) == access;
++    });
++  };
++  constexpr uint32_t kMaximumUnits = 65536;
++  if ((buffer.guest_address() & 1) || buffer_length > kMaximumUnits ||
++      !valid_range(buffer.guest_address(), uint64_t(buffer_length) * 2,
++                   kMemoryProtectWrite) ||
++      (overlapped &&
++       ((overlapped.guest_address() & 3) ||
++        !valid_range(overlapped.guest_address(), sizeof(XAM_OVERLAPPED),
++                     kMemoryProtectRead | kMemoryProtectWrite)))) {
++    return X_ERROR_INVALID_PARAMETER;
++  }
++  const auto read_bounded = [&](uint32_t address, size_t limit,
++                                std::u16string& text) {
++    return keyboard::ReadText(
++        address, limit,
++        [&](uint32_t at, char16_t& c) {
++          if (!valid_range(at, 2, kMemoryProtectRead)) return false;
++          const auto* bytes =
++              state->memory()->TranslateVirtual<const uint8_t*>(at);
++          c = char16_t(uint16_t(bytes[0]) << 8 | bytes[1]);
++          return true;
++        },
++        text);
++  };
++  std::u16string initial_text, guest_title, guest_description;
++  if (!read_bounded(default_text.guest_address(), kMaximumUnits,
++                    initial_text) ||
++      !read_bounded(title.guest_address(), 4096, guest_title) ||
++      !read_bounded(description.guest_address(), 4096, guest_description)) {
++    return X_ERROR_INVALID_PARAMETER;
++  }
++  if (state->xam_state()->IsUIActive() ||
++      !keyboard::Bridge().Begin(user_index)) {
++    return X_ERROR_ACCESS_DENIED;
++  }
++  state->xam_state()->is_xam_dialog_present_.store(true);
++  const auto title_text =
++      xe::to_utf8(keyboard::Fit(guest_title, guest_title.size() + 1));
++  const auto description_text = xe::to_utf8(
++      keyboard::Fit(guest_description, guest_description.size() + 1));
++  void* output = buffer;
++  const uint32_t capacity = buffer_length;
++  const uint32_t output_address = buffer.guest_address();
++  auto run = [state, window, drawer, title_text, description_text,
++              initial_text, output, output_address, valid_range, capacity,
++              asynchronous = bool(overlapped)](uint32_t& extended_error,
++                                               uint32_t& length) -> X_RESULT {
++    extended_error = X_ERROR_CANCELLED;
++    length = 0;
++    auto completion = std::make_shared<xe::ui::ControllerKeyboardCompletion>();
++    xe::threading::Fence fence;
++    const bool dispatched = window->app_context().CallInUIThreadSynchronous([&] {
++      auto* dialog = new xe::ui::ControllerKeyboardDialog(
++          drawer, title_text, description_text, initial_text, capacity,
++          completion);
++      dialog->Then(&fence);
++    });
++    if (dispatched) {
++      GuestScheduler::WaitOnFence(fence);
++    } else {
++      keyboard::Bridge().End();
++    }
++    state->xam_state()->is_xam_dialog_present_.store(false);
++    if (!dispatched) {
++      extended_error = X_ERROR_FUNCTION_FAILED;
++      return X_ERROR_FUNCTION_FAILED;
++    }
++    if (completion->result != keyboard::Result::accepted) {
++      // Cancelled: the guest buffer is left as it was.
++      return asynchronous ? X_ERROR_SUCCESS : X_ERROR_CANCELLED;
++    }
++    // The game may have freed its output while the keyboard was open.
++    if (!valid_range(output_address, uint64_t(capacity) * 2,
++                     kMemoryProtectWrite)) {
++      extended_error = X_ERROR_INVALID_PARAMETER;
++      return X_ERROR_INVALID_PARAMETER;
++    }
++    keyboard::WriteBE(output, capacity, completion->text);
++    extended_error = X_ERROR_SUCCESS;
++    return X_ERROR_SUCCESS;
++  };
++  auto pre = [state] {
++    state->BroadcastNotification(kXNotificationSystemUI, true);
++  };
++  auto post = [state] {
++    xe::threading::Sleep(kUIDelayMillis);
++    state->BroadcastNotification(kXNotificationSystemUI, false);
++  };
++  if (overlapped) {
++    state->CompleteOverlappedDeferredEx(run, overlapped, pre, post);
++    return X_ERROR_IO_PENDING;
++  }
++  pre();
++  uint32_t extended_error = 0, length = 0;
++  const auto result = run(extended_error, length);
++  post();
++  return result;
++}
++#endif  // XE_PLATFORM_PS5
++
+ // https://www.se7ensins.com/forums/threads/release-how-to-use-xshowkeyboardui-release.906568/
+ dword_result_t XamShowKeyboardUI_entry(
+     dword_t user_index, dword_t flags, lpu16string_t default_text,
+@@ -478,6 +637,31 @@ dword_result_t XamShowKeyboardUI_entry(
  
    assert_not_null(overlapped);
  
 +#if XE_PLATFORM_PS5
++  // PS5X360E (from PS5X360 0.5.9): the controller keyboard, an on-screen grid
++  // typed on with the pad, when the title's runner offers it.
++  if (xe::ui::controller_keyboard::Bridge().available() &&
++      kernel_state()->emulator()->display_window() &&
++      kernel_state()->emulator()->imgui_drawer()) {
++    return ShowControllerKeyboard(user_index, default_text, title, description,
++                                  buffer, buffer_length, overlapped);
++  }
 +  if (cvars::headless) {
 +    // The default text is the answer.
 +    return xeXamDispatchWithoutDialog(
@@ -6487,7 +6700,7 @@ index 59f08fc..07c2f67 100644
    auto close = [buffer, buffer_length](KeyboardInputDialog* dialog,
                                         uint32_t& extended_error,
                                         uint32_t& length) -> X_RESULT {
-@@ -549,7 +597,11 @@ dword_result_t XamShowDeviceSelectorUI_entry(
+@@ -549,7 +733,11 @@ dword_result_t XamShowDeviceSelectorUI_entry(
  
    std::vector<const DummyDeviceInfo*> devices = ListStorageDevices();
  
@@ -6500,7 +6713,7 @@ index 59f08fc..07c2f67 100644
      // Default to the first storage device (HDD).
      return xeXamDispatchWithoutDialog(
          [device_id_ptr, devices]() -> X_RESULT {
-@@ -609,6 +661,13 @@ void XamShowDirtyDiscErrorUI_entry(dword_t user_index,
+@@ -609,6 +797,13 @@ void XamShowDirtyDiscErrorUI_entry(dword_t user_index,
        "There's been an issue reading content from the game disc.\nThis is "
        "likely caused by bad or unimplemented file IO calls.";
  
@@ -6514,7 +6727,7 @@ index 59f08fc..07c2f67 100644
    const Emulator* emulator = kernel_state()->emulator();
    xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
    xe::hid::InputSystem* input_system = emulator->input_system();
-@@ -670,6 +729,12 @@ dword_result_t XamShowMarketplaceUIEx_entry(dword_t user_index, dword_t ui_type,
+@@ -670,6 +865,12 @@ dword_result_t XamShowMarketplaceUIEx_entry(dword_t user_index, dword_t ui_type,
      return X_ERROR_NO_SUCH_USER;
    }
  
@@ -6527,7 +6740,7 @@ index 59f08fc..07c2f67 100644
    if (kernel_state()->xam_state()->IsUIActive()) {
      return X_ERROR_ACCESS_DENIED;
    }
-@@ -814,6 +879,19 @@ dword_result_t XamShowMarketplaceDownloadItemsUI_entry(
+@@ -814,6 +1015,19 @@ dword_result_t XamShowMarketplaceDownloadItemsUI_entry(
      return X_ERROR_NO_SUCH_USER;
    }
  
@@ -6547,7 +6760,7 @@ index 59f08fc..07c2f67 100644
    if (kernel_state()->xam_state()->IsUIActive()) {
      return X_ERROR_ACCESS_DENIED;
    }
-@@ -956,6 +1034,25 @@ X_RESULT xeXamShowSigninUI(uint32_t user_index, uint32_t users_needed,
+@@ -956,6 +1170,25 @@ X_RESULT xeXamShowSigninUI(uint32_t user_index, uint32_t users_needed,
      return X_ERROR_INVALID_PARAMETER;
    }
  
@@ -6573,7 +6786,7 @@ index 59f08fc..07c2f67 100644
    if (kernel_state()->xam_state()->IsUIActive()) {
      return X_ERROR_ACCESS_DENIED;
    }
-@@ -978,6 +1075,12 @@ X_RESULT xeXamShowCreateProfileUIEx(uint32_t user_index, dword_t flag,
+@@ -978,6 +1211,12 @@ X_RESULT xeXamShowCreateProfileUIEx(uint32_t user_index, dword_t flag,
    Emulator* emulator = kernel_state()->emulator();
    xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
  
@@ -7767,7 +7980,7 @@ index 27b8bf7..924072a 100644
    const uint64_t deadline_ms =
        timeout_ms == std::chrono::milliseconds::max()
 diff --git a/src/xenia/kernel/xsocket.cc b/src/xenia/kernel/xsocket.cc
-index a8eac6c..d1758b1 100644
+index a8eac6c..ffedc74 100644
 --- a/src/xenia/kernel/xsocket.cc
 +++ b/src/xenia/kernel/xsocket.cc
 @@ -148,9 +148,12 @@ uint32_t AsioErrorToWSAError(const asio::error_code& ec) {
@@ -7778,7 +7991,7 @@ index a8eac6c..d1758b1 100644
 +  if (ec == asio::error::access_denied || ec == asio::error::no_permission) {
      return 10013;  // WSAEACCES
    }
-+  if (ec == asio::error::address_not_available) {
++  if (ec == std::errc::address_not_available) {
 +    return 10049;  // WSAEADDRNOTAVAIL
 +  }
    if (ec == asio::error::fault) {
@@ -7808,7 +8021,7 @@ index a8eac6c..d1758b1 100644
 +  // the endpoint it got through getsockname (bound_port_ below).
 +  if (ec && (ec == asio::error::access_denied ||
 +             ec == asio::error::no_permission ||
-+             ec == asio::error::address_not_available)) {
++             ec == std::errc::address_not_available)) {
 +    const asio::error_code refused = ec;
 +    const uint16_t candidates[] = {
 +        port, uint16_t(port != 0 && port <= 55535 ? port + 10000 : 0), 0};
@@ -8349,6 +8562,377 @@ index 8b8d175..18c9789 100644
    set(_xe_locale_stage "${CMAKE_CURRENT_BINARY_DIR}/locale_staged")
    file(GLOB _xe_po_files
         "${PROJECT_SOURCE_DIR}/assets/locale/*/xenia.po")
+diff --git a/src/xenia/ui/controller_keyboard.h b/src/xenia/ui/controller_keyboard.h
+new file mode 100644
+index 0000000..24f20af
+--- /dev/null
++++ b/src/xenia/ui/controller_keyboard.h
+@@ -0,0 +1,213 @@
++// SPDX-License-Identifier: MIT
++#ifndef XENIA_UI_CONTROLLER_KEYBOARD_H_
++#define XENIA_UI_CONTROLLER_KEYBOARD_H_
++#include <algorithm>
++#include <array>
++#include <cstdint>
++#include <mutex>
++#include <string>
++#include <string_view>
++
++namespace xe::ui::controller_keyboard {
++// Query must verify committed guest pages and the requested access bits.
++template<class Query> bool ValidRange(uint32_t address, uint64_t bytes, Query query) {
++  if (!address || !bytes || uint64_t(address) + bytes > 0x100000000ull) return false;
++  const uint64_t end = uint64_t(address) + bytes;
++  for (uint64_t page = address; page < end; page = (page & ~uint64_t(4095)) + 4096)
++    if (!query(uint32_t(page))) return false;
++  return true;
++}
++template<class Read> bool ReadText(uint32_t address, size_t limit,
++                                 Read read, std::u16string& text) {
++  text.clear();
++  if (!address) return true;
++  if (address & 1) return false;
++  for (size_t i = 0; i < limit; ++i) {
++    const uint64_t at = uint64_t(address) + i * 2;
++    if (at + 2 > 0x100000000ull) return false;
++    char16_t c;
++    if (!read(uint32_t(at), c)) return false;
++    if (!c) return true;
++    text += c;
++  }
++  return false;  // Unterminated input is not a license to scan all guest memory.
++}
++inline bool High(char16_t c) { return c >= 0xd800 && c <= 0xdbff; }
++inline bool Low(char16_t c) { return c >= 0xdc00 && c <= 0xdfff; }
++// Capacity is in UTF-16 code units INCLUDING the terminating NUL.
++inline std::u16string Fit(std::u16string_view text, size_t capacity) {
++  std::u16string out;
++  const size_t limit = capacity ? capacity - 1 : 0;
++  for (size_t i = 0; i < text.size() && text[i]; ++i) {
++    char16_t c = text[i];
++    if (High(c) && i + 1 < text.size() && Low(text[i + 1])) {
++      if (out.size() + 2 > limit) break;
++      out += c; out += text[++i];
++    } else {
++      if (out.size() == limit) break;
++      out += (High(c) || Low(c)) ? char16_t(0xfffd) : c;
++    }
++  }
++  return out;
++}
++inline void WriteBE(void* buffer, size_t capacity, std::u16string_view text) {
++  auto* bytes = static_cast<uint8_t*>(buffer);
++  const auto fitted = Fit(text, capacity);
++  for (size_t i = 0; i < capacity; ++i) {
++    const uint16_t c = i < fitted.size() ? fitted[i] : 0;
++    bytes[2 * i] = uint8_t(c >> 8); bytes[2 * i + 1] = uint8_t(c);
++  }
++}
++
++enum class Result { pending, accepted, cancelled };
++class Editor {
++ public:
++  Editor(std::u16string text, size_t capacity)
++      : capacity_(capacity), text_(Fit(text, capacity)), cursor_(text_.size()) {}
++  const std::u16string& text() const { return text_; }
++  size_t cursor() const { return cursor_; }
++  Result result() const { return result_; }
++  int selected() const { return selected_; }
++  bool upper() const { return upper_; }
++  bool symbols() const { return symbols_; }
++  char16_t Symbol(int key) const {
++    constexpr std::u16string_view letters = u"1234567890qwertyuiopasdfghjkl;zxcvbnm,.'";
++    constexpr std::u16string_view symbols = u"!@#$%^&*()[]{}<>/\\|?+-=_:;\"'`~.,0123456789";
++    char16_t c = (symbols_ ? symbols : letters)[size_t(key)];
++    if (!symbols_ && upper_ && c >= u'a' && c <= u'z') c -= 32;
++    return c;
++  }
++  bool Insert(std::u16string_view value) {
++    if (result_ != Result::pending) return false;
++    const auto valid = Fit(value, value.size() + 1);
++    if (valid.size() + text_.size() >= capacity_) return false;
++    text_.insert(cursor_, valid); cursor_ += valid.size(); return true;
++  }
++  void Left() {
++    if (!cursor_) return;
++    --cursor_;
++    if (cursor_ && Low(text_[cursor_]) && High(text_[cursor_ - 1])) --cursor_;
++  }
++  void Right() {
++    if (cursor_ == text_.size()) return;
++    if (High(text_[cursor_]) && cursor_ + 1 < text_.size() && Low(text_[cursor_ + 1])) ++cursor_;
++    ++cursor_;
++  }
++  void Backspace() {
++    const size_t old = cursor_; Left(); text_.erase(cursor_, old - cursor_);
++  }
++  void Select(int key) { selected_ = std::clamp(key, 0, 49); }
++  void Activate() {
++    if (result_ != Result::pending) return;
++    if (selected_ < 40) { const char16_t c = Symbol(selected_); Insert({&c, 1}); return; }
++    switch (selected_) {
++      case 40: Insert(u" "); break;
++      case 41: Backspace(); break;
++      case 42: upper_ = !upper_; break;
++      case 43: symbols_ = !symbols_; break;
++      case 44: Left(); break;
++      case 45: Right(); break;
++      case 46: cursor_ = 0; break;
++      case 47: cursor_ = text_.size(); break;
++      case 48: Finish(Result::cancelled); break;
++      case 49: Finish(Result::accepted); break;
++    }
++  }
++  void Finish(Result result) { if (result_ == Result::pending) result_ = result; }
++  void Press(uint32_t pressed) {
++    if (result_ != Result::pending) return;
++    // Cancel wins if multiple actions occur in the same sample.
++    if (pressed & 0x2000) { Finish(Result::cancelled); return; }
++    if (pressed & 0x08) { Finish(Result::accepted); return; }
++    int row = selected_ / 10, col = selected_ % 10;
++    if (pressed & 0x10) row = (row + 4) % 5;
++    if (pressed & 0x40) row = (row + 1) % 5;
++    if (pressed & 0x80) col = (col + 9) % 10;
++    if (pressed & 0x20) col = (col + 1) % 10;
++    selected_ = row * 10 + col;
++    if (pressed & 0x8000) Backspace();
++    if (pressed & 0x1000) upper_ = !upper_;
++    if (pressed & 0x400) Left();
++    if (pressed & 0x800) Right();
++    if (pressed & 0x4000) Activate();
++  }
++ private:
++  size_t capacity_;
++  std::u16string text_;
++  size_t cursor_;
++  int selected_ = 0;
++  bool upper_ = false, symbols_ = false;
++  Result result_ = Result::pending;
++};
++
++// Shared by the native polling thread, guest input drivers and UI thread.
++// Feed physical samples BEFORE guide filtering. Never logs text or pad data.
++class PadBridge {
++ public:
++  void SetAvailable(bool available) {
++    std::lock_guard lock(mutex_); available_ = available;
++    if (!available && active_) cancel_ = true;
++  }
++  bool available() const { std::lock_guard lock(mutex_); return available_; }
++  bool Begin(uint32_t user) {
++    std::lock_guard lock(mutex_);
++    if (!available_ || active_ || user >= 4) return false;
++    active_ = true; cancel_ = false; user_ = user; drain_.fill(true);
++    armed_ = false; previous_ = 0; pending_ = 0; repeat_at_ = 0;
++    return true;
++  }
++  void End() { std::lock_guard lock(mutex_); active_ = false; pending_ = 0; }
++  bool active() const { std::lock_guard lock(mutex_); return active_; }
++  void Cancel() { std::lock_guard lock(mutex_); if (active_) cancel_ = true; }
++  bool cancelled() const { std::lock_guard lock(mutex_); return cancel_; }
++  bool Suppressed(uint32_t user) const {
++    std::lock_guard lock(mutex_);
++    return active_ || (user < 4 && drain_[user]);
++  }
++  template<class Sample> void Publish(uint32_t user, const Sample& pad, uint64_t now_ms) {
++    std::lock_guard lock(mutex_);
++    if (user >= 4) return;
++    uint32_t buttons = pad.connected ? pad.buttons : 0;
++    if (pad.connected) {
++      if (pad.lx < 64) buttons |= 0x80;
++      if (pad.lx > 192) buttons |= 0x20;
++      if (pad.ly < 64) buttons |= 0x10;
++      if (pad.ly > 192) buttons |= 0x40;
++    }
++    const auto centered = [](uint8_t axis) { return axis >= 96 && axis <= 160; };
++    const bool neutral = !pad.connected || (!pad.buttons && pad.l2 < 16 && pad.r2 < 16 &&
++        centered(pad.lx) && centered(pad.ly) && centered(pad.rx) && centered(pad.ry));
++    if (!active_ && neutral) drain_[user] = false;
++    if (!active_ || user != user_) return;
++    if (!pad.connected) {
++      armed_ = false; previous_ = 0; pending_ = 0; return;
++    }
++    // Require release on opening: a game's accept press cannot type/close this UI.
++    if (!armed_) { if (neutral) armed_ = true; previous_ = buttons; return; }
++    const uint32_t pressed = buttons & ~previous_;
++    pending_ |= pressed;
++    constexpr uint32_t directions = 0xf0;
++    if (pressed & directions) repeat_at_ = now_ms + 400;
++    else if ((buttons & directions) && now_ms >= repeat_at_) {
++      pending_ |= buttons & directions; repeat_at_ = now_ms + 110;
++    }
++    previous_ = buttons;
++  }
++  uint32_t TakePressed() { std::lock_guard lock(mutex_); const auto p = pending_; pending_ = 0; return p; }
++ private:
++  mutable std::mutex mutex_;
++  bool available_ = false, active_ = false, armed_ = false, cancel_ = false;
++  uint32_t user_ = 0, previous_ = 0, pending_ = 0;
++  uint64_t repeat_at_ = 0;
++  std::array<bool, 4> drain_{};
++};
++inline PadBridge& Bridge() { static PadBridge bridge; return bridge; }
++inline bool Active() { return Bridge().active(); }
++inline bool Suppressed(uint32_t user = 0) { return Bridge().Suppressed(user); }
++inline void SetAvailable(bool available) { Bridge().SetAvailable(available); }
++inline void Cancel() { Bridge().Cancel(); }
++template<class Sample> void SubmitPad(uint32_t user, const Sample& pad, uint64_t now_ms) {
++  Bridge().Publish(user, pad, now_ms);
++}
++}  // namespace xe::ui::controller_keyboard
++#endif
+diff --git a/src/xenia/ui/controller_keyboard_dialog.cc b/src/xenia/ui/controller_keyboard_dialog.cc
+new file mode 100644
+index 0000000..f33ec01
+--- /dev/null
++++ b/src/xenia/ui/controller_keyboard_dialog.cc
+@@ -0,0 +1,34 @@
++// SPDX-License-Identifier: MIT
++#include "xenia/ui/controller_keyboard_dialog.h"
++#include "xenia/ui/controller_keyboard_view.h"
++#include "xenia/base/string.h"
++#include "third_party/imgui/imgui.h"
++
++namespace xe::ui {
++ControllerKeyboardDialog::ControllerKeyboardDialog(ImGuiDrawer* drawer,
++    std::string title, std::string description, std::u16string initial,
++    size_t capacity, std::shared_ptr<ControllerKeyboardCompletion> completion)
++    : ImGuiDialog(drawer), title_(std::move(title)), description_(std::move(description)),
++      editor_(std::move(initial), capacity), completion_(std::move(completion)) {}
++
++ControllerKeyboardDialog::~ControllerKeyboardDialog() {
++  // The base destructor signals the waiting fence AFTER publishing this result.
++  completion_->result = editor_.result() == controller_keyboard::Result::accepted
++      ? controller_keyboard::Result::accepted : controller_keyboard::Result::cancelled;
++  if (completion_->result == controller_keyboard::Result::accepted)
++    completion_->text = editor_.text();
++  controller_keyboard::Bridge().End();
++}
++
++void ControllerKeyboardDialog::OnDraw(ImGuiIO& io) {
++  if (controller_keyboard::Bridge().cancelled()) {
++    editor_.Finish(controller_keyboard::Result::cancelled);
++    Close();
++    return;
++  }
++  editor_.Press(controller_keyboard::Bridge().TakePressed());
++  DrawControllerKeyboard(editor_, title_, description_, io);
++  if (editor_.result() != controller_keyboard::Result::pending) Close();
++}
++
++}  // namespace xe::ui
+diff --git a/src/xenia/ui/controller_keyboard_dialog.h b/src/xenia/ui/controller_keyboard_dialog.h
+new file mode 100644
+index 0000000..a26e9c5
+--- /dev/null
++++ b/src/xenia/ui/controller_keyboard_dialog.h
+@@ -0,0 +1,27 @@
++// SPDX-License-Identifier: MIT
++#ifndef XENIA_UI_CONTROLLER_KEYBOARD_DIALOG_H_
++#define XENIA_UI_CONTROLLER_KEYBOARD_DIALOG_H_
++#include <memory>
++#include "xenia/ui/controller_keyboard.h"
++#include "xenia/ui/imgui_dialog.h"
++
++namespace xe::ui {
++struct ControllerKeyboardCompletion {
++  controller_keyboard::Result result = controller_keyboard::Result::cancelled;
++  std::u16string text;
++};
++class ControllerKeyboardDialog final : public ImGuiDialog {
++ public:
++  ControllerKeyboardDialog(ImGuiDrawer* drawer, std::string title,
++      std::string description, std::u16string initial, size_t capacity,
++      std::shared_ptr<ControllerKeyboardCompletion> completion);
++  ~ControllerKeyboardDialog() override;
++ protected:
++  void OnDraw(ImGuiIO& io) override;
++ private:
++  std::string title_, description_;
++  controller_keyboard::Editor editor_;
++  std::shared_ptr<ControllerKeyboardCompletion> completion_;
++};
++}  // namespace xe::ui
++#endif
+diff --git a/src/xenia/ui/controller_keyboard_view.cc b/src/xenia/ui/controller_keyboard_view.cc
+new file mode 100644
+index 0000000..b3bed9f
+--- /dev/null
++++ b/src/xenia/ui/controller_keyboard_view.cc
+@@ -0,0 +1,56 @@
++// SPDX-License-Identifier: MIT
++#include "xenia/ui/controller_keyboard_view.h"
++#include "xenia/base/string.h"
++#include "third_party/imgui/imgui.h"
++
++namespace xe::ui {
++void DrawControllerKeyboard(controller_keyboard::Editor& editor,
++    const std::string& title, const std::string& description, ImGuiIO& io) {
++  // Use a stable, private window ID; guest title text cannot inject ImGui IDs.
++  const float width = std::min(io.DisplaySize.x * 0.94f, 1400.0f);
++  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * .5f, io.DisplaySize.y * .5f),
++                         ImGuiCond_Always, ImVec2(.5f, .5f));
++  ImGui::SetNextWindowSize(ImVec2(width, 0), ImGuiCond_Always);
++  ImGui::SetNextWindowFocus();
++  constexpr auto flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
++      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
++      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNavInputs;
++  if (ImGui::Begin("##guest_controller_keyboard", nullptr, flags)) {
++    ImGui::TextUnformatted(title.empty() ? "Keyboard" : title.c_str());
++    ImGui::PushTextWrapPos(0);
++    ImGui::TextUnformatted(description.c_str());
++    ImGui::PopTextWrapPos();
++    ImGui::Separator();
++    auto display = editor.text();
++    display.insert(editor.cursor(), u"|");
++    const auto utf8 = xe::to_utf8(display);
++    // Read only display; editing is exclusively through the controller grid.
++    ImGui::PushTextWrapPos(0);
++    ImGui::TextUnformatted(utf8.c_str());
++    ImGui::PopTextWrapPos();
++    ImGui::Separator();
++    const char* actions[] = {"Space", "Delete", "Shift", "Symbols", "Left",
++                            "Right", "Home", "End", "Cancel", "Done"};
++    const float key_width = (ImGui::GetContentRegionAvail().x - 9 * ImGui::GetStyle().ItemSpacing.x) / 10;
++    const float key_height = ImGui::GetFontSize() * 1.8f;
++    for (int key = 0; key < 50; ++key) {
++      if (key % 10) ImGui::SameLine();
++      ImGui::PushID(key);
++      const bool selected = key == editor.selected();
++      if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.08f, .55f, .32f, 1));
++      std::string label;
++      if (key < 40) label = xe::to_utf8(std::u16string(1, editor.Symbol(key)));
++      else label = actions[key - 40];
++      if (ImGui::Button(label.c_str(), ImVec2(key_width, key_height))) {
++        editor.Select(key); editor.Activate();
++      }
++      if (selected) ImGui::PopStyleColor();
++      ImGui::PopID();
++    }
++    ImGui::Separator();
++    ImGui::TextUnformatted("D-pad / left stick: move   Cross: select   Square: delete");
++    ImGui::TextUnformatted("Triangle: shift   L1 / R1: cursor   OPTIONS: done   Circle: cancel");
++  }
++  ImGui::End();
++}
++}  // namespace xe::ui
+diff --git a/src/xenia/ui/controller_keyboard_view.h b/src/xenia/ui/controller_keyboard_view.h
+new file mode 100644
+index 0000000..6be13e2
+--- /dev/null
++++ b/src/xenia/ui/controller_keyboard_view.h
+@@ -0,0 +1,11 @@
++// SPDX-License-Identifier: MIT
++#ifndef XENIA_UI_CONTROLLER_KEYBOARD_VIEW_H_
++#define XENIA_UI_CONTROLLER_KEYBOARD_VIEW_H_
++#include "xenia/ui/controller_keyboard.h"
++struct ImGuiIO;
++namespace xe::ui {
++// Actual grid renderer, also exercised by the offline ImGui frame test.
++void DrawControllerKeyboard(controller_keyboard::Editor& editor,
++    const std::string& title, const std::string& description, ImGuiIO& io);
++}
++#endif
 diff --git a/src/xenia/ui/imgui_drawer.cc b/src/xenia/ui/imgui_drawer.cc
 index 23fa672..1615383 100644
 --- a/src/xenia/ui/imgui_drawer.cc

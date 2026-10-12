@@ -4,13 +4,19 @@
 #include "xenia/emulator.h"
 #include "xenia/base/logging.h"
 #include "xenia/gpu/vulkan/vulkan_graphics_system.h"
+#include "xenia/gpu/vulkan/vulkan_command_processor.h"
 #include "xenia/ui/imgui_drawer.h"
+#include "xenia/ui/controller_keyboard.h"
 #include "xenia/ui/immediate_drawer.h"
 #include "xenia/ui/presenter.h"
 #include "xenia/ui/window.h"
 #include "xenia/ui/windowed_app_context.h"
 #include "xbox360ps5/i18n.hpp"
 #include "xbox360ps5/build_version.hpp"
+#include "xbox360ps5/renderer.hpp"
+#if defined(PS5X360_OPENGL_GAME_RENDERER) && PS5X360_OPENGL_GAME_RENDERER
+#include "gl_graphics_system.h"
+#endif
 #include "xbox360ps5/gpu_diagnostics.hpp"
 #include "xenia/base/mutex.h"
 #include "xbox360ps5/thread_place.hpp"
@@ -28,6 +34,8 @@
 #include "xbox360ps5/notify.hpp"
 #include "xbox360ps5/web_settings.hpp"
 #include "xbox360ps5/save_storage.hpp"
+#include "xbox360ps5/dlc_install.hpp"
+#include "xenia/kernel/xam/content_manager.h"
 #include "xbox360ps5/game_patches.hpp"
 #include "xbox360ps5/patch_runtime.hpp"
 #include "xenia/kernel/xam/xam_module.h"
@@ -51,7 +59,11 @@
 #include <atomic>
 #include <array>
 #include <chrono>
+#include "xenia/ui/vulkan/framegen/shared/output_metrics.hpp"
+#include "xbox360ps5/overlay_rates.hpp"
 #include <condition_variable>
+#include <mutex>
+#include <memory>
 #include <filesystem>
 #include <fstream>
 #include <csetjmp>
@@ -93,6 +105,35 @@ extern std::atomic<unsigned long long> open_syscalls, open_nanoseconds, protect_
 }
 namespace {
 using xbox360ps5::Tr;
+// The restart hook may outlive the emulator scope. Its shared state is detached
+// before teardown, and no queued completion captures stack references.
+struct ExitCacheState {
+  std::mutex mutex;
+  xe::gpu::vulkan::VulkanCommandProcessor* processor = nullptr;
+};
+struct ExitCacheScope {
+  std::shared_ptr<ExitCacheState> state;
+  ~ExitCacheScope() {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->processor = nullptr;
+  }
+};
+void CheckpointExitCache(const std::shared_ptr<ExitCacheState>& state) noexcept try {
+  std::lock_guard<std::mutex> lock(state->mutex);
+  if (!state->processor) return;
+  auto completion = state->processor->RequestPipelineCacheSnapshot();
+  if (completion.wait_for(std::chrono::milliseconds(1500)) !=
+      std::future_status::ready) {
+    XELOGW("Vulkan cache: exit checkpoint timed out after 1500 ms");
+    return;
+  }
+  XELOGI("Vulkan cache: exit checkpoint {}",
+         completion.get() ? "saved" : "unavailable or failed");
+} catch (...) {
+  // Includes enqueue allocation and future_error from a stopped GPU worker.
+  // Exit/restart must remain possible even if the checkpoint is unavailable.
+}
+
 // The frame counter drawn over a game when the setting asks for it.
 class FpsOverlay final : public xe::ui::ImGuiDialog {
  public:
@@ -101,6 +142,13 @@ class FpsOverlay final : public xe::ui::ImGuiDialog {
       : ImGuiDialog(drawer),fps_(fps),shown_(shown),stalled_(stalled),touchpad_menu_(touchpad_menu) {}
  protected:
   void OnDraw(ImGuiIO& io) override {
+    // Sample on every overlay draw, including when its FPS setting is hidden.
+    // The presenter owns these counters; this overlay only loads them.
+    output_rates_.Update(std::chrono::steady_clock::now(),
+        ps5x360::output_metrics::accepted.load(std::memory_order_relaxed),
+        ps5x360::output_metrics::generated.load(std::memory_order_relaxed),
+        ps5x360::output_metrics::enabled.load(std::memory_order_relaxed),
+        ps5x360::output_metrics::fallback.load(std::memory_order_relaxed));
     if (xbox360ps5::motion::enabled.load()) {
       const auto pose = xbox360ps5::motion::Snapshot();
       auto* draw = ImGui::GetForegroundDrawList();
@@ -118,8 +166,9 @@ class FpsOverlay final : public xe::ui::ImGuiDialog {
       }
     }
     if (!shown_ && !stalled_) return;
-    char text[32];
-    std::snprintf(text, sizeof(text), "%.0f FPS", fps_);
+    char text[32], output_text[128];
+    std::snprintf(text, sizeof(text), "Game %.0f FPS", fps_);
+    output_rates_.Label(output_text, sizeof(output_text));
     ImDrawList* list = ImGui::GetForegroundDrawList();
     const float scale = io.DisplaySize.y / 1080.0f;
     if(stalled_) {
@@ -129,10 +178,15 @@ class FpsOverlay final : public xe::ui::ImGuiDialog {
       list->AddText(ImGui::GetFont(),24*scale,ImVec2(42*scale,1010*scale),IM_COL32(245,204,137,255),notice);
     }
     if(!shown_) return;
-    list->AddRectFilled(ImVec2(24 * scale, 24 * scale), ImVec2(150 * scale, 64 * scale), IM_COL32(0, 0, 0, 150), 8 * scale);
+    const ImVec2 game_size = ImGui::GetFont()->CalcTextSizeA(28 * scale, 4096, 0, text);
+    const ImVec2 output_size = ImGui::GetFont()->CalcTextSizeA(22 * scale, 4096, 0, output_text);
+    const float width = std::max(game_size.x, output_size.x) + 24 * scale;
+    list->AddRectFilled(ImVec2(24 * scale, 24 * scale), ImVec2(24 * scale + width, 94 * scale), IM_COL32(0, 0, 0, 150), 8 * scale);
     list->AddText(ImGui::GetFont(), 28 * scale, ImVec2(36 * scale, 30 * scale), IM_COL32(120, 230, 140, 255), text);
+    list->AddText(ImGui::GetFont(), 22 * scale, ImVec2(36 * scale, 65 * scale), IM_COL32(220, 230, 240, 255), output_text);
   }
  private:
+  ps5x360::overlay::Rates output_rates_;
   const float& fps_;
   const int& shown_;
   const bool& stalled_;
@@ -1007,6 +1061,11 @@ int main(int argc, char** argv) {
   xe::AddLogSink(std::move(owned_game_log));
   xe::AddLogSink(std::make_unique<ConsoleLogSink>());
   if (log_ready) XELOGW("Logs: {}", game_log->session.Path().string());
+  XELOGW("Graphics renderer requested: {}", xbox360ps5::RendererName(started.renderer));
+  if (!xbox360ps5::RendererAvailable(started.renderer)) {
+    XELOGE("Requested OpenGL game backend is not linked in this executable; launch cancelled");
+    return 6;
+  }
   xbox360ps5::gpu_diag::enabled = settings.memory_boost != 0;
   XELOGW("Compatibility: spinning locks {}, video-memory optimizations {} (both off is the v0.5.5 behaviour)",
          settings.fast_locks ? "on" : "off", settings.memory_boost ? "on" : "off");
@@ -1043,6 +1102,7 @@ int main(int argc, char** argv) {
   Stage("BOOT imgui");
   xe::ui::ImGuiDrawer drawer(&window, 1);
   drawer.GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  xe::ui::controller_keyboard::SetAvailable(true);
   // Text sized for a television; the emulator's own dialogs use it as well.
   const auto fonts = xbox360ps5::Launcher::LoadFonts(drawer.GetIO());
   if (fonts.f28) drawer.GetIO().FontDefault = fonts.f28;
@@ -1073,6 +1133,19 @@ int main(int argc, char** argv) {
   NativePad pad;
   int result = 0;
   bool restart = false;
+  auto recover_gl_initialization = [&] {
+    if (started.renderer != int(xbox360ps5::Renderer::kOpenGL)) return;
+    global.renderer = int(xbox360ps5::Renderer::kVulkan);
+    global.Save();
+    std::ofstream(storage / "notice.txt", std::ios::trunc)
+        << "OpenGL initialization failed; Vulkan restored. See OpenGL-renderer.log.\n";
+    std::error_code error;
+    std::filesystem::remove(storage / "launch-once.txt", error);
+    xe::FlushLog();
+    xbox360ps5::DrainNetLog();
+    const int refused = sceSystemServiceLoadExec("/app0/eboot.bin", nullptr);
+    XELOGE("OpenGL initialization recovery refused: {:08X}", unsigned(refused));
+  };
   {
     // The title's own storage (/download0) is an image of a few hundred
     // megabytes: enough for saves and profiles, not for shader and module
@@ -1120,7 +1193,10 @@ int main(int argc, char** argv) {
     }
     XELOGW("Saves: {}; {}", saves.root.string(), saves.notice);
     launcher.SetSaveRoot(saves.root);
-    xe::Emulator emulator("", storage, saves.root, bulk / (bulk == storage ? "cache" : "core"));
+    auto core_cache = bulk / (bulk == storage ? "cache" : "core");
+    if (started.renderer == int(xbox360ps5::Renderer::kOpenGL))
+      core_cache /= "opengl";
+    xe::Emulator emulator("", storage, saves.root, core_cache);
     Stage("BOOT emulator setup");
     xbox360ps5::DualSenseInput* input = nullptr;
     std::array<xbox360ps5::DualSenseInput*, 4> player_inputs{};
@@ -1128,7 +1204,11 @@ int main(int argc, char** argv) {
       [](xe::cpu::Processor* cpu) -> std::unique_ptr<xe::apu::AudioSystem> {
         return std::make_unique<xbox360ps5::CanaryAudioSystem>(cpu);
       },
-      []() -> std::unique_ptr<xe::gpu::GraphicsSystem> {
+      [&started]() -> std::unique_ptr<xe::gpu::GraphicsSystem> {
+#if defined(PS5X360_OPENGL_GAME_RENDERER) && PS5X360_OPENGL_GAME_RENDERER
+        if (started.renderer == int(xbox360ps5::Renderer::kOpenGL))
+          return std::make_unique<xbox360ps5::gl::OpenGLGraphicsSystem>();
+#endif
         return std::make_unique<xe::gpu::vulkan::VulkanGraphicsSystem>();
       },
       [&input, &player_inputs, &pad](xe::ui::Window*) {
@@ -1157,15 +1237,21 @@ int main(int argc, char** argv) {
     }
     Stage("BOOT emulator setup returned");
     xbox360ps5::ReportPlatformMemory();
-    if (status) { result = 4; }
+    if (status) { recover_gl_initialization(); result = 4; }
     else {
       if (!xbox360ps5::MountUtilityCache(*emulator.file_system(), bulk)) {
         XELOGE("Required utility cache is unavailable; launch cancelled");
         return 7;
       }
+      auto exit_cache = std::make_shared<ExitCacheState>();
+      if (started.renderer == int(xbox360ps5::Renderer::kVulkan))
+        exit_cache->processor = static_cast<xe::gpu::vulkan::VulkanCommandProcessor*>(
+            emulator.graphics_system()->command_processor());
+      ExitCacheScope exit_cache_scope{exit_cache};
       auto immediate = emulator.graphics_system()->provider()->CreateImmediateDrawer();
       if (!immediate || !emulator.graphics_system()->presenter()) {
-        XELOGE("Native Vulkan presentation/UI initialization failed");
+        XELOGE("Native {} presentation/UI initialization failed", xbox360ps5::RendererName(started.renderer));
+        recover_gl_initialization();
         return 6;
       }
       DetachPresentation detach{window, drawer, *immediate, launcher};
@@ -1312,7 +1398,11 @@ int main(int argc, char** argv) {
       std::array<bool, 4> players_connected{};
       const auto poll_extra_players = [&] {
         for (size_t slot = 1; slot < 4; ++slot) {
-          const auto sample = pad.Read(slot); player_inputs[slot]->Submit(sample);
+          const auto sample = pad.Read(slot);
+          xe::ui::controller_keyboard::SubmitPad(uint32_t(slot), sample,
+              uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now().time_since_epoch()).count()));
+          player_inputs[slot]->Submit(sample);
           if (sample.connected != players_connected[slot]) {
             players_connected[slot] = sample.connected;
             if (sample.connected) connect_player(uint8_t(slot), true);
@@ -1388,12 +1478,19 @@ int main(int argc, char** argv) {
         std::sort(list.begin(), list.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
         return list;
       }, [profiles](uint32_t slot) { const auto* profile = slot < 4 ? profiles->GetProfile(uint8_t(slot)) : nullptr; return profile ? profile->name() : std::string(); });
+      xbox360ps5::DlcInstaller dlc_installer(emulator.kernel_state()->content_manager(), saves.root);
+      launcher.SetDlcHooks({
+        [&dlc_installer](uint32_t title, const std::vector<std::filesystem::path>& roots) { return dlc_installer.Scan(title, roots); },
+        [&dlc_installer](uint32_t title, const xbox360ps5::DlcEntry& entry) { return dlc_installer.Install(title, entry); },
+        [&dlc_installer] { return dlc_installer.Status(); }
+      });
       launcher.SetProfiles(std::move(profile_hooks));
       // A game that starts another executable (a collection's menu) or goes back
       // to the dashboard: Canary saves what to run next in launch_data.bin (in
       // the working folder) and this restarts the title, which carries on from it.
       auto xam = emulator.kernel_state()->GetKernelModule<xe::kernel::xam::XamModule>("xam.xex");
-      xe::kernel::xam::XamModule::restart_hook = [] {
+      xe::kernel::xam::XamModule::restart_hook = [exit_cache] {
+        CheckpointExitCache(exit_cache);
         XELOGW("Title switch: restarting the title");
         xe::FlushLog();
         xbox360ps5::DrainNetLog();
@@ -1608,7 +1705,29 @@ int main(int argc, char** argv) {
         const auto game_started = std::chrono::steady_clock::now();
         double next_shot = 5;
         while (!context.HasQuitFromUIThread()) {
+#if defined(PS5X360_OPENGL_GAME_RENDERER) && PS5X360_OPENGL_GAME_RENDERER
+          if (started.renderer == int(xbox360ps5::Renderer::kOpenGL) &&
+              static_cast<xbox360ps5::gl::OpenGLGraphicsSystem*>(
+                  emulator.graphics_system())->has_fatal_error()) {
+            XELOGE("OpenGL cannot render this title correctly; returning to the Vulkan library. See OpenGL-renderer.log for the refused operation.");
+            global.renderer = int(xbox360ps5::Renderer::kVulkan);
+            global.Save();
+            std::ofstream(storage / "notice.txt", std::ios::trunc)
+                << "OpenGL operation unsupported; Vulkan restored. See OpenGL-renderer.log.\n";
+            std::error_code remove_error;
+            std::filesystem::remove(storage / "launch-once.txt", remove_error);
+            xe::FlushLog();
+            xbox360ps5::DrainNetLog();
+            const int refused = sceSystemServiceLoadExec("/app0/eboot.bin", nullptr);
+            XELOGE("OpenGL recovery restart refused: {:08X}", unsigned(refused));
+            restart = true;
+            break;
+          }
+#endif
           auto sample = pad.Read();
+          xe::ui::controller_keyboard::SubmitPad(0, sample,
+              uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now().time_since_epoch()).count()));
           poll_extra_players();
           if (autotest.active) {
             const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - game_started).count();
@@ -1631,7 +1750,9 @@ int main(int argc, char** argv) {
           // The touchpad click (or OPTIONS with it, when the touchpad is the
           // Back button) opens and closes the guide.
           uint32_t buttons = sample.connected ? sample.buttons : 0;
-          const bool trigger = settings.touchpad_menu ? bool(buttons & 0x100000) : (buttons & 0x100008) == 0x100008;
+          const bool keyboard_suppressed = xe::ui::controller_keyboard::Suppressed();
+          if (xe::ui::controller_keyboard::Active()) guide.open = false;
+          const bool trigger = !keyboard_suppressed && (settings.touchpad_menu ? bool(buttons & 0x100000) : (buttons & 0x100008) == 0x100008);
           if (trigger && !trigger_was) {
             guide.open = !guide.open;
             xbox360ps5::PlayUiSound(guide.open ? xbox360ps5::UiSound::select : xbox360ps5::UiSound::back);
@@ -1712,7 +1833,7 @@ int main(int argc, char** argv) {
           }
           // The game sees a pad at rest while the guide is up, and until the
           // buttons that closed it are let go.
-          if (guide.open || swallow) {
+          if (guide.open || swallow || keyboard_suppressed) {
             if (!guide.open && !buttons) swallow = false;
             sample = xbox360ps5::PadSample();
             sample.connected = true;
@@ -1867,16 +1988,34 @@ int main(int argc, char** argv) {
             }
           }
         }
+        xe::ui::controller_keyboard::Cancel();
+        // Publish cancellation and signal any keyboard fence while the drawer
+        // and kernel still exist, before ending the guest title.
+        const auto keyboard_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        do { context.Tick(); window.Paint(); }
+        while (xe::ui::controller_keyboard::Active() &&
+               std::chrono::steady_clock::now() < keyboard_deadline);
+        if (xe::ui::controller_keyboard::Active()) {
+          // Avoid destroying a kernel still serving a dialog. A fresh process
+          // is already the native title's normal restart path.
+          XELOGW("Keyboard cancellation pending; restarting the native title");
+          restart = true;
+        }
         if (quit) {
           // "Fechar o emulador": the system ends the title.
+          CheckpointExitCache(exit_cache);
           XELOGW("Menu: closing the title");
           xe::FlushLog();
           xbox360ps5::DrainNetLog();
           sceSystemServiceLoadExec("exit", nullptr);
           for (;;) usleep(100000);
         }
+        // Every launcher/settings/guide restart passes here before LoadExec.
+        // Normal quit is also saved before TerminateTitle tears down storage.
+        if (!restart) CheckpointExitCache(exit_cache);
         if (!restart && emulator.is_title_open()) emulator.TerminateTitle();
       }
+      if (restart) CheckpointExitCache(exit_cache);
       if (!restart) context.ExecutePendingFunctionsFromUIThread();
     }
     if (restart) {
@@ -1892,6 +2031,7 @@ int main(int argc, char** argv) {
     }
   }
   XELOGI("ENGINE EXIT {}", result);
+  xe::ui::controller_keyboard::SetAvailable(false);
   xe::ShutdownLogging();
   return result;
 }

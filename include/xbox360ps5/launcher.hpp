@@ -5,6 +5,7 @@
 #pragma once
 #include "third_party/imgui/imgui.h"
 #include "xbox360ps5/covers.hpp"
+#include "xbox360ps5/dlc_install.hpp"
 #include "xbox360ps5/game_paths.hpp"
 #include "xbox360ps5/game_patches.hpp"
 #include "xbox360ps5/qr_code.hpp"
@@ -42,6 +43,7 @@ struct Settings {
   int detailed_logs = 0;
   int show_fps = 0;       // A frame counter over the game.
   int vsync = 1;          // Applied before graphics setup; changes restart the title.
+  int renderer = 0;       // 0 Vulkan, 1 OpenGL; restart required, separate GPU caches.
   int resolution_scale = 1;   // Games render at 1, 2 or 3 times their resolution. Read when the title starts.
   int render_scale = 0;       // The option: 0 renders at 1x, 1 at 2x (applied as resolution_scale - 1).
   int frame_pacing = 0;       // 0 shows the newest frame at each refresh, 1 paces a 30 FPS game to exactly 2 refreshes a frame.
@@ -116,7 +118,7 @@ using GameOverrides = std::map<std::string, int>;
 GameOverrides LoadGameOverrides(const std::string& title_id);
 bool SaveGameOverrides(const std::string& title_id, const GameOverrides& overrides);
 Settings WithOverrides(Settings settings, const GameOverrides& overrides);
-// What is recommended for one game: values confirmed on a console, built in,
+// Recommendations for one game, based on console or upstream evidence,
 // and any the title folder adds (assets/presets.txt: a [TITLE ID] line, then
 // key=value lines). They are in force for that game unless it has its own.
 GameOverrides GamePreset(const std::string& title_id);
@@ -145,6 +147,12 @@ struct AchievementEntry {
   uint32_t id = 0, score = 0;
   bool unlocked = false;
 };
+struct DlcHooks {
+  std::function<std::vector<DlcEntry>(uint32_t, const std::vector<std::filesystem::path>&)> scan;
+  std::function<bool(uint32_t, const DlcEntry&)> install;
+  std::function<DlcStatus()> status;
+};
+
 enum class Key { up, down, left, right, cross, circle, triangle, square, l1, r1, options };
 // What the game folders hold, as one number: the same folders, files and
 // sizes the shelf is built from, without opening any of them.
@@ -196,6 +204,7 @@ class Launcher {
   void SetProfiles(ProfileHooks hooks) { profile_hooks_ = std::move(hooks); RefreshProfiles(); }
   void SetAchievements(std::function<std::vector<AchievementEntry>(uint32_t, uint32_t)> list,
                        std::function<std::string(uint32_t)> player) { achievement_list_ = std::move(list); achievement_player_name_ = std::move(player); }
+  void SetDlcHooks(DlcHooks hooks) { dlc_hooks_ = std::move(hooks); }
   void SetSaveRoot(std::filesystem::path root) { save_root_ = std::move(root); }
   // The options the emulator started with: a changed start option asks for a restart.
   void SetStarted(const Settings& started) { started_ = started; }
@@ -221,6 +230,14 @@ class Launcher {
   void FillGameRows();
   void RefreshPerGame();
   void CloseSettings();
+  void DrawDlcs(Canvas& c, float x);
+  void RefreshDlcs();
+  uint32_t SelectedTitleId() const;
+  DlcHooks dlc_hooks_;
+  std::vector<DlcEntry> dlcs_;
+  int dlc_row_ = 0;
+  bool dlc_was_busy_ = false;
+  std::string dlc_result_;
   void DrawAchievements(Canvas& c, float x);
   void RefreshAchievements();
   std::function<std::vector<AchievementEntry>(uint32_t, uint32_t)> achievement_list_;

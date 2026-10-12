@@ -14,6 +14,7 @@
 #include "xbox360ps5/utility_cache.hpp"
 #include "xbox360ps5/game_patches.hpp"
 #include "xbox360ps5/content_header_check.hpp"
+#include "xbox360ps5/container_read_check.hpp"
 #include "xbox360ps5/patch_selection_check.hpp"
 #include "xbox360ps5/utility_cache_check.hpp"
 #include "xbox360ps5/module_path_check.hpp"
@@ -35,6 +36,7 @@
 #include "xenia/ui/windowed_app_context.h"
 #include <chrono>
 #include <cstdio>
+#include <unistd.h>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -45,6 +47,9 @@
 #include "third_party/stb/stb_image_write.h"
 namespace config {
 void ReadGameConfig(const std::filesystem::path& file_path);  // config.cc, not in config.h.
+}
+namespace xe::gpu::vulkan {
+bool CheckRedundantConstants(GraphicsSystem* graphics_system);
 }
 namespace xe::kernel::xboxkrnl {
 bool CheckVirtualCameraAbi(KernelState* kernel);
@@ -79,6 +84,9 @@ class HeadlessWindow final : public xe::ui::Window {
 }
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--check-container-reads") == 0) {
+    return xbox360ps5::CheckContainerReads();
+  }
   if (argc == 2 && std::strcmp(argv[1], "--check-module-paths") == 0) {
     return xbox360ps5::CheckModulePaths();
   }
@@ -141,6 +149,12 @@ int main(int argc, char** argv) {
       });
   std::printf("RUNNER SETUP %08x\n", unsigned(status));
   if (status) return 1;
+  if (std::getenv("XBOX360PS5_CHECK_CONSTANT_WRITES")) {
+    const bool passed = xe::gpu::vulkan::CheckRedundantConstants(emulator.graphics_system());
+    std::puts(passed ? "PASS: constant changes, repeats, signed zero, NaN bits, fetch and coherence effects, rollback" : "FAIL: redundant constant regression");
+    std::fflush(stdout);
+    std::_Exit(passed ? 0 : 26);
+  }
   if (!xbox360ps5::MountUtilityCache(*emulator.file_system(), root)) return 7;
   // Games give the controller to a signed-in profile: make one the first time.
   auto profiles = emulator.kernel_state()->xam_state()->profile_manager();
@@ -258,6 +272,79 @@ int main(int argc, char** argv) {
     if (manager->OpenContentFromGuestFile("research-package-invalid", "game:\\default.xex", license) != X_ERROR_FILE_NOT_FOUND) std::_Exit(18);
     if (manager->OpenContentFromGuestFile("research-package-missing", "game:\\does-not-exist.xmplr", license) != X_ERROR_FILE_NOT_FOUND) std::_Exit(19);
     std::puts("PASS: nested guest package mounted, duplicate rejected, closed cleanly, invalid and missing packages rejected");
+    std::fflush(stdout);
+    std::_Exit(0);
+  }
+  // XBOX360PS5_CHECK_THREAD_SUSPEND=<rounds>: the kernel's own thread suspension,
+  // driven the way the Source engine's thread pool drives it (jobthread.cpp,
+  // CThreadPool::SuspendExecution): the worker replies and suspends itself
+  // while the controller suspends it from outside until it shows as suspended,
+  // and a later resume must let it run again. Left 4 Dead 2 (454108D4) stayed
+  // on its loading screen on a console with its I/O thread inside
+  // NtSuspendThread and a suspend count of zero.
+  // Needs no game: any path will do.
+  if (std::getenv("XBOX360PS5_CHECK_THREAD_SUSPEND")) {
+    using xe::kernel::XThread;
+    auto* kernel = emulator.kernel_state();
+    const int rounds = std::max(1, std::atoi(std::getenv("XBOX360PS5_CHECK_THREAD_SUSPEND")));
+    std::atomic<int> command{0}, replied{0}, resumed{0};
+    std::atomic<bool> quit{false};
+    auto worker = xe::kernel::object_ref<xe::kernel::XHostThread>(new xe::kernel::XHostThread(
+        kernel, 128 * 1024, 0,
+        [&]() {
+          int seen = 0;
+          while (!quit) {
+            while (command.load() == seen && !quit) std::this_thread::yield();
+            if (quit) break;
+            seen = command.load();
+            replied = seen;
+            XThread::GetCurrentThread()->SelfSuspend();
+            resumed = seen;
+          }
+          return 0;
+        },
+        kernel->GetSystemProcess()));
+    if (XFAILED(worker->Create())) std::_Exit(26);
+    const auto fail = [&](int round, const char* what) {
+      std::printf("FAIL round %d of %d: %s (suspend count %u)\n", round, rounds, what, unsigned(worker->suspend_count()));
+      std::fflush(stdout);
+      std::_Exit(27);
+    };
+    const auto started = std::chrono::steady_clock::now();
+    for (int round = 1; round <= rounds; ++round) {
+      uint32_t previous = 0;
+      // "Make sure state is correct": a suspend and a resume of the idle worker.
+      worker->Suspend(&previous);
+      worker->Resume(nullptr);
+      command = round;
+      auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      while (replied.load() != round) {
+        if (std::chrono::steady_clock::now() > deadline) fail(round, "the worker never took the call");
+        std::this_thread::yield();
+      }
+      // The worker replies before it suspends itself, so it may not be suspended yet.
+      deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      for (;;) {
+        worker->Suspend(&previous);
+        if (previous != 0) break;
+        worker->Resume(nullptr);
+        std::this_thread::yield();
+        if (std::chrono::steady_clock::now() > deadline) fail(round, "the worker never showed as suspended");
+      }
+      worker->Resume(nullptr);
+      // The pool counts as suspended now: the worker must still be stopped.
+      if ((round & 63) == 0) std::this_thread::sleep_for(std::chrono::microseconds(200));
+      if (resumed.load() == round) fail(round, "the worker ran while it was suspended");
+      // The pool is resumed.
+      worker->Resume(nullptr);
+      deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      while (resumed.load() != round) {
+        if (std::chrono::steady_clock::now() > deadline) fail(round, "the worker was resumed and never ran again");
+        std::this_thread::yield();
+      }
+    }
+    std::printf("PASS: %d rounds of self-suspension with suspends and resumes from outside, %.1f s\n", rounds,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
     std::fflush(stdout);
     std::_Exit(0);
   }
@@ -386,6 +473,41 @@ int main(int argc, char** argv) {
         std::snprintf(name, sizeof(name), "%s/shot-%03d.png", argv[3], shot++);
         stbi_write_png(name, int(image.width), int(image.height), 4, image.data.data(), int(image.stride));
       }
+    }
+  }
+  // XBOX360PS5_DUMP_RANGES=<folder>:start-end,start-end (hex): the guest memory of
+  // each range at the end of the run, one file per range, to read the code a
+  // console report points at once the title has loaded its modules. Pages
+  // that are not there are written as zeroes.
+  if (const char* ranges = std::getenv("XBOX360PS5_DUMP_RANGES")) {
+    const std::string text = ranges;
+    const size_t colon = text.find(':');
+    const std::string folder = text.substr(0, colon);
+    auto* memory = emulator.memory();
+    for (const char* at = colon == std::string::npos ? "" : text.c_str() + colon + 1; *at;) {
+      char* end = nullptr;
+      const uint32_t first = uint32_t(std::strtoul(at, &end, 16));
+      if (*end != '-') break;
+      const uint32_t last = uint32_t(std::strtoul(end + 1, &end, 16));
+      char name[512];
+      std::snprintf(name, sizeof(name), "%s/%08X.bin", folder.c_str(), first);
+      if (FILE* file = std::fopen(name, "wb")) {
+        const std::vector<uint8_t> blank(4096, 0);
+        uint32_t readable = 0;
+        for (uint64_t page = first & ~4095u; page < last; page += 4096) {
+          // The system refuses to write from a page that is not there, where a
+          // plain read would end the run; the heaps' own records proved
+          // unreliable for modules a title loads itself.
+          std::fflush(file);
+          const bool mapped = ::write(fileno(file), memory->TranslateVirtual<const uint8_t*>(uint32_t(page)), 4096) == 4096;
+          if (!mapped) std::fwrite(blank.data(), 1, 4096, file);
+          readable += mapped;
+        }
+        std::fclose(file);
+        std::printf("RANGE %08X-%08X %u readable pages %s\n", first, last, readable, name);
+      }
+      at = *end == ',' ? end + 1 : end;
+      if (!*end) break;
     }
   }
   std::fflush(stdout);
