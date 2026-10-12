@@ -462,6 +462,7 @@ void Settings::Save() const {
   for (const auto& option : Options()) output << option.key << "=" << this->*option.field << "\n";
 }
 bool FramegenOnAtStart();  // below, with the frame generation choice
+bool FramegenTarget30AtStart();
 void Settings::Apply() const {
   cvars::gpu_allow_invalid_fetch_constants = true;
   ui_language.store(SupportedUiLanguage(interface_language ? interface_language : console_language));
@@ -524,10 +525,13 @@ void Settings::Apply() const {
   // Frame generation paces its own presents (adaptive pacing): the even pacing
   // stays off while it is on, so the two never hold the same picture twice.
   const bool paced_30 = frame_pacing == 1 && !video_clock && !FramegenOnAtStart();
-  cvars::framerate_limit = video_clock ? 120 : (paced_30 ? 0 : 60);
+  // Frame generation held at 30 FPS: the guest vblank at the display's 59.94 Hz as well, so a
+  // game at 30 gives exactly one frame per output and never drifts against them.
+  const bool framegen_30 = !video_clock && FramegenOnAtStart() && FramegenTarget30AtStart();
+  cvars::framerate_limit = video_clock ? 120 : (paced_30 || framegen_30 ? 0 : 60);
   // PS5X360E: the 120 Hz video clock again (Edge's own vblanks are 50/60 only).
   cvars::guest_vblank_rate_override = video_clock ? 120 : 0;
-  cvars::guest_vblank_rate_millihz = paced_30 ? 59940 : 0;
+  cvars::guest_vblank_rate_millihz = paced_30 || framegen_30 ? 59940 : 0;
   cvars::present_frame_repeat = paced_30 ? 2 : 0;
   cvars::present_letterbox = stretch == 0;
   // Read as the emulator starts.
@@ -1227,6 +1231,7 @@ const FramegenChoiceState& FramegenAtStart() {
 bool FramegenOnAtStart() { return FramegenAtStart().mode != 0; }
 bool FramegenTarget30(const FramegenChoiceState& choice) { return choice.target == "30"; }
 bool FramegenTarget30() { return FramegenTarget30(FramegenChoice()); }
+bool FramegenTarget30AtStart() { return FramegenTarget30(FramegenAtStart()); }
 bool FramegenChanged() {
   return FramegenMode() != FramegenAtStart().mode ||
          FramegenTarget30() != FramegenTarget30(FramegenAtStart()) ||
@@ -2670,9 +2675,9 @@ void Launcher::DrawOptionsSheet(Canvas& c) {
   if (category_rows_[size_t(option_row_)] == kFramegenTargetRow) {
     c.Fill(x + 40, 612, 780, 1, kWhite, 0.10f);
     c.Wrapped(FramegenText(
-        "Até onde a geração de frames completa o jogo. Taxa da tela: até 60 FPS (um jogo a 30 aparece a 60). 30 FPS: um jogo entre 10 e 27 FPS (por exemplo 20 a 25) é completado até 30 FPS uniformes, cada quadro mostrado por duas atualizações da tela; acima disso aparecem os quadros do próprio jogo. Vale com a geração ligada (Automática recomendada).",
-        "How far frame generation fills the game. Display rate: up to 60 FPS (a 30 FPS game is shown at 60). 30 FPS: a game between 10 and 27 FPS (20 to 25, say) is filled up to an even 30 FPS, each picture shown for two refreshes; above that the game's own frames are shown. Applies with frame generation on (Automatic recommended).",
-        "Hasta dónde la generación completa el juego. Frecuencia de la pantalla: hasta 60 FPS (un juego a 30 se muestra a 60). 30 FPS: un juego entre 10 y 27 FPS (de 20 a 25, por ejemplo) se completa hasta 30 FPS uniformes, cada imagen mostrada durante dos actualizaciones; por encima se muestran los fotogramas del propio juego. Vale con la generación activada (Automática recomendada)."),
+        "Até onde a geração de frames completa o jogo. Taxa da tela: até 60 FPS (um jogo a 30 aparece a 60). 30 FPS: a saída fica travada em 30 FPS uniformes (29,97), cada quadro mostrado por exatamente duas atualizações da tela, com o jogo entre 10 e 34 FPS. Quando o jogo cai (por exemplo para 20 a 25), os quadros que faltam são gerados; a 30 aparecem os quadros do próprio jogo. Vale com a geração ligada (Automática recomendada).",
+        "How far frame generation fills the game. Display rate: up to 60 FPS (a 30 FPS game is shown at 60). 30 FPS: the output is locked to an even 30 FPS (29.97), each picture shown for exactly two refreshes, with the game anywhere from 10 to 34 FPS. When the game dips (to 20-25, say) the missing frames are generated; at 30 the game's own frames are shown. Applies with frame generation on (Automatic recommended).",
+        "Hasta dónde la generación completa el juego. Frecuencia de la pantalla: hasta 60 FPS (un juego a 30 se muestra a 60). 30 FPS: la salida queda fija en 30 FPS uniformes (29,97), cada imagen mostrada exactamente dos actualizaciones, con el juego entre 10 y 34 FPS. Cuando el juego baja (a 20-25, por ejemplo) se generan las imágenes que faltan; a 30 se muestran los fotogramas del propio juego. Vale con la generación activada (Automática recomendada)."),
         x + 56, 632, 20, kBody, 750);
     c.Text(std::string(Tr("Recomendado: ")) + FramegenText("Taxa da tela", "Display rate", "Frecuencia de la pantalla"), x + 56, 860, 20, kAccent, 1.0f, 0, 750);
     c.Text(Tr("O emulador reinicia para aplicar, ao fechar as configurações."), x + 56, 892, 20, kMuted, 1.0f, 0, 750);

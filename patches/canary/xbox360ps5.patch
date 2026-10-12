@@ -11809,10 +11809,10 @@ index 0000000..f99deb7
 \ No newline at end of file
 diff --git a/src/xenia/ui/vulkan/framegen/adaptive_pacing.hpp b/src/xenia/ui/vulkan/framegen/adaptive_pacing.hpp
 new file mode 100644
-index 0000000..2d7d54a
+index 0000000..dc2e430
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/adaptive_pacing.hpp
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,372 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Adaptive frame generation pacing: generated pictures for a game whose frame rate is not an
 +// exact divisor of the display rate (40 FPS on 60 Hz, a rate that moves between 31 and 47).
@@ -11893,6 +11893,9 @@ index 0000000..2d7d54a
 +                                                // swapchain's queue drains instead of filling
 +  static constexpr double kBacklogRefreshes = 1.25; // outputs still waiting: none are added
 +  static constexpr uint32_t kMaxPhases = 16;    // 10 FPS on 120 Hz is 12 refreshes a frame
++  static constexpr double kTargetCeilingFps = 4.0;  // PS5X360E: a target holds up to this above it
++  static constexpr double kTargetMargin = 0.0002;   // PS5X360E: the margin at a target
++  static constexpr double kTargetBacklogOutputs = 2.25;  // PS5X360E: queued outputs allowed
 +
 +  // One new frame of the game.
 +  //   arrival_ns   when the game handed it over (any steady clock)
@@ -11929,6 +11932,7 @@ index 0000000..2d7d54a
 +    }
 +    const double span = double(arrival_ns - arrival_ns_);
 +    arrival_ns_ = arrival_ns;
++    last_span_ns_ = span;
 +    if (step > 2 || span > kGapNs || (interval_ns_ > 0 && span > kGapIntervals * interval_ns_)) {
 +      ClearEstimate();
 +      return Off(plan, AdaptiveReason::Gap);
@@ -11947,7 +11951,11 @@ index 0000000..2d7d54a
 +    const double rate = 1e9 / interval_ns_;
 +    const double slack = active_ ? kHysteresisFps : 0.0;
 +    if (rate < kMinFps - slack) return Off(plan, AdaptiveReason::TooSlow);
-+    if (rate > output_hz - kHeadroomFps + slack) return Off(plan, AdaptiveReason::TooFast);
++    // With a target the path holds the output at it: on up to four frames a second above it
++    // (a game at the target is shown frame by frame, each for `slot` refreshes, and a dip is
++    // filled at once), instead of letting go a few frames below the rate.
++    const double ceiling = target_fps ? output_hz + kTargetCeilingFps : output_hz - kHeadroomFps;
++    if (rate > ceiling + slack) return Off(plan, AdaptiveReason::TooFast);
 +
 +    // The span is paced here. One output lasts `slot` refreshes.
 +    const double refresh_ns = 1e9 / display_hz * slot;
@@ -11955,16 +11963,31 @@ index 0000000..2d7d54a
 +    plan.active = active_ = true;
 +    if (!history) {
 +      // No previous frame in the interpolator: this frame becomes it.
-+      return Alone(plan, AdaptiveReason::Seeding, start, refresh_ns);
++      return Alone(plan, AdaptiveReason::Seeding, start, refresh_ns, slot);
 +    }
 +    // Outputs made before are still waiting for their refresh, or the presenter picked this
 +    // frame up a whole interval late: nothing is added to the queue but the frame itself.
-+    if (double(start - now_ns) > kBacklogRefreshes * refresh_ns ||
++    // At a target an output is two refreshes long and an even rhythm matters more than the
++    // latency of one more queued output, so frames that come early by the game's own
++    // unevenness do not reset the clock.
++    const double backlog = target_fps ? kTargetBacklogOutputs : kBacklogRefreshes;
++    if (target_fps && clock_valid_ && double(start - now_ns) > backlog * refresh_ns) {
++      // The grid is full: this span's outputs are left out and its time passes on the same
++      // clock (no restart), so the next output is still where the even rhythm puts it.
++      ++backlogs_;
++      content_ns_ -= last_span_ns_;
++      if (content_ns_ < 0) content_ns_ = 0;
++      plan.reason = AdaptiveReason::Running;
++      plan.count = 0;
++      return plan;
++    }
++    if (double(start - now_ns) > backlog * refresh_ns ||
 +        double(now_ns) > double(arrival_ns) + interval_ns_) {
 +      ++backlogs_;
-+      return Alone(plan, AdaptiveReason::Backlog, start, refresh_ns);
++      return Alone(plan, AdaptiveReason::Backlog, start, refresh_ns, slot);
 +    }
 +
++    if (target_fps) return TargetSpan(plan, start, refresh_ns, slot, cap);
 +    const double dphi = refresh_ns * (1.0 + kMargin) / interval_ns_;
 +    if (!clock_valid_) {
 +      // The frame before this span was shown as it is: the next output is one step after it.
@@ -11985,7 +12008,7 @@ index 0000000..2d7d54a
 +      content_ += dphi;
 +    }
 +    content_ -= 1.0;
-+    if (n == 0) return Alone(plan, AdaptiveReason::Seeding, start, refresh_ns);  // cannot happen: dphi < 1
++    if (n == 0) return Alone(plan, AdaptiveReason::Seeding, start, refresh_ns, slot);  // cannot happen: dphi < 1
 +
 +    // Which fractions: the number of pictures (1 to 3) whose fractions lie nearest the phases.
 +    uint32_t wanted = 0;
@@ -12015,6 +12038,66 @@ index 0000000..2d7d54a
 +      }
 +    }
 +    busy_until_ns_ = start + uint64_t(double(n) * refresh_ns);
++    ++spans_;
++    return plan;
++  }
++
++  // PS5X360E: a span at an output target. The outputs are a fixed grid (one every `slot`
++  // refreshes) and each shows the content at its own time, measured on the game's real
++  // frame times: the span between the previous frame A and this frame B is its actual length,
++  // not a typical one, so a game whose frames take 2 or 3 vblanks in turn still moves evenly.
++  // The content time is kept in nanoseconds after A; the outputs whose time falls in the span
++  // are made (one at B itself when it lands within kSnap of it), and the rest carries over.
++  AdaptivePlan& TargetSpan(AdaptivePlan& plan, uint64_t start, double output_ns, uint32_t slot,
++                           uint32_t cap) {
++    const double span = last_span_ns_;
++    if (!clock_valid_ || content_ns_ < 0 || content_ns_ > span * (1.0 + kSnap)) {
++      // The frame before was shown as it is: the next output is one output after it.
++      content_ns_ = output_ns;
++      clock_valid_ = true;
++    }
++    double phases[kMaxPhases];
++    uint32_t n = 0;
++    while (content_ns_ <= span * (1.0 + kSnap) && n < kMaxPhases) {
++      phases[n++] = content_ns_ / span;
++      content_ns_ += output_ns;
++    }
++    content_ns_ -= span;
++    if (n == 0) {
++      // A frame that came sooner than an output: it is skipped, its time goes to the next.
++      plan.reason = AdaptiveReason::Running;
++      plan.generated = 1;
++      plan.count = 0;
++      ++spans_;
++      return plan;
++    }
++    uint32_t wanted = 0;
++    for (uint32_t i = 0; i < n; ++i) wanted += phases[i] < 1.0 - kSnap;
++    uint32_t best = 1;
++    double best_error = 1e30;
++    for (uint32_t pictures = 1; pictures <= std::clamp<uint32_t>(cap, 1, 3) && wanted; ++pictures) {
++      double error = 0;
++      for (uint32_t i = 0; i < n; ++i) {
++        if (phases[i] >= 1.0 - kSnap) continue;
++        const double distance = phases[i] - Fraction(Index(phases[i], pictures), pictures);
++        error += distance * distance;
++      }
++      if (error < best_error - 1e-12) {
++        best_error = error;
++        best = pictures;
++      }
++    }
++    plan.generated = best;
++    plan.reason = AdaptiveReason::Running;
++    for (uint32_t i = 0; i < n && plan.count < plan.outputs.size(); ++i) {
++      const int8_t picture = phases[i] >= 1.0 - kSnap ? int8_t(-1) : int8_t(Index(phases[i], best));
++      if (plan.count && plan.outputs[plan.count - 1].picture == picture) {
++        plan.outputs[plan.count - 1].refreshes += slot;
++      } else {
++        plan.outputs[plan.count++] = {picture, uint8_t(slot)};
++      }
++    }
++    busy_until_ns_ = start + uint64_t(double(n) * output_ns);
 +    ++spans_;
 +    return plan;
 +  }
@@ -12071,11 +12154,12 @@ index 0000000..2d7d54a
 +    plan.count = 0;
 +    return plan;
 +  }
-+  AdaptivePlan& Alone(AdaptivePlan& plan, AdaptiveReason reason, uint64_t start, double refresh_ns) {
++  AdaptivePlan& Alone(AdaptivePlan& plan, AdaptiveReason reason, uint64_t start, double refresh_ns,
++                      uint32_t slot = 1) {
 +    plan.reason = reason;
 +    plan.generated = 1;
 +    plan.count = 1;
-+    plan.outputs[0] = {int8_t(-1), 1};
++    plan.outputs[0] = {int8_t(-1), uint8_t(slot)};
 +    clock_valid_ = false;
 +    busy_until_ns_ = start + uint64_t(refresh_ns);
 +    return plan;
@@ -12096,6 +12180,7 @@ index 0000000..2d7d54a
 +  std::array<double, kWindow> intervals_{};
 +  uint32_t next_ = 0, count_ = 0;
 +  double interval_ns_ = 0, display_hz_ = 0, content_ = 0;
++  double last_span_ns_ = 0, content_ns_ = 0;  // PS5X360E: the target's real-time clock
 +  uint64_t arrival_ns_ = 0, seen_ns_ = 0, busy_until_ns_ = 0, spans_ = 0, backlogs_ = 0;
 +  bool active_ = false, clock_valid_ = false;
 +};

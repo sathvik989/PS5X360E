@@ -3,6 +3,18 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.46+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Frame generation target 30 FPS is now a lock**: the output is a fixed 29.97 FPS grid, each
+  picture shown for exactly two refreshes, with the game anywhere from 10 to 34 FPS. At a steady
+  30 the game's own frames are shown (nothing generated, no optical flow cost); when it dips the
+  missing ones are generated at their exact time, measured on the game's real frame times (a
+  game whose frames take 2 and 3 vblanks in turn still moves evenly). Frames that arrive in a
+  burst are skipped on the same clock instead of restarting it. The emulated console's vblank
+  runs at 59.94 Hz in this mode, so a 30 FPS game matches the output exactly.
+- Simulated: 20 / 22 / 25 / 28 / 30 FPS, steady or with 15 % uneven frame times, and games
+  alternating 2 and 3 vblank frames (20 to 30 FPS): 29.9 to 30.0 outputs a second, no restarts.
+
 ## 0.2-alpha.45+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Frame generation target** (Settings > Performance, under Frame generation): "Display rate"
