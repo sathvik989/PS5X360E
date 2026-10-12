@@ -37,7 +37,7 @@
   "xenia_canary": {
     "url": "https://github.com/has207/xenia-edge.git",
     "branch": "edge",
-    "revision": "2e6898afc108bad42c0b3d1710941a041909bd67",
+    "revision": "8e44485d9c2eef2ce4fe0c7b1a6647887600d1ed",
     "note": "PS5X360E: the core is Xenia Edge (has207/xenia-edge); the key keeps its old name so the tools need no change.",
     "submodules_excluded": [
       "third_party/DirectXShaderCompiler",

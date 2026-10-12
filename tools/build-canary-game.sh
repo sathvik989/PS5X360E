@@ -10,6 +10,15 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 : "${PS5_PAYLOAD_SDK:?Set PS5_PAYLOAD_SDK}"
 reference="$root/.deps/references/PS5_Vulkan"
+# PS5X360E: the dependencies must be the ones this branch pins (Mesa's display
+# frame rate and 119.88 Hz support among them). ps5x360e-build.sh copies older
+# than alpha.48 check out their own, older pins: they need replacing once.
+if [[ -d "$reference/.git" ]] && ! bash "$root/tools/ps5x360e-deps.sh" --check; then
+  echo "The PS5 dependencies are not at this branch's pins. Download the current" >&2
+  echo "tools/ps5x360e-build.sh from the fork and run that (it updates them)," >&2
+  echo "or run: bash tools/ps5x360e-deps.sh" >&2
+  exit 1
+fi
 sdk="$reference/.deps/native/ps5-payload-sdk"
 # PS5X360E: the core is Xenia Edge; its own build directory, so nothing configured
 # for the Canary core is reused.
@@ -28,16 +37,10 @@ for pair in 'libSceAgc:agc_canary_link_stub.c' 'libSceAgcDriver:agc_driver_canar
   "$sdk/bin/prospero-lld" --shared -soname "$library.prx" -o "build/radv-stubs/$library.so" "build/radv-stubs/$library.o"
 done
 
-# PS5X360E: mbedTLS 3.6.7 for the Kinect phone camera's HTTPS server (PS5X360 0.6.0).
-# Fetched here rather than by ps5x360e-build.sh, so an older copy of that script works.
-mbedtls_rev=068ff080b369adfac81509f9b57b2afabaf82dc5
-if [[ "$(git -C .deps/mbedtls rev-parse HEAD 2>/dev/null)" != "$mbedtls_rev" ]]; then
-  rm -rf .deps/mbedtls
-  git init -q .deps/mbedtls
-  git -C .deps/mbedtls fetch -q --depth 1 https://github.com/Mbed-TLS/mbedtls "$mbedtls_rev"
-  git -C .deps/mbedtls checkout -q --detach FETCH_HEAD
-  rm -f "$build/build.ninja"  # configure again: the mbedTLS sources are globbed then
-fi
+# PS5X360E: Mbed TLS now comes from Xenia Edge (third_party/mbedtls), built
+# once with the phone camera's configuration (canary/CMakeLists.txt). Archives
+# of targets that no longer exist would otherwise join the link below.
+rm -f "$build/libxbox360ps5-mbedtls.a" "$build/core/third_party/libaes_128.a"
 
 # Explicit defaults keep an experimental configure from leaking into the next
 # normal build. Separate output directories preserve release executables.
@@ -67,10 +70,10 @@ cat > "$build/version.h.new" <<EOF
 #endif  // GENERATED_VERSION_H_
 EOF
 cmp -s "$build/version.h.new" "$build/version.h" || mv "$build/version.h.new" "$build/version.h"
-ninja -C "$build" -j"${JOBS:-8}" xbox360ps5-title-objects xbox360ps5-mbedtls \
+ninja -C "$build" -j"${JOBS:-8}" xbox360ps5-title-objects mbedtls \
   xenia-base xenia-cpu xenia-cpu-backend-x64 xenia-core xenia-kernel xenia-gpu xenia-gpu-vulkan \
   xenia-ui xenia-ui-vulkan xenia-vfs xenia-apu xenia-apu-nop xenia-hid xenia-hid-nop xenia-patcher \
-  aes_128 boost_context capstone fmt dxbc imgui libavcodec libavformat libavutil mspack snappy \
+  boost_context capstone fmt dxbc imgui libavcodec libavformat libavutil mspack snappy \
   xxhash glslang-spirv zarchive zlib-ng zstd pugixml
 
 native="$reference/tooling/native"

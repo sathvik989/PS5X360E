@@ -39,7 +39,7 @@ set(XBOX360PS5_CANARY_LIBRARIES
   xenia-kernel xenia-patcher xenia-ui xenia-vfs xenia-gpu-vulkan xenia-ui-vulkan
   xenia-cpu-backend-x64
   xenia-hid-nop
-  aes_128 boost_context capstone fmt dxbc imgui libavcodec libavformat libavutil
+  mbedtls boost_context capstone fmt dxbc imgui libavcodec libavformat libavutil
   mspack snappy xxhash glslang-spirv zarchive zlib-ng zstd pugixml)
 
 if(NOT CMAKE_CROSSCOMPILING)
@@ -103,6 +103,7 @@ if(CMAKE_CROSSCOMPILING)
     "${XBOX360PS5_ROOT}/platform/ps5/web_settings.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/phone_camera_tls.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/net_log.cpp"
+    "${XBOX360PS5_ROOT}/platform/ps5/driver_log.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/libc_bits.c"
     "${XBOX360PS5_ROOT}/platform/ps5/native_memory_calls.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/radv_dispatch.cpp"
@@ -119,18 +120,24 @@ if(CMAKE_CROSSCOMPILING)
   endif()
   target_compile_options(xbox360ps5-title-objects PRIVATE -O2 -mavx)
   # PS5X360E (from PS5X360 0.6.0): the Kinect phone camera's HTTPS server on the
-  # console uses mbedTLS 3.6.7 (fetched into .deps/mbedtls by the build script),
-  # with only the TLS 1.2 server parts it needs (platform/ps5/mbedtls_ps5x360_config.h).
-  set(XBOX360PS5_MBEDTLS "${XBOX360PS5_ROOT}/.deps/mbedtls")
+  # console uses mbedTLS with the TLS 1.2 server parts it needs
+  # (platform/ps5/mbedtls_ps5x360_config.h). Xenia Edge builds the same Mbed TLS
+  # revision (3.6.7) for its crypto with a smaller configuration: one library,
+  # built with ours (a superset of Edge's modules), serves both, so the two
+  # configurations never meet in one link.
+  set(XBOX360PS5_MBEDTLS "${XENIA_CANARY}/third_party/mbedtls")
   file(GLOB XBOX360PS5_MBEDTLS_SOURCES "${XBOX360PS5_MBEDTLS}/library/*.c")
-  add_library(xbox360ps5-mbedtls STATIC ${XBOX360PS5_MBEDTLS_SOURCES})
-  target_include_directories(xbox360ps5-mbedtls PUBLIC
+  set(XBOX360PS5_MBEDTLS_INCLUDES
     "${XBOX360PS5_MBEDTLS}/include" "${XBOX360PS5_ROOT}/platform/ps5")
-  target_compile_definitions(xbox360ps5-mbedtls PUBLIC
-    MBEDTLS_USER_CONFIG_FILE="mbedtls_ps5x360_config.h")
-  target_compile_options(xbox360ps5-mbedtls PRIVATE -O2)
-  target_include_directories(xbox360ps5-title-objects PRIVATE
-    "${XBOX360PS5_MBEDTLS}/include" "${XBOX360PS5_ROOT}/platform/ps5")
-  target_compile_definitions(xbox360ps5-title-objects PRIVATE
-    MBEDTLS_USER_CONFIG_FILE="mbedtls_ps5x360_config.h")
+  set(XBOX360PS5_MBEDTLS_DEFINES MBEDTLS_USER_CONFIG_FILE="mbedtls_ps5x360_config.h")
+  set_property(TARGET mbedtls PROPERTY SOURCES ${XBOX360PS5_MBEDTLS_SOURCES})
+  foreach(property INCLUDE_DIRECTORIES INTERFACE_INCLUDE_DIRECTORIES)
+    set_property(TARGET mbedtls PROPERTY ${property} ${XBOX360PS5_MBEDTLS_INCLUDES})
+  endforeach()
+  foreach(property COMPILE_DEFINITIONS INTERFACE_COMPILE_DEFINITIONS)
+    set_property(TARGET mbedtls PROPERTY ${property} ${XBOX360PS5_MBEDTLS_DEFINES})
+  endforeach()
+  target_compile_options(mbedtls PRIVATE -O2)
+  target_include_directories(xbox360ps5-title-objects PRIVATE ${XBOX360PS5_MBEDTLS_INCLUDES})
+  target_compile_definitions(xbox360ps5-title-objects PRIVATE ${XBOX360PS5_MBEDTLS_DEFINES})
 endif()

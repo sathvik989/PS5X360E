@@ -36,7 +36,19 @@ def names(text):
 
 
 def main():
-    revision = json.loads((ROOT / "deps.json").read_text())["xenia_canary"]["revision"]
+    dep = json.loads((ROOT / "deps.json").read_text())["xenia_canary"]
+    revision = dep["revision"]
+    if git("rev-parse", "HEAD").strip() != revision:
+        # A new pinned revision: move to it (git rewrites only the files that
+        # differ) and bring the submodules to its pins, as prepare_canary.py
+        # does; then the patches below go on top as usual.
+        git("checkout", "-q", "-f", "--detach", revision)
+        paths = git("config", "-f", ".gitmodules", "--get-regexp", "path").splitlines()
+        submodules = [line.split()[1] for line in paths
+                      if line.split()[1] not in dep["submodules_excluded"]]
+        subprocess.check_call(["git", "-C", str(SOURCE), "submodule", "update", "--init",
+                               "--depth", "1", "--", *submodules])
+        print(f"Xenia Canary moved to {revision[:8]}")
     index = SOURCE / ".git/ps5x360e-index"
     index.unlink(missing_ok=True)
     git("read-tree", revision, index=index)

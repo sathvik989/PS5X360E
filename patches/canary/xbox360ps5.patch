@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index e22b09f..e94ceb9 100644
+index e22b09f06..e94ceb947 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -406,7 +406,9 @@ else()
@@ -14,7 +14,7 @@ index e22b09f..e94ceb9 100644
      add_link_options($<$<CONFIG:Release>:-flto=thin>)
      if(NOT APPLE)
 diff --git a/cmake/XeniaHelpers.cmake b/cmake/XeniaHelpers.cmake
-index 1050d2f..4d15091 100644
+index 1050d2f52..4d15091f3 100644
 --- a/cmake/XeniaHelpers.cmake
 +++ b/cmake/XeniaHelpers.cmake
 @@ -75,6 +75,14 @@ function(xe_platform_sources target base_path)
@@ -33,7 +33,7 @@ index 1050d2f..4d15091 100644
  
    list(APPEND _sources ${_plat_sources})
 diff --git a/src/xenia/base/clock_posix.cc b/src/xenia/base/clock_posix.cc
-index 64383e0..8897a86 100644
+index 64383e07a..8897a8663 100644
 --- a/src/xenia/base/clock_posix.cc
 +++ b/src/xenia/base/clock_posix.cc
 @@ -7,6 +7,11 @@
@@ -66,7 +66,7 @@ index 64383e0..8897a86 100644
  
  uint64_t Clock::host_tick_count_platform() {
 diff --git a/src/xenia/base/filesystem_posix.cc b/src/xenia/base/filesystem_posix.cc
-index 02ee840..e1a2ce3 100644
+index 02ee840da..e1a2ce33c 100644
 --- a/src/xenia/base/filesystem_posix.cc
 +++ b/src/xenia/base/filesystem_posix.cc
 @@ -59,6 +59,9 @@ std::filesystem::path GetExecutablePath() {
@@ -91,7 +91,7 @@ index 02ee840..e1a2ce3 100644
    char* home = std::getenv("XDG_DATA_HOME");
    if (home) {
 diff --git a/src/xenia/base/logging.cc b/src/xenia/base/logging.cc
-index 69ab58b..a3c417e 100644
+index 967eb8d0b..bee777493 100644
 --- a/src/xenia/base/logging.cc
 +++ b/src/xenia/base/logging.cc
 @@ -11,8 +11,12 @@
@@ -107,7 +107,7 @@ index 69ab58b..a3c417e 100644
  
  #include "third_party/disruptorplus/include/disruptorplus/multi_threaded_claim_strategy.hpp"
  #include "third_party/disruptorplus/include/disruptorplus/ring_buffer.hpp"
-@@ -474,6 +478,12 @@ void InitializeLogging(const std::string_view app_name) {
+@@ -513,6 +517,12 @@ void InitializeLogging(const std::string_view app_name) {
  #endif  // XE_PLATFORM_ANDROID
  }
  
@@ -120,7 +120,7 @@ index 69ab58b..a3c417e 100644
  void ShutdownLogging() {
    Logger* logger = logger_;
    logger_ = nullptr;
-@@ -494,11 +504,6 @@ void FlushLog() {
+@@ -533,11 +543,6 @@ void FlushLog() {
  
  bool IsLogWriterThread() { return logger_ && logger_->IsWriteThread(); }
  
@@ -132,7 +132,7 @@ index 69ab58b..a3c417e 100644
  uint32_t logging::GetFrameNumber() {
    return global_frame_number_.load(std::memory_order_relaxed);
  }
-@@ -507,6 +512,105 @@ void logging::IncrementFrameNumber() {
+@@ -546,6 +551,105 @@ void logging::IncrementFrameNumber() {
    global_frame_number_.fetch_add(1, std::memory_order_relaxed);
  }
  
@@ -238,7 +238,7 @@ index 69ab58b..a3c417e 100644
  uint32_t logging::internal::GetLogLevel() { return cvars::log_level; }
  
  std::pair<char*, size_t> logging::internal::GetThreadBuffer() {
-@@ -515,7 +619,15 @@ std::pair<char*, size_t> logging::internal::GetThreadBuffer() {
+@@ -554,7 +658,15 @@ std::pair<char*, size_t> logging::internal::GetThreadBuffer() {
  XE_NOALIAS
  void logging::internal::AppendLogLine(LogLevel log_level,
                                        const char prefix_char, size_t written) {
@@ -255,7 +255,7 @@ index 69ab58b..a3c417e 100644
      return;
    }
    logger_->AppendLine(xe::threading::current_thread_id(), prefix_char,
-@@ -524,7 +636,13 @@ void logging::internal::AppendLogLine(LogLevel log_level,
+@@ -563,7 +675,13 @@ void logging::internal::AppendLogLine(LogLevel log_level,
  
  void logging::AppendLogLine(LogLevel log_level, const char prefix_char,
                              const std::string_view str, uint32_t log_mask) {
@@ -271,7 +271,7 @@ index 69ab58b..a3c417e 100644
    }
    logger_->AppendLine(xe::threading::current_thread_id(), prefix_char,
 diff --git a/src/xenia/base/logging.h b/src/xenia/base/logging.h
-index 92e7019..cc2715b 100644
+index 92e7019d0..cc2715bae 100644
 --- a/src/xenia/base/logging.h
 +++ b/src/xenia/base/logging.h
 @@ -12,6 +12,7 @@
@@ -307,7 +307,7 @@ index 92e7019..cc2715b 100644
  
  uint32_t GetLogLevel();
 diff --git a/src/xenia/base/mapped_memory.h b/src/xenia/base/mapped_memory.h
-index ce89b65..1c003ec 100644
+index ce89b651a..1c003ec3a 100644
 --- a/src/xenia/base/mapped_memory.h
 +++ b/src/xenia/base/mapped_memory.h
 @@ -10,6 +10,7 @@
@@ -360,7 +360,7 @@ index ce89b65..1c003ec 100644
    // Close, and optionally truncate file to size
    virtual void Close(uint64_t truncate_size = 0) {}
 diff --git a/src/xenia/base/mapped_memory_posix.cc b/src/xenia/base/mapped_memory_posix.cc
-index 0f5a96b..1ee4b75 100644
+index 0f5a96ba6..1ee4b753f 100644
 --- a/src/xenia/base/mapped_memory_posix.cc
 +++ b/src/xenia/base/mapped_memory_posix.cc
 @@ -13,9 +13,13 @@
@@ -572,7 +572,7 @@ index 0f5a96b..1ee4b75 100644
    }
    return PosixMappedMemory::WrapFileDescriptor(file_descriptor, mode, offset,
 diff --git a/src/xenia/base/mapped_memory_win.cc b/src/xenia/base/mapped_memory_win.cc
-index 9c1e52b..0e86c57 100644
+index 9c1e52bdb..0e86c57c7 100644
 --- a/src/xenia/base/mapped_memory_win.cc
 +++ b/src/xenia/base/mapped_memory_win.cc
 @@ -99,6 +99,12 @@ class Win32MappedMemory : public MappedMemory {
@@ -589,7 +589,7 @@ index 9c1e52b..0e86c57 100644
      const std::filesystem::path& path, Mode mode, size_t offset,
      size_t length) {
 diff --git a/src/xenia/base/memory.h b/src/xenia/base/memory.h
-index a0dbe2a..a1a3654 100644
+index a0dbe2a7c..a1a365494 100644
 --- a/src/xenia/base/memory.h
 +++ b/src/xenia/base/memory.h
 @@ -60,6 +60,15 @@ size_t page_size();
@@ -609,7 +609,7 @@ index a0dbe2a..a1a3654 100644
    kNoAccess = 0,
    kReadOnly = 1 << 0,
 diff --git a/src/xenia/base/memory_posix.cc b/src/xenia/base/memory_posix.cc
-index a335d5e..f63c82f 100644
+index a335d5e4d..f63c82ffc 100644
 --- a/src/xenia/base/memory_posix.cc
 +++ b/src/xenia/base/memory_posix.cc
 @@ -90,10 +90,34 @@ void AndroidShutdown() {
@@ -651,7 +651,7 @@ index a335d5e..f63c82f 100644
  uint32_t ToPosixProtectFlags(PageAccess access) {
    switch (access) {
 diff --git a/src/xenia/base/mutex.cc b/src/xenia/base/mutex.cc
-index 848edcc..4daa5de 100644
+index 848edcc8c..4daa5de66 100644
 --- a/src/xenia/base/mutex.cc
 +++ b/src/xenia/base/mutex.cc
 @@ -10,7 +10,7 @@
@@ -833,7 +833,7 @@ index 848edcc..4daa5de 100644
  global_mutex_type& global_critical_region::mutex() {
    static global_mutex_type global_mutex;
 diff --git a/src/xenia/base/mutex.h b/src/xenia/base/mutex.h
-index 3c34646..bd96237 100644
+index 3c34646c7..bd96237e9 100644
 --- a/src/xenia/base/mutex.h
 +++ b/src/xenia/base/mutex.h
 @@ -83,7 +83,7 @@ class xe_unlikely_mutex {
@@ -902,7 +902,7 @@ index 3c34646..bd96237 100644
  // Generic owner-tracking recursive mutex for platforms without a fast-path
  // implementation. The guest scheduler's preempt deferral and I/O-offload
 diff --git a/src/xenia/base/platform.h b/src/xenia/base/platform.h
-index 39de683..ba44b67 100644
+index 39de6837e..ba44b677c 100644
 --- a/src/xenia/base/platform.h
 +++ b/src/xenia/base/platform.h
 @@ -37,6 +37,11 @@
@@ -918,7 +918,7 @@ index 39de683..ba44b67 100644
  #error Unsupported target OS.
  #endif
 diff --git a/src/xenia/base/profiling.cc b/src/xenia/base/profiling.cc
-index 5088901..87b96ed 100644
+index 508890179..87b96ed6d 100644
 --- a/src/xenia/base/profiling.cc
 +++ b/src/xenia/base/profiling.cc
 @@ -14,6 +14,7 @@
@@ -938,7 +938,7 @@ index 5088901..87b96ed 100644
  #include "xenia/base/assert.h"
  #include "xenia/base/cvar.h"
 diff --git a/src/xenia/base/threading.h b/src/xenia/base/threading.h
-index ad73123..e1e1ac7 100644
+index ad73123f1..e1e1ac747 100644
 --- a/src/xenia/base/threading.h
 +++ b/src/xenia/base/threading.h
 @@ -462,6 +462,10 @@ class Thread : public WaitHandle {
@@ -953,7 +953,7 @@ index ad73123..e1e1ac7 100644
    // Returns the ID of the thread.
    virtual uint32_t system_id() const = 0;
 diff --git a/src/xenia/base/threading_fiber.cc b/src/xenia/base/threading_fiber.cc
-index 868a331..538de7f 100644
+index 868a331a0..538de7fdf 100644
 --- a/src/xenia/base/threading_fiber.cc
 +++ b/src/xenia/base/threading_fiber.cc
 @@ -15,6 +15,7 @@
@@ -1026,7 +1026,7 @@ index 868a331..538de7f 100644
    munmap(s.base, s.total);
  #endif
 diff --git a/src/xenia/base/threading_posix.cc b/src/xenia/base/threading_posix.cc
-index b02ac0c..4825a80 100644
+index b02ac0c9d..4825a8089 100644
 --- a/src/xenia/base/threading_posix.cc
 +++ b/src/xenia/base/threading_posix.cc
 @@ -67,14 +67,31 @@ DEFINE_bool(wfe_precise_sleep, false,
@@ -1237,7 +1237,7 @@ index b02ac0c..4825a80 100644
          auto& condition =
              static_cast<PosixCondition<Thread>&>(current_thread_->condition());
 diff --git a/src/xenia/cpu/backend/code_cache_base.h b/src/xenia/cpu/backend/code_cache_base.h
-index 13583c5..8ed0b9c 100644
+index 13583c50f..8ed0b9ce9 100644
 --- a/src/xenia/cpu/backend/code_cache_base.h
 +++ b/src/xenia/cpu/backend/code_cache_base.h
 @@ -617,7 +617,14 @@ class CodeCacheBase : public CodeCache {
@@ -1256,7 +1256,7 @@ index 13583c5..8ed0b9c 100644
    static_assert(kGeneratedCodeSize < 0x80000000);
    static_assert(kGeneratedCodeExecuteBase + kGeneratedCodeSize <
 diff --git a/src/xenia/cpu/thread.cc b/src/xenia/cpu/thread.cc
-index 8a3d4b8..1c9613c 100644
+index 8a3d4b8d3..1c9613cb6 100644
 --- a/src/xenia/cpu/thread.cc
 +++ b/src/xenia/cpu/thread.cc
 @@ -13,7 +13,7 @@
@@ -1269,7 +1269,7 @@ index 8a3d4b8..1c9613c 100644
  Thread::Thread() {}
  Thread::~Thread() {}
 diff --git a/src/xenia/cpu/thread.h b/src/xenia/cpu/thread.h
-index 4878e97..d93d10e 100644
+index 4878e9725..d93d10ec4 100644
 --- a/src/xenia/cpu/thread.h
 +++ b/src/xenia/cpu/thread.h
 @@ -40,7 +40,8 @@ class Thread {
@@ -1283,10 +1283,10 @@ index 4878e97..d93d10e 100644
    ThreadState* thread_state_ = nullptr;
    std::unique_ptr<xe::threading::Thread> thread_ = nullptr;
 diff --git a/src/xenia/cpu/xex_module.cc b/src/xenia/cpu/xex_module.cc
-index 6d4a81b..e60dafc 100644
+index 2353ed14e..12eb382c2 100644
 --- a/src/xenia/cpu/xex_module.cc
 +++ b/src/xenia/cpu/xex_module.cc
-@@ -1490,6 +1490,11 @@ void XexInfoCache::Init(XexModule* xexmod) {
+@@ -1464,6 +1464,11 @@ void XexInfoCache::Init(XexModule* xexmod) {
  
    infocache_path.append(xexmod->image_sha_str_);
  
@@ -1298,7 +1298,7 @@ index 6d4a81b..e60dafc 100644
    std::filesystem::create_directories(infocache_path);
    infocache_path.append("executable_addr_flags.bin");
  
-@@ -1531,6 +1536,11 @@ void XexInfoCache::Init(XexModule* xexmod) {
+@@ -1505,6 +1510,11 @@ void XexInfoCache::Init(XexModule* xexmod) {
        try_open();
      }
    }
@@ -1311,7 +1311,7 @@ index 6d4a81b..e60dafc 100644
  InfoCacheFlags* XexModule::GetInstructionAddressFlags(uint32_t guest_addr) {
    if (guest_addr < low_address_ || guest_addr > high_address_) {
 diff --git a/src/xenia/cpu/xex_module.h b/src/xenia/cpu/xex_module.h
-index 36156c8..6c120ed 100644
+index 36156c80c..6c120eda9 100644
 --- a/src/xenia/cpu/xex_module.h
 +++ b/src/xenia/cpu/xex_module.h
 @@ -54,8 +54,8 @@ static_assert(sizeof(InfoCacheFlags) == 4,
@@ -1326,7 +1326,7 @@ index 36156c8..6c120ed 100644
  
  struct XexInfoCache {
 diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
-index ed9bb6b..5ed344e 100644
+index 3984cd9d6..3ee0b21a7 100644
 --- a/src/xenia/emulator.cc
 +++ b/src/xenia/emulator.cc
 @@ -13,6 +13,19 @@
@@ -1349,7 +1349,7 @@ index ed9bb6b..5ed344e 100644
  #include "config.h"
  #include "third_party/fmt/include/fmt/format.h"
  #include "xenia/apu/audio_system.h"
-@@ -596,13 +609,22 @@ void Emulator::SetPersistentEmulatorFlags(uint64_t new_flags) {
+@@ -598,13 +611,22 @@ void Emulator::SetPersistentEmulatorFlags(uint64_t new_flags) {
  
  X_STATUS Emulator::MountPath(const std::filesystem::path& path,
                               const std::string_view mount_path) {
@@ -1373,7 +1373,7 @@ index ed9bb6b..5ed344e 100644
    if (!file_system_->RegisterDevice(std::move(device))) {
      XELOGE("Unable to register the input file to {}.", mount_path);
      return X_STATUS_NO_SUCH_FILE;
-@@ -622,27 +644,30 @@ X_STATUS Emulator::MountPath(const std::filesystem::path& path,
+@@ -624,27 +646,30 @@ X_STATUS Emulator::MountPath(const std::filesystem::path& path,
  
  Emulator::FileSignatureType Emulator::GetFileSignature(
      const std::filesystem::path& path) {
@@ -1410,7 +1410,7 @@ index ed9bb6b..5ed344e 100644
    switch (magic_value) {
      case xe::cpu::kXEX0Signature:
        return FileSignatureType::XEX0;
-@@ -678,10 +703,10 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
+@@ -680,10 +705,10 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
      return FileSignatureType::EXE;
    }
  
@@ -1425,7 +1425,7 @@ index ed9bb6b..5ed344e 100644
  
    magic_value =
        make_fourcc(file_magic[0], file_magic[1], file_magic[2], file_magic[3]);
-@@ -690,13 +715,10 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
+@@ -692,13 +717,10 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
      return FileSignatureType::ZAR;
    }
  
@@ -1443,7 +1443,7 @@ index ed9bb6b..5ed344e 100644
      return FileSignatureType::XISO;
    }
  
-@@ -706,10 +728,10 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
+@@ -708,10 +730,10 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
  
  // Whether a disc image holds an original Xbox game rather than an Xbox 360
  // one, from the executables in its root.
@@ -1457,7 +1457,7 @@ index ed9bb6b..5ed344e 100644
  }
  
  X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
-@@ -727,6 +749,8 @@ X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
+@@ -729,6 +751,8 @@ X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
  
    X_STATUS mount_result = X_STATUS_SUCCESS;
  
@@ -1466,7 +1466,7 @@ index ed9bb6b..5ed344e 100644
    switch (GetFileSignature(path)) {
      case FileSignatureType::XEX0:
      case FileSignatureType::XEXQ:
-@@ -1814,6 +1838,12 @@ const std::filesystem::path Emulator::GetNewDiscPath(
+@@ -1816,6 +1840,12 @@ const std::filesystem::path Emulator::GetNewDiscPath(
    if (use_file_picker && display_window_) {
      display_window_->app_context().CallInUIThreadSynchronous([&]() {
        auto file_picker = xe::ui::FilePicker::Create();
@@ -1479,7 +1479,7 @@ index ed9bb6b..5ed344e 100644
        file_picker->set_mode(ui::FilePicker::Mode::kOpen);
        file_picker->set_type(ui::FilePicker::Type::kFile);
        file_picker->set_multi_selection(false);
-@@ -2032,6 +2062,58 @@ bool Emulator::ExceptionCallback(Exception* ex) {
+@@ -2034,6 +2064,58 @@ bool Emulator::ExceptionCallback(Exception* ex) {
    } else if (ex->code() == Exception::Code::kIllegalInstruction) {
      crash_msg.append("Illegal Instruction\n");
    }
@@ -1539,7 +1539,7 @@ index ed9bb6b..5ed344e 100644
    for (int i = 0; i < 32; i++) {
      crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
 diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
-index 4bfd8c3..4256ac6 100644
+index c9bac1689..38fdfe4b0 100644
 --- a/src/xenia/gpu/command_processor.cc
 +++ b/src/xenia/gpu/command_processor.cc
 @@ -8,6 +8,7 @@
@@ -1629,7 +1629,7 @@ index 4bfd8c3..4256ac6 100644
      default:
        break;
    }
-@@ -488,6 +531,11 @@ void CommandProcessor::ThrottlePresentation() {
+@@ -498,6 +541,11 @@ void CommandProcessor::SetTitleStateSuffix(std::string suffix) {
  }
  
  void CommandProcessor::WorkerThreadMain() {
@@ -1641,7 +1641,7 @@ index 4bfd8c3..4256ac6 100644
    if (!SetupContext()) {
      xe::FatalError("Unable to setup command processor internal state");
      return;
-@@ -506,18 +554,47 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -517,18 +565,47 @@ void CommandProcessor::WorkerThreadMain() {
        // We've run out of commands to execute.
        // We spin here waiting for new ones, as the overhead of waiting on our
        // event is too high.
@@ -1690,7 +1690,7 @@ index 4bfd8c3..4256ac6 100644
            }
          } else {
            xe::threading::MaybeYield();
-@@ -528,6 +605,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -539,6 +616,7 @@ void CommandProcessor::WorkerThreadMain() {
                 (write_ptr_index == 0xBAADF00D ||
                  read_ptr_index_ == write_ptr_index));
        ReturnFromWait();
@@ -1698,7 +1698,7 @@ index 4bfd8c3..4256ac6 100644
        if (!worker_running_ || !pending_fns_.empty()) {
          continue;
        }
-@@ -553,6 +631,184 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -565,6 +643,184 @@ void CommandProcessor::WorkerThreadMain() {
    ShutdownContext();
  }
  
@@ -1883,7 +1883,7 @@ index 4bfd8c3..4256ac6 100644
  void CommandProcessor::Pause() {
    if (paused_) {
      return;
-@@ -742,6 +998,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
+@@ -754,6 +1010,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
        uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
        uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
        xe::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
@@ -1893,7 +1893,7 @@ index 4bfd8c3..4256ac6 100644
      }
    } else {
      switch (index) {
-@@ -1034,6 +1293,12 @@ void CommandProcessor::PrepareForWait() {
+@@ -1046,6 +1305,12 @@ void CommandProcessor::PrepareForWait() {
    trace_writer_.Flush();
    if (zpd_mode_ == ZPDMode::kStrict && zpd_awaited_report_count_) {
      PrepareZPDForWait();
@@ -1906,7 +1906,7 @@ index 4bfd8c3..4256ac6 100644
    }
    if (viz_pending_resolves_) {
      PollCompletedSubmission();
-@@ -1251,7 +1516,7 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1263,7 +1528,7 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
  
    ZPDReport& report = zpd_current_report_;
    report.address = report_address;
@@ -1915,7 +1915,7 @@ index 4bfd8c3..4256ac6 100644
      // See EVENT_WRITE_ZPD for additional information on the pending sentinel.
      const uint32_t kPendingSentinel = xe::byte_swap(0xFFFFFEEDu);
      const auto* guest =
-@@ -1279,6 +1544,8 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1291,6 +1556,8 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
      WriteZPDReport(report_address, report.speculative_value);
    }
    zpd_awaited_report_count_ += report.awaited;
@@ -1924,7 +1924,7 @@ index 4bfd8c3..4256ac6 100644
    zpd_reports_.push_back(report);
    zpd_stats_.reports_queued++;
  
-@@ -1328,8 +1595,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
+@@ -1340,8 +1607,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
    if (result == QueryOpenResult::kPoolExhausted) {
      zpd_stats_.pool_exhausted++;
    }
@@ -1934,7 +1934,7 @@ index 4bfd8c3..4256ac6 100644
      // Fast modes favor forward progress over accuracy. Report at least one
      // passing sample instead of waiting for a slot to become available.
      if (report) {
-@@ -1476,10 +1742,30 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
+@@ -1488,10 +1754,30 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
    return nullptr;
  }
  
@@ -1967,7 +1967,7 @@ index 4bfd8c3..4256ac6 100644
        awaited_handle = report.handle;
        break;
      }
-@@ -1531,13 +1817,22 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1543,13 +1829,22 @@ void CommandProcessor::PumpPendingRetire() {
        if (zpd_mode_ == ZPDMode::kStrict) {
          break;
        }
@@ -1991,7 +1991,7 @@ index 4bfd8c3..4256ac6 100644
          break;
        }
        front.delta.z_pass = std::max<uint64_t>(front.delta.z_pass, 1);
-@@ -1547,6 +1842,21 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1559,6 +1854,21 @@ void CommandProcessor::PumpPendingRetire() {
      zpd_pending_retire_start_ms_ = 0;
  
      zpd_sample_counter_ += front.delta;
@@ -2014,7 +2014,7 @@ index 4bfd8c3..4256ac6 100644
        if (fast_zpd_report_cached_deltas_.size() >= kFastZPDCacheMaxEntries &&
            !fast_zpd_report_cached_deltas_.count(front.address)) {
 diff --git a/src/xenia/gpu/command_processor.h b/src/xenia/gpu/command_processor.h
-index 96d842b..22bdbc2 100644
+index 3057e6bc9..8ca2216c8 100644
 --- a/src/xenia/gpu/command_processor.h
 +++ b/src/xenia/gpu/command_processor.h
 @@ -53,6 +53,9 @@ enum class ZPDMode {
@@ -2063,7 +2063,7 @@ index 96d842b..22bdbc2 100644
  
    Shader* active_vertex_shader() const { return active_vertex_shader_; }
    Shader* active_pixel_shader() const { return active_pixel_shader_; }
-@@ -196,6 +220,10 @@ class CommandProcessor {
+@@ -199,6 +223,10 @@ class CommandProcessor {
        std::function<void()> completion_callback = nullptr);
  
    virtual void RequestFrameTrace(const std::filesystem::path& root_path);
@@ -2074,7 +2074,7 @@ index 96d842b..22bdbc2 100644
    virtual void BeginTracing(const std::filesystem::path& root_path);
    virtual void EndTracing();
    // Safe from any thread, the writer is closed on the next swap.
-@@ -216,6 +244,9 @@ class CommandProcessor {
+@@ -219,6 +247,9 @@ class CommandProcessor {
    // register write-back - by backends that must have submitted what the guest
    // may then touch (see command_processor_resolve_readwatch.inc).
    virtual void SubmitResolvesForGuestSync() {}
@@ -2084,7 +2084,7 @@ index 96d842b..22bdbc2 100644
  
    void RestoreRegisters(uint32_t first_register,
                          const uint32_t* register_values,
-@@ -393,6 +424,8 @@ class CommandProcessor {
+@@ -398,6 +429,8 @@ class CommandProcessor {
      // For strict, when a report holds the D3D sentinel.
      // Only these are worth blocking a wait for.
      bool awaited = false;
@@ -2093,7 +2093,7 @@ index 96d842b..22bdbc2 100644
    };
  
    static constexpr uint64_t kInvalidVIZGeneration = 0;
-@@ -491,7 +524,22 @@ class CommandProcessor {
+@@ -496,7 +529,22 @@ class CommandProcessor {
    // order, so the queue is indexed by the front handle.
    ZPDReport* FindZPDReport(ReportHandle report_handle);
    // Handles a strict report the guest is waiting on while the ring is empty.
@@ -2117,7 +2117,7 @@ index 96d842b..22bdbc2 100644
    // Called from PrepareForWait and submission boundaries so retired reports
    // reach the guest before it loops again. Fast modes give up on a stuck front
    // report after kFastZPDRetireDeadlineMs.
-@@ -705,6 +753,8 @@ class CommandProcessor {
+@@ -710,6 +758,8 @@ class CommandProcessor {
    std::vector<uint32_t> me_bin_;
  
    uint32_t counter_ = 0;
@@ -2126,7 +2126,7 @@ index 96d842b..22bdbc2 100644
  
    uint32_t primary_buffer_ptr_ = 0;
    uint32_t primary_buffer_size_ = 0;
-@@ -713,6 +763,39 @@ class CommandProcessor {
+@@ -718,6 +768,39 @@ class CommandProcessor {
    uint32_t read_ptr_update_freq_ = 0;
    uint32_t read_ptr_writeback_ptr_ = 0;
  
@@ -2167,7 +2167,7 @@ index 96d842b..22bdbc2 100644
    std::atomic<uint32_t> write_ptr_index_;
  
 diff --git a/src/xenia/gpu/command_processor_readback_staging.inc b/src/xenia/gpu/command_processor_readback_staging.inc
-index 484b6d2..452d8f4 100644
+index 484b6d2e1..452d8f4c2 100644
 --- a/src/xenia/gpu/command_processor_readback_staging.inc
 +++ b/src/xenia/gpu/command_processor_readback_staging.inc
 @@ -113,6 +113,7 @@ void ReadbackStagingToGuestRam(const ReadbackStagingBuffer& buffer,
@@ -2179,7 +2179,7 @@ index 484b6d2..452d8f4 100644
    uint8_t* source = static_cast<uint8_t*>(buffer.mapped) + source_offset;
    // vastcpy's non-temporal stores need both pointers and the length to be
 diff --git a/src/xenia/gpu/command_processor_resolve_readwatch.inc b/src/xenia/gpu/command_processor_resolve_readwatch.inc
-index 8c2e6f6..62fe0ca 100644
+index 8c2e6f64d..62fe0ca7f 100644
 --- a/src/xenia/gpu/command_processor_resolve_readwatch.inc
 +++ b/src/xenia/gpu/command_processor_resolve_readwatch.inc
 @@ -26,6 +26,10 @@
@@ -2418,7 +2418,7 @@ index 8c2e6f6..62fe0ca 100644
  uint32_t resolve_frame_index_ = 0;
  // Handle from RegisterPhysicalMemoryReadCallback, or null when not armed.
 diff --git a/src/xenia/gpu/d3d12/d3d12_command_processor.cc b/src/xenia/gpu/d3d12/d3d12_command_processor.cc
-index 43ae5a9..8737352 100644
+index e35baf118..2423e1a92 100644
 --- a/src/xenia/gpu/d3d12/d3d12_command_processor.cc
 +++ b/src/xenia/gpu/d3d12/d3d12_command_processor.cc
 @@ -8,6 +8,7 @@
@@ -2430,10 +2430,10 @@ index 43ae5a9..8737352 100644
  #include <cstdarg>
  #include <cstring>
 diff --git a/src/xenia/gpu/d3d12/d3d12_command_processor.h b/src/xenia/gpu/d3d12/d3d12_command_processor.h
-index 3ea94fd..f9153b1 100644
+index 4dfa6372b..83b8cebfb 100644
 --- a/src/xenia/gpu/d3d12/d3d12_command_processor.h
 +++ b/src/xenia/gpu/d3d12/d3d12_command_processor.h
-@@ -376,6 +376,10 @@ class D3D12CommandProcessor final : public CommandProcessor {
+@@ -383,6 +383,10 @@ class D3D12CommandProcessor final : public CommandProcessor {
    bool EndResolveSubmission() {
      return !submission_open_ || EndSubmission(false);
    }
@@ -2445,19 +2445,19 @@ index 3ea94fd..f9153b1 100644
      return resolve_submitted_through_.load(std::memory_order_acquire);
    }
 diff --git a/src/xenia/gpu/draw_util.cc b/src/xenia/gpu/draw_util.cc
-index 916814c..a3bca41 100644
+index 9c93ee3b1..ed3f36d4f 100644
 --- a/src/xenia/gpu/draw_util.cc
 +++ b/src/xenia/gpu/draw_util.cc
-@@ -1043,10 +1043,16 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
- 
+@@ -1269,10 +1269,16 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
    if (rb_copy_control.copy_command != xenos::CopyCommand::kRaw &&
-       rb_copy_control.copy_command != xenos::CopyCommand::kConvert) {
+       rb_copy_control.copy_command != xenos::CopyCommand::kConvert &&
+       !is_convert_to_1111) {
 -    XELOGE(
 -        "Unsupported resolve copy command {}. Report the game to Xenia "
 -        "developers",
 -        uint32_t(rb_copy_control.copy_command));
 +    // Xbox360PS5: a title's Kinect body tracking repeats this several times a
-+    // sensor frame (copy command 2 in 4E4D084E), so only a few are logged.
++    // sensor frame, so only a few are logged.
 +    static std::atomic<uint32_t> refused{0};
 +    const uint32_t count = refused.fetch_add(1);
 +    if (count < 4 || !(count & 0xFFF)) {
@@ -2469,7 +2469,7 @@ index 916814c..a3bca41 100644
      assert_always();
      return false;
    }
-@@ -1056,7 +1062,13 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
+@@ -1282,7 +1288,13 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
    // D3D9 HACK: Vertices to use are always in vf0, and are written by the CPU.
    xenos::xe_gpu_vertex_fetch_t fetch = regs.GetVertexFetch(0);
    if (fetch.type != xenos::FetchConstantType::kVertex || fetch.size != 3 * 2) {
@@ -2485,7 +2485,7 @@ index 916814c..a3bca41 100644
      return false;
    }
 diff --git a/src/xenia/gpu/gpu_flags.cc b/src/xenia/gpu/gpu_flags.cc
-index 7a9a873..d24d9da 100644
+index bada58008..bdb29a6c3 100644
 --- a/src/xenia/gpu/gpu_flags.cc
 +++ b/src/xenia/gpu/gpu_flags.cc
 @@ -9,6 +9,8 @@
@@ -2556,7 +2556,7 @@ index 7a9a873..d24d9da 100644
  DEFINE_bool(
      gpu_debug_markers, false,
 diff --git a/src/xenia/gpu/gpu_flags.h b/src/xenia/gpu/gpu_flags.h
-index be4eb2e..e7afe44 100644
+index d20f38f1f..5e5f4e429 100644
 --- a/src/xenia/gpu/gpu_flags.h
 +++ b/src/xenia/gpu/gpu_flags.h
 @@ -11,6 +11,67 @@
@@ -2656,7 +2656,7 @@ index be4eb2e..e7afe44 100644
  DECLARE_int32(anisotropic_override);
  
 diff --git a/src/xenia/gpu/graphics_system.cc b/src/xenia/gpu/graphics_system.cc
-index b10f87b..67650c7 100644
+index f0652b6b5..05f252b70 100644
 --- a/src/xenia/gpu/graphics_system.cc
 +++ b/src/xenia/gpu/graphics_system.cc
 @@ -9,6 +9,12 @@
@@ -2693,21 +2693,32 @@ index b10f87b..67650c7 100644
                  const uint64_t current_time = Clock::QueryGuestTickCount();
                  const uint64_t time_delta = current_time - last_frame_time;
  
-@@ -217,8 +228,12 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
+@@ -217,14 +228,19 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
    frame_limiter_worker_thread_->set_can_debugger_suspend(true);
    frame_limiter_worker_thread_->set_name("GPU Frame limiter");
    frame_limiter_worker_thread_->Create();
+-  // Linux only sleeps, so kLowest (nice 15) would just add wake-up latency.
 +  // PS5X360E: guest vblank interrupts pace the game; a late wake-up is a late
 +  // frame. The thread sleeps nearly all the time.
-   frame_limiter_worker_thread_->thread()->set_priority(
++  // Otherwise as Edge: Linux only sleeps, so kLowest (nice 15) would just add
++  // wake-up latency.
+ #if XE_PLATFORM_LINUX
+-  frame_limiter_worker_thread_->thread()->set_priority(
+-      threading::ThreadPriority::kNormal);
++  constexpr auto kVblankPriority = threading::ThreadPriority::kNormal;
+ #else
+-  frame_limiter_worker_thread_->thread()->set_priority(
 -      threading::ThreadPriority::kLowest);
++  constexpr auto kVblankPriority = threading::ThreadPriority::kLowest;
+ #endif
++  frame_limiter_worker_thread_->thread()->set_priority(
 +      cvars::guest_vblank_high_priority
 +          ? threading::ThreadPriority::kAboveNormal
-+          : threading::ThreadPriority::kLowest);
++          : kVblankPriority);
    if (cvars::trace_gpu_stream) {
      BeginTracing();
    }
-@@ -388,12 +403,20 @@ void GraphicsSystem::MarkVblank() {
+@@ -400,12 +416,20 @@ void GraphicsSystem::MarkVblank() {
    // Capture vblank cadence so D1MODE_V_COUNTER tracks the actual rate
    // (50Hz, 60Hz, or uncapped ~1ms), not just the configured one.
    const uint64_t now = Clock::QueryGuestTickCount();
@@ -2729,7 +2740,7 @@ index b10f87b..67650c7 100644
    command_processor_->increment_counter();
  
 diff --git a/src/xenia/gpu/pm4_command_processor_implement.h b/src/xenia/gpu/pm4_command_processor_implement.h
-index b5b0059..d908617 100644
+index ee3cd5e8a..21dbfd399 100644
 --- a/src/xenia/gpu/pm4_command_processor_implement.h
 +++ b/src/xenia/gpu/pm4_command_processor_implement.h
 @@ -86,6 +86,13 @@ void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
@@ -2773,7 +2784,7 @@ index b5b0059..d908617 100644
      bool result = false;
      switch (opcode) {
        case PM4_ME_INIT:
-@@ -754,6 +774,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_INTERRUPT(
+@@ -761,6 +781,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_INTERRUPT(
  
    // generate interrupt from the command stream
    uint32_t cpu_mask = reader_.ReadAndSwap<uint32_t>();
@@ -2781,7 +2792,7 @@ index b5b0059..d908617 100644
  
    if (COMMAND_PROCESSOR::debug_markers_enabled()) {
      COMMAND_PROCESSOR::InsertDebugMarker("PM4_INTERRUPT: cpu_mask=0x%02X",
-@@ -798,6 +819,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_XE_SWAP(uint32_t packet,
+@@ -805,6 +826,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_XE_SWAP(uint32_t packet,
                                           frontbuffer_height);
    }
  
@@ -2790,7 +2801,7 @@ index b5b0059..d908617 100644
    COMMAND_PROCESSOR::IssueSwap(frontbuffer_ptr, frontbuffer_width,
                                 frontbuffer_height);
  
-@@ -870,6 +893,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -877,6 +900,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
                  : register_file_->values[poll_reg_addr];
  
    bool matched = false;
@@ -2801,7 +2812,7 @@ index b5b0059..d908617 100644
  
    do {
      uint32_t value = value_ref;
-@@ -895,6 +922,74 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -902,6 +929,74 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
      matched = MatchValueAndRef(value & mask, ref, wait_info);
  
      if (!matched) {
@@ -2876,7 +2887,7 @@ index b5b0059..d908617 100644
        // Wait using the duration specified by the guest.
        if (wait >= 0x100) {
          PrepareForWait();
-@@ -921,6 +1016,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -928,6 +1023,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
        }
      }
    } while (!matched);
@@ -2893,7 +2904,7 @@ index b5b0059..d908617 100644
  
    return true;
  }
-@@ -978,6 +1083,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
+@@ -985,6 +1090,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
  
    auto endianness = static_cast<xenos::Endian>(mem_addr & 0x3);
    mem_addr &= ~0x3;
@@ -2901,7 +2912,7 @@ index b5b0059..d908617 100644
    reg_val = GpuSwap(reg_val, endianness);
    xe::store(memory_->TranslatePhysical(mem_addr), reg_val);
    trace_writer_.WriteMemoryWrite(CpuToGpu(mem_addr), 4);
-@@ -997,6 +1103,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
+@@ -1004,6 +1110,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
  
    for (uint32_t i = 0; i < count - 1; i++) {
      uint32_t write_data = reader_.ReadAndSwap<uint32_t>();
@@ -2911,7 +2922,7 @@ index b5b0059..d908617 100644
  
      auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
      auto addr = write_addr & ~0x3;
-@@ -1042,6 +1151,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
+@@ -1049,6 +1158,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
      value = register_file_->values[poll_reg_addr];
    }
    bool matched = MatchValueAndRef(value & mask, ref, wait_info);
@@ -2920,7 +2931,7 @@ index b5b0059..d908617 100644
  
    if (matched) {
      // Write.
-@@ -1081,7 +1192,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
+@@ -1088,7 +1199,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
      // Just an event flag? Where does this write?
    } else {
      // Write to an address.
@@ -2939,7 +2950,7 @@ index b5b0059..d908617 100644
      reader_.AdvanceRead((count - 1) * sizeof(uint32_t));
    }
    return true;
-@@ -1116,6 +1237,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
+@@ -1123,6 +1244,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
      // Write value.
      data_value = value;
    }
@@ -2947,7 +2958,7 @@ index b5b0059..d908617 100644
    auto endianness = static_cast<xenos::Endian>(address & 0x3);
    address &= ~0x3;
    data_value = GpuSwap(data_value, endianness);
-@@ -1359,10 +1481,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
+@@ -1366,10 +1488,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
        }
  
        if (!draw_succeeded) {
@@ -2969,19 +2980,28 @@ index b5b0059..d908617 100644
      }
    }
 diff --git a/src/xenia/gpu/shader_storage.h b/src/xenia/gpu/shader_storage.h
-index b9480c6..c7bbc5c 100644
+index 5e1c90cef..7746c72f9 100644
 --- a/src/xenia/gpu/shader_storage.h
 +++ b/src/xenia/gpu/shader_storage.h
-@@ -348,7 +348,7 @@ class ShaderStorageWriter {
+@@ -12,6 +12,7 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <cerrno>
+ #include <condition_variable>
+ #include <cstdint>
+ #include <cstdio>
+@@ -356,7 +357,8 @@ class ShaderStorageWriter {
          return false;
        }
      }
--    XELOGI("Loaded {} shaders from storage", shaders_loaded);
-+    XELOGW("Shader storage: loaded {} shaders from storage", shaders_loaded);
+-    XELOGI("Loaded {} shaders from storage", shaders_loaded.size());
++    XELOGW("Shader storage: loaded {} shaders from storage",
++           shaders_loaded.size());
  
      // Collect shader translations needed from pipeline descriptions.
      std::set<std::pair<uint64_t, uint64_t>> translations_needed;
-@@ -360,7 +360,7 @@ class ShaderStorageWriter {
+@@ -368,7 +370,7 @@ class ShaderStorageWriter {
                                      desc.description.pixel_shader_modification);
        }
      }
@@ -2989,9 +3009,101 @@ index b9480c6..c7bbc5c 100644
 +    XELOGW("Shader storage: loaded {} pipeline descriptions, {} shader translations needed",
             pipeline_descriptions_out.size(), translations_needed.size());
  
-     // Translate shaders (callback handles parallel translation).
+     AnalyzeStoredShaders(shaders_loaded, translations_needed);
+@@ -536,16 +538,54 @@ class ShaderStorageWriter {
+     bool flush_shaders = false;
+     bool flush_pipelines = false;
+ 
++    // PS5X360E: the files were last read (loading, then truncating to the
++    // valid entries), and C requires a seek between reading and writing a
++    // stream unless the read stopped at end of file. The pipeline storage is
++    // read to its last entry exactly, without reaching end of file, and on the
++    // PS5 every write after that failed: the file never grew in a whole play
++    // session (1367 "Failed to write pipeline description" in one). Each file
++    // is positioned at its end before its first write and again after a
++    // failure, and failures are reported once with the reason.
++    bool shader_seek_needed = true;
++    bool pipeline_seek_needed = true;
++    uint64_t shader_write_failures = 0;
++    uint64_t pipeline_write_failures = 0;
++    auto prepare_write = [](FILE* file, bool& seek_needed) {
++      if (seek_needed) {
++        clearerr(file);
++        xe::filesystem::Seek(file, 0, SEEK_END);
++        seek_needed = false;
++      }
++    };
++    auto write_failed = [](FILE* file, bool& seek_needed, uint64_t& failures,
++                           const char* what) {
++      const int error = errno;
++      if (!failures++) {
++        XELOGE("Shader storage: writing {} failed: {} (errno {})", what,
++               std::strerror(error), error);
++      } else if (!(failures & (failures - 1))) {
++        XELOGE("Shader storage: writing {} failed {} times", what, failures);
++      }
++      clearerr(file);
++      seek_needed = true;
++    };
++
+     while (true) {
+       if (flush_shaders) {
+         flush_shaders = false;
+         assert_not_null(shader_storage_file_);
+-        fflush(shader_storage_file_);
++        if (fflush(shader_storage_file_)) {
++          write_failed(shader_storage_file_, shader_seek_needed,
++                       shader_write_failures, "shaders (flush)");
++        }
+       }
+       if (flush_pipelines) {
+         flush_pipelines = false;
+         assert_not_null(pipeline_storage_file_);
+-        fflush(pipeline_storage_file_);
++        if (fflush(pipeline_storage_file_)) {
++          write_failed(pipeline_storage_file_, pipeline_seek_needed,
++                       pipeline_write_failures, "pipelines (flush)");
++        }
+       }
+ 
+       const Shader* shader = nullptr;
+@@ -584,9 +624,11 @@ class ShaderStorageWriter {
+         shader_header.ucode_dword_count = shader->ucode_dword_count();
+         shader_header.type = shader->type();
+         assert_not_null(shader_storage_file_);
++        prepare_write(shader_storage_file_, shader_seek_needed);
+         if (fwrite(&shader_header, sizeof(shader_header), 1,
+                    shader_storage_file_) != 1) {
+-          XELOGE("Failed to write shader header to storage");
++          write_failed(shader_storage_file_, shader_seek_needed,
++                       shader_write_failures, "a shader header");
+         } else if (shader_header.ucode_dword_count) {
+           ucode_guest_endian.resize(shader_header.ucode_dword_count);
+           // Need to swap because the hash is calculated for the shader with
+@@ -596,16 +638,19 @@ class ShaderStorageWriter {
+           if (fwrite(ucode_guest_endian.data(),
+                      shader_header.ucode_dword_count * sizeof(uint32_t), 1,
+                      shader_storage_file_) != 1) {
+-            XELOGE("Failed to write shader ucode to storage");
++            write_failed(shader_storage_file_, shader_seek_needed,
++                         shader_write_failures, "shader ucode");
+           }
+         }
+       }
+ 
+       if (write_pipeline) {
+         assert_not_null(pipeline_storage_file_);
++        prepare_write(pipeline_storage_file_, pipeline_seek_needed);
+         if (fwrite(&pipeline_description, sizeof(pipeline_description), 1,
+                    pipeline_storage_file_) != 1) {
+-          XELOGE("Failed to write pipeline description to storage");
++          write_failed(pipeline_storage_file_, pipeline_seek_needed,
++                       pipeline_write_failures, "a pipeline description");
+         }
+       }
+     }
 diff --git a/src/xenia/gpu/shaders/resolve_downscale.cs.slang b/src/xenia/gpu/shaders/resolve_downscale.cs.slang
-index f40494f..d3acca6 100644
+index f40494f5a..d3acca6b9 100644
 --- a/src/xenia/gpu/shaders/resolve_downscale.cs.slang
 +++ b/src/xenia/gpu/shaders/resolve_downscale.cs.slang
 @@ -46,10 +46,15 @@ uint XeDownscaleScaledBlockByte(uint tile_src_base, uint tile_rel_bytes,
@@ -3046,7 +3158,7 @@ index f40494f..d3acca6 100644
        // 64bpp: one texel spans two contiguous output dwords.
        uint src_bytes = XeDownscaleScaledBlockByte(
 diff --git a/src/xenia/gpu/shared_memory.cc b/src/xenia/gpu/shared_memory.cc
-index 6aaeb76..496b35c 100644
+index 6aaeb76bd..496b35c80 100644
 --- a/src/xenia/gpu/shared_memory.cc
 +++ b/src/xenia/gpu/shared_memory.cc
 @@ -8,17 +8,34 @@
@@ -3328,7 +3440,7 @@ index 6aaeb76..496b35c 100644
    ReleaseTraceDownloadRanges();
    assert_true(trace_download_ranges_.empty());
 diff --git a/src/xenia/gpu/shared_memory.h b/src/xenia/gpu/shared_memory.h
-index 2fd3a0c..bb01e86 100644
+index 2fd3a0c49..bb01e860e 100644
 --- a/src/xenia/gpu/shared_memory.h
 +++ b/src/xenia/gpu/shared_memory.h
 @@ -10,6 +10,10 @@
@@ -3402,10 +3514,10 @@ index 2fd3a0c..bb01e86 100644
    bool EnsureHostGpuMemoryAllocated(uint32_t start, uint32_t length);
    uint32_t host_gpu_memory_sparse_granularity_log2_ = UINT32_MAX;
 diff --git a/src/xenia/gpu/spirv_shader_translator_fetch.cc b/src/xenia/gpu/spirv_shader_translator_fetch.cc
-index 372cbeb..3adaf6c 100644
+index f2ddc4f2f..4501a5a96 100644
 --- a/src/xenia/gpu/spirv_shader_translator_fetch.cc
 +++ b/src/xenia/gpu/spirv_shader_translator_fetch.cc
-@@ -2085,9 +2085,12 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+@@ -2097,9 +2097,12 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
              case xenos::FetchOpDimension::k2D: {
                if (instr.attributes.use_register_gradients) {
                  for (uint32_t i = 0; i < 2; ++i) {
@@ -3421,7 +3533,7 @@ index 372cbeb..3adaf6c 100644
                    spv::Id register_gradient_x =
                        builder_->createCompositeExtract(register_gradient_3d,
 diff --git a/src/xenia/gpu/texture_cache.cc b/src/xenia/gpu/texture_cache.cc
-index c6a2f08..302ece5 100644
+index c6a2f0850..302ece527 100644
 --- a/src/xenia/gpu/texture_cache.cc
 +++ b/src/xenia/gpu/texture_cache.cc
 @@ -9,6 +9,8 @@
@@ -3608,7 +3720,7 @@ index c6a2f08..302ece5 100644
    return true;
  }
 diff --git a/src/xenia/gpu/texture_cache.h b/src/xenia/gpu/texture_cache.h
-index e6b7d53..0f0eb95 100644
+index e6b7d535c..0f0eb959b 100644
 --- a/src/xenia/gpu/texture_cache.h
 +++ b/src/xenia/gpu/texture_cache.h
 @@ -362,9 +362,11 @@ class TextureCache {
@@ -3626,10 +3738,10 @@ index e6b7d53..0f0eb95 100644
      SharedMemory::WatchHandle base_watch_handle_ = nullptr;
      SharedMemory::WatchHandle mips_watch_handle_ = nullptr;
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index 76fc1a4..a87cad0 100644
+index b61995956..9719a39c8 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-@@ -8,7 +8,11 @@
+@@ -8,9 +8,14 @@
   */
  
  #include "xenia/gpu/vulkan/vulkan_command_processor.h"
@@ -3640,8 +3752,11 @@ index 76fc1a4..a87cad0 100644
 +#include <chrono>
  #include <cstdarg>
  #include <cstdint>
++#include <ctime>
  #include <cstring>
-@@ -19,6 +23,7 @@
+ 
+ #include "xenia/base/assert.h"
+@@ -18,6 +23,7 @@
  #include "xenia/base/logging.h"
  #include "xenia/base/math.h"
  #include "xenia/base/profiling.h"
@@ -3649,7 +3764,7 @@ index 76fc1a4..a87cad0 100644
  #include "xenia/gpu/draw_util.h"
  #include "xenia/gpu/gpu_flags.h"
  #include "xenia/gpu/packet_disassembler.h"
-@@ -40,6 +45,24 @@
+@@ -39,6 +45,34 @@
  DECLARE_bool(clear_memory_page_state);
  DECLARE_bool(gpu_debug_markers);
  DECLARE_bool(memexport_enable);
@@ -3660,6 +3775,16 @@ index 76fc1a4..a87cad0 100644
 +  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
 +                      std::chrono::steady_clock::now().time_since_epoch())
 +                      .count());
++}
++// CPU time of the calling thread, 0 where the platform has no such clock.
++uint64_t PerfThreadCpuNs() {
++#if XE_PLATFORM_LINUX || XE_PLATFORM_MAC
++  timespec ts;
++  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0) {
++    return uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec);
++  }
++#endif
++  return 0;
 +}
 +}  // namespace
 +
@@ -3674,7 +3799,7 @@ index 76fc1a4..a87cad0 100644
  DECLARE_bool(submit_on_primary_buffer_end);
  
  DEFINE_bool(
-@@ -49,10 +72,43 @@ DEFINE_bool(
+@@ -48,10 +82,43 @@ DEFINE_bool(
      "1.3 or VK_KHR_dynamic_rendering extension support.",
      "Vulkan");
  
@@ -3718,7 +3843,7 @@ index 76fc1a4..a87cad0 100644
  // Generated with `xb buildshaders`.
  namespace shaders {
  #include "xenia/gpu/shaders/bytecode/vulkan_spirv/apply_gamma_pwl_cs.h"
-@@ -191,6 +247,24 @@ void VulkanCommandProcessor::InitializeShaderStorage(
+@@ -190,6 +257,24 @@ void VulkanCommandProcessor::InitializeShaderStorage(
                                             std::move(completion_callback));
  }
  
@@ -3743,7 +3868,7 @@ index 76fc1a4..a87cad0 100644
  void VulkanCommandProcessor::RestoreEdramSnapshot(const void* snapshot) {
    // Starting a new frame because descriptors may be needed.
    if (!BeginSubmission(true)) {
-@@ -1642,8 +1716,29 @@ void VulkanCommandProcessor::ShutdownContext() {
+@@ -1641,8 +1726,29 @@ void VulkanCommandProcessor::ShutdownContext() {
  }
  
  void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
@@ -3773,7 +3898,7 @@ index 76fc1a4..a87cad0 100644
    if (index >= XE_GPU_REG_SHADER_CONSTANT_000_X &&
        index <= XE_GPU_REG_SHADER_CONSTANT_511_W) {
      if (frame_open_) {
-@@ -1916,8 +2011,14 @@ bool VulkanCommandProcessor::FaultCopyResolveToGuestRam(
+@@ -1915,8 +2021,14 @@ bool VulkanCommandProcessor::FaultCopyResolveToGuestRam(
    if (submit_result != VK_SUCCESS) {
      return false;
    }
@@ -3788,7 +3913,12 @@ index 76fc1a4..a87cad0 100644
    dfn.vkResetFences(device, 1, &resolve_fault_fence_);
    if (wait_result != VK_SUCCESS) {
      return false;
-@@ -1973,6 +2074,20 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -1968,10 +2080,25 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+                                        uint32_t frontbuffer_height) {
+   SCOPE_profile_cpu_f("gpu");
+   EndZPDFrame();
++  perf_thread_cpu_ns_.store(PerfThreadCpuNs(), std::memory_order_relaxed);
+ 
    // Before the presenter check, so the paths that return early end the frame
    // too.
    NoteResolveFrame();
@@ -3809,7 +3939,7 @@ index 76fc1a4..a87cad0 100644
  
    CollectCompletedGpuTimeQueries();
    static constexpr uint32_t kRenderPassWindowFrames = 60;
-@@ -2019,7 +2134,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2018,7 +2145,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
  
    auto aspect = graphics_system_->GetScaledAspectRatio();
  
@@ -3818,7 +3948,7 @@ index 76fc1a4..a87cad0 100644
        frontbuffer_width_scaled, frontbuffer_height_scaled, aspect.first,
        aspect.second,
        [this, frontbuffer_width_scaled, frontbuffer_height_scaled,
-@@ -2200,7 +2315,14 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2199,7 +2326,14 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
          uint32_t& gamma_ramp_frame_index_ref =
              use_pwl_gamma_ramp ? gamma_ramp_pwl_current_frame_
                                 : gamma_ramp_256_entry_table_current_frame_;
@@ -3834,7 +3964,7 @@ index 76fc1a4..a87cad0 100644
            constexpr uint32_t kGammaRampSize256EntryTable =
                sizeof(uint32_t) * 256;
            constexpr uint32_t kGammaRampSizePWL = sizeof(uint16_t) * 2 * 3 * 128;
-@@ -2571,12 +2693,18 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2570,12 +2704,18 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
          // Need to submit all the commands before giving the image back to the
          // presenter so it can submit its own commands for displaying it to the
          // queue, and also need to submit the release barrier.
@@ -3853,15 +3983,25 @@ index 76fc1a4..a87cad0 100644
    EndSubmission(true);
  }
  
-@@ -2587,6 +2715,7 @@ void VulkanCommandProcessor::OnPrimaryBufferEnd() {
+@@ -2586,6 +2726,7 @@ void VulkanCommandProcessor::OnPrimaryBufferEnd() {
  
    if (cvars::submit_on_primary_buffer_end && submission_open_ &&
-       !scratch_buffer_used_ && CanEndSubmissionImmediately()) {
+       !scratch_buffer_used_) {
 +    submit_reason_ = SubmitReason::kPrimaryBufferEnd;
      EndSubmission(false);
    }
  }
-@@ -3824,6 +3953,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3398,6 +3539,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+ #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+   SCOPE_profile_cpu_f("gpu");
+ #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
++  // PS5X360E: one writer, so no locked increment per draw.
++  perf_draws_.store(perf_draws_.load(std::memory_order_relaxed) + 1,
++                    std::memory_order_relaxed);
+ 
+   const RegisterFile& regs = *register_file_;
+ 
+@@ -3839,6 +3983,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
        (pixel_shader != nullptr && pixel_shader->bindings_ready()
             ? pixel_shader->GetUsedTextureMaskAfterTranslation()
             : 0);
@@ -3874,7 +4014,7 @@ index 76fc1a4..a87cad0 100644
    texture_cache_->RequestTextures(used_texture_mask);
  
    // Update the graphics pipeline, and if the new graphics pipeline has a
-@@ -4128,6 +4263,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4129,6 +4279,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
            return false;
          }
        }
@@ -3887,7 +4027,7 @@ index 76fc1a4..a87cad0 100644
      }
    }
  
-@@ -4262,6 +4403,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4265,6 +4421,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
    }
  
    if (!memexport_ranges_.empty()) {
@@ -3898,7 +4038,7 @@ index 76fc1a4..a87cad0 100644
      if (route_to_host) {
        // Producer draw: output landed in host_buffer_ (guest RAM), already CPU
        // coherent, so no readback. Just record the written pages. Consumers then
-@@ -4369,6 +4514,169 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
+@@ -4372,6 +4532,169 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
    memexport_staged_.clear();
  }
  
@@ -4068,7 +4208,7 @@ index 76fc1a4..a87cad0 100644
  bool VulkanCommandProcessor::EnsureMemexportRangeInDeviceBuffer(
      uint32_t base_bytes, uint32_t size_bytes, bool whole_range) {
    // Readers of the device buffer need memexport output copied across from
-@@ -4765,6 +5073,35 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4768,6 +5091,35 @@ bool VulkanCommandProcessor::IssueCopy() {
      return false;
    }
    ++submission_in_progress_.resolve_count;
@@ -4104,7 +4244,7 @@ index 76fc1a4..a87cad0 100644
  
    // The resolve wrote the device buffer. Drop any stale memexport marks so the
    // output isn't overwritten with guest RAM by a later texture load.
-@@ -4782,9 +5119,17 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4785,9 +5137,17 @@ bool VulkanCommandProcessor::IssueCopy() {
          is_scaled = false;
          written_length = mirrored_length;
        }
@@ -4122,7 +4262,7 @@ index 76fc1a4..a87cad0 100644
  
    // Pop debug marker for resolve operation.
    if (debug_markers_enabled_) {
-@@ -4793,9 +5138,212 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4796,9 +5156,212 @@ bool VulkanCommandProcessor::IssueCopy() {
  
    SubmitRequestedResolve();
  
@@ -4335,7 +4475,7 @@ index 76fc1a4..a87cad0 100644
  void VulkanCommandProcessor::EnsureQueryResources() {
    // VIZ surveys need the pool even when ZPD reports are faked.
    if ((zpd_mode_ == ZPDMode::kFake && !cvars::occlusion_query_viz) ||
-@@ -4919,7 +5467,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4922,7 +5485,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
        is_pool_exhausted = !host_query_pool_->has_free_indices();
      }
  
@@ -4344,7 +4484,7 @@ index 76fc1a4..a87cad0 100644
        return QueryOpenResult::kPoolExhausted;
      }
  
-@@ -4945,6 +5493,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4947,6 +5510,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
          saved_framebuffer = current_framebuffer_;
          EndRenderPass();
        }
@@ -4352,7 +4492,7 @@ index 76fc1a4..a87cad0 100644
        if (!EndSubmission(false)) {
          return QueryOpenResult::kFailed;
        }
-@@ -4971,7 +5520,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4973,7 +5537,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
          XELOGI("ZPD: Stall awaiting submission={} completed_before={}",
                 wait_for, completed_submission);
        }
@@ -4361,7 +4501,7 @@ index 76fc1a4..a87cad0 100644
        PumpQueryResolves();
      }
  
-@@ -5145,6 +5694,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+@@ -5147,6 +5711,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
  bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                 uint64_t wait_for_submission) {
    assert_not_zero(wait_for_submission);
@@ -4372,14 +4512,10 @@ index 76fc1a4..a87cad0 100644
 +    ~PhaseRestore() { processor->DiagSetPhase(phase); }
 +  } phase_restore{this, DiagPhase(diag_phase_.load(std::memory_order_relaxed))};
  
-   // The resolve is still in the open submission. Pipelines being created
-   // asynchronously have to finish before it can be executed.
-@@ -5158,16 +5713,19 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
-             "ZPD/Async: Draining Vulkan async pipeline creation for strict "
-             "retirement");
-       }
-+      DiagSetPhase(DiagPhase::kPipelines);
-       pipeline_cache_->AwaitPipelineCompletion();
+   // The resolve is still in the open submission.
+   if (wait_for_submission >= GetCurrentSubmission()) {
+@@ -5154,13 +5724,15 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+       return false;
      }
      EndRenderPass();
 +    submit_reason_ = SubmitReason::kQuery;
@@ -4395,7 +4531,7 @@ index 76fc1a4..a87cad0 100644
    }
  
    PumpQueryResolves();
-@@ -5176,6 +5734,24 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5169,6 +5741,20 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
    return !report || !report->pending_segments;
  }
  
@@ -4406,12 +4542,8 @@ index 76fc1a4..a87cad0 100644
 +  if (!submission_open_ || submission < GetCurrentSubmission()) {
 +    return true;
 +  }
-+  if (!CanEndSubmissionImmediately()) {
-+    if (!block_on_pipelines) {
-+      return false;
-+    }
-+    pipeline_cache_->AwaitPipelineCompletion();
-+  }
++  // Submissions end without waiting for pipeline creation (Edge 06fb359de).
++  (void)block_on_pipelines;
 +  EndRenderPass();
 +  submit_reason_ = SubmitReason::kQuery;
 +  return EndSubmission(false);
@@ -4420,7 +4552,7 @@ index 76fc1a4..a87cad0 100644
  bool VulkanCommandProcessor::EnsureVIZPredicateBuffer() {
    if (viz_predicate_buffer_ != VK_NULL_HANDLE) {
      return true;
-@@ -5313,7 +5889,7 @@ void VulkanCommandProcessor::AwaitVIZQueryResolve(
+@@ -5306,7 +5892,7 @@ void VulkanCommandProcessor::AwaitVIZQueryResolve(
    }
  
    if (wait_for_submission > GetCompletedSubmission()) {
@@ -4429,7 +4561,7 @@ index 76fc1a4..a87cad0 100644
    }
  
    PumpQueryResolves();
-@@ -5385,7 +5961,7 @@ void VulkanCommandProcessor::LogRecentSubmissions(const char* context) {
+@@ -5378,7 +5964,7 @@ void VulkanCommandProcessor::LogRecentSubmissions(const char* context) {
  }
  
  void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
@@ -4438,7 +4570,7 @@ index 76fc1a4..a87cad0 100644
    // Only report once, no need to retry a wait that won't succeed anyway.
    if (device_lost_) {
      return;
-@@ -5393,6 +5969,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
+@@ -5386,6 +5972,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
  
    if (await_submission >= GetCurrentSubmission()) {
      if (submission_open_) {
@@ -4446,7 +4578,7 @@ index 76fc1a4..a87cad0 100644
        EndSubmission(false);
      }
      // A submission won't be ended if it hasn't been started, or if ending
-@@ -5400,7 +5977,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
+@@ -5393,7 +5980,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
      await_submission = GetCurrentSubmission() - 1;
    }
  
@@ -4455,7 +4587,7 @@ index 76fc1a4..a87cad0 100644
  
    const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
  
-@@ -5524,7 +6101,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5517,7 +6104,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
        is_opening_frame
            ? closed_frame_submissions_[frame_current_ % kMaxFramesInFlight]
            : 0;
@@ -4464,8 +4596,8 @@ index 76fc1a4..a87cad0 100644
    const uint64_t completed_submission = GetCompletedSubmission();
    if (device_lost_ || completed_submission < await_submission) {
      return false;
-@@ -5678,6 +6255,81 @@ bool VulkanCommandProcessor::CanEndSubmissionImmediately() const {
-          !pipeline_cache_->IsCreatingPipelines();
+@@ -5665,6 +6252,101 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+   return true;
  }
  
 +void VulkanCommandProcessor::AwaitSubmissionCounted(uint64_t submission,
@@ -4494,6 +4626,9 @@ index 76fc1a4..a87cad0 100644
 +    perf_gpu_timed_.store(0);
 +    perf_gpu_untimed_.store(0);
 +    perf_async_readbacks_.store(0);
++    perf_draws_previous_ = perf_draws_.load(std::memory_order_relaxed);
++    perf_thread_cpu_previous_ns_ =
++        perf_thread_cpu_ns_.load(std::memory_order_relaxed);
 +    return {};
 +  }
 +  const double seconds = double(now - since) / 1e9;
@@ -4514,7 +4649,23 @@ index 76fc1a4..a87cad0 100644
 +  const uint64_t untimed = perf_gpu_untimed_.exchange(0);
 +  auto per_s = [&](uint64_t v) { return double(v) / seconds; };
 +  auto ms_per_s = [&](uint64_t ns) { return double(ns) / 1e6 / seconds; };
++  const uint64_t draws = perf_draws_.load(std::memory_order_relaxed);
++  const uint64_t thread_cpu_ns =
++      perf_thread_cpu_ns_.load(std::memory_order_relaxed);
++  const uint64_t window_draws = draws - perf_draws_previous_;
++  const uint64_t window_thread_cpu_ns =
++      thread_cpu_ns >= perf_thread_cpu_previous_ns_
++          ? thread_cpu_ns - perf_thread_cpu_previous_ns_
++          : 0;
++  perf_draws_previous_ = draws;
++  perf_thread_cpu_previous_ns_ = thread_cpu_ns;
++  std::string thread_cpu =
++      thread_cpu_ns ? fmt::format("{:.0f}%", 100.0 *
++                                                 double(window_thread_cpu_ns) /
++                                                 double(now - since))
++                    : std::string("n/a");
 +  return fmt::format(
++      "draws {:.0f}/s, command processor thread CPU {}; "
 +      "GPU busy {:.0f}% ({:.1f} ms/s over {} timed submissions, {} untimed); "
 +      "submissions {:.0f}/s: swap {:.0f}, guest buffer end {:.0f}, resolve "
 +      "sync {:.0f}, occlusion query {:.0f}, wait {:.0f}, other {:.0f}; GPU "
@@ -4522,6 +4673,7 @@ index 76fc1a4..a87cad0 100644
 +      "{:.1f} ms/s, export output for the guest {:.0f}/s {:.1f} ms/s, other "
 +      "{:.0f}/s {:.1f} ms/s, resolve read by CPU {:.0f}/s {:.1f} ms/s; render "
 +      "output copied for the CPU without waiting {:.0f}/s",
++      per_s(window_draws), thread_cpu,
 +      100.0 * double(busy) / double(now - since), ms_per_s(busy), timed,
 +      untimed, per_s(total_submits),
 +      per_s(submits[uint32_t(SubmitReason::kSwap)]),
@@ -4546,7 +4698,7 @@ index 76fc1a4..a87cad0 100644
  void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    if (!vulkan_device->properties().timestampPeriod) {
-@@ -5724,13 +6376,22 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
+@@ -5711,13 +6393,22 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
                                    sizeof(uint64_t),
                                    VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
          timestamps[1] > timestamps[0]) {
@@ -4570,7 +4722,7 @@ index 76fc1a4..a87cad0 100644
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5885,6 +6546,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5874,6 +6565,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
          gpu_time_pool_available && !gpu_time_query_submissions_[gpu_time_slot];
      if (gpu_time_pool_available && !gpu_time_recorded) {
        ++gpu_time_untimed_submissions_;
@@ -4578,7 +4730,7 @@ index 76fc1a4..a87cad0 100644
      }
      if (gpu_time_recorded) {
        dfn.vkCmdResetQueryPool(command_buffer.buffer, gpu_time_query_pool_,
-@@ -5954,6 +6616,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5943,6 +6635,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        }
        return false;
      }
@@ -4587,7 +4739,7 @@ index 76fc1a4..a87cad0 100644
      current_submission_wait_stage_masks_.clear();
      for (VkSemaphore semaphore : current_submission_wait_semaphores_) {
        submissions_in_flight_semaphores_.emplace_back(submission_index,
-@@ -6879,20 +7543,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6882,20 +7576,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
          std::memcpy(mapping, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X],
                      sizeof(float) * 4 * 256);
        } else {
@@ -4611,7 +4763,7 @@ index 76fc1a4..a87cad0 100644
        }
      }
      // Pixel shader float constants.
-@@ -6906,20 +7559,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6909,20 +7592,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
        if (!mapping) {
          return false;
        }
@@ -4636,7 +4788,7 @@ index 76fc1a4..a87cad0 100644
      // Bool and loop constants.
      if (!(current_constant_buffers_up_to_date_ &
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.h b/src/xenia/gpu/vulkan/vulkan_command_processor.h
-index 5fdd917..0040180 100644
+index 34c45db8a..d5cec9724 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.h
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.h
 @@ -18,6 +18,7 @@
@@ -4658,7 +4810,7 @@ index 5fdd917..0040180 100644
  
    void PollCompletedSubmission() override;
  
-@@ -238,6 +243,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -240,6 +245,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
                                            uint32_t size_bytes,
                                            bool whole_range = false);
  
@@ -4673,7 +4825,7 @@ index 5fdd917..0040180 100644
    // If not started yet, begins a render pass from the render target cache.
    // Submission must be open.
    void SubmitBarriersAndEnterRenderTargetCacheRenderPass(
-@@ -320,8 +333,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -321,8 +334,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
  
    // For command_processor_resolve_readwatch.inc.
    bool EndResolveSubmission() {
@@ -4688,7 +4840,7 @@ index 5fdd917..0040180 100644
    uint64_t GetResolveSubmittedThrough() const {
      return resolve_submitted_through_.load(std::memory_order_acquire);
    }
-@@ -365,7 +383,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -366,7 +384,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
    void StageMemexportReadback();
    void FlushMemexportStagingReadback();
    void AwaitMemexportSubmission(uint64_t submission) {
@@ -4697,7 +4849,7 @@ index 5fdd917..0040180 100644
    }
    // Export ranges staged but not yet copied out, in record order - a later
    // copy of an overlapping range has to win.
-@@ -379,6 +397,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -380,6 +398,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
    std::vector<MemexportStagedRange> memexport_staged_;
    // For EnsureMemexportRangeInDeviceBuffer.
    std::vector<VkBufferCopy> memexport_copy_regions_;
@@ -4711,7 +4863,7 @@ index 5fdd917..0040180 100644
  
    void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                   uint32_t frontbuffer_height) override;
-@@ -394,6 +419,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -395,6 +420,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
                   bool major_mode_explicit) override;
    bool IssueCopy() override;
  
@@ -4719,7 +4871,7 @@ index 5fdd917..0040180 100644
    void InitializeTrace() override;
    bool DumpEdramSnapshotToFile(const std::filesystem::path& path) override;
  
-@@ -520,7 +546,17 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -521,7 +547,17 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // Rechecks submission number and reclaims per-submission resources. Pass 0 as
    // the submission to await to simply check status, or pass
    // GetCurrentSubmission() to wait for all queue operations to be completed.
@@ -4738,7 +4890,7 @@ index 5fdd917..0040180 100644
    // If is_guest_command is true, a new full frame - with full cleanup of
    // resources and, if needed, starting capturing - is opened if pending (as
    // opposed to simply resuming after mid-frame synchronization). Returns
-@@ -576,6 +612,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -573,6 +609,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
    void PumpQueryResolves() override;
    bool AwaitQueryResolve(ReportHandle report_handle,
                           uint64_t wait_for_submission) override;
@@ -4747,7 +4899,7 @@ index 5fdd917..0040180 100644
  
    bool EnsureVIZPredicateBuffer();
    // Drains the queued predicate copies.
-@@ -702,7 +740,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -701,7 +739,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
  
    // A timestamp pair per in-flight submission, so the summed GPU busy time is
    // comparable against the Metal backend's completion-handler figure.
@@ -4756,7 +4908,7 @@ index 5fdd917..0040180 100644
    VkQueryPool gpu_time_query_pool_ = VK_NULL_HANDLE;
    uint64_t gpu_time_query_submissions_[kGpuTimeQuerySubmissions] = {};
    uint32_t gpu_time_query_slot_ = 0;
-@@ -714,6 +752,34 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -713,6 +751,41 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // which sums per-submission intervals and misleads without it.
    uint64_t gpu_time_submissions_window_start_ = 0;
    uint64_t gpu_time_window_start_ns_ = 0;
@@ -4782,6 +4934,13 @@ index 5fdd917..0040180 100644
 +  std::atomic<uint64_t> perf_gpu_timed_{0};
 +  std::atomic<uint64_t> perf_gpu_untimed_{0};
 +  std::atomic<uint64_t> perf_summary_ns_{0};
++  // Draws issued, and the command processor thread's own CPU time, sampled at
++  // each swap (written by that thread only; the summary keeps the previous
++  // values to take the differences).
++  std::atomic<uint64_t> perf_draws_{0};
++  std::atomic<uint64_t> perf_thread_cpu_ns_{0};
++  uint64_t perf_draws_previous_ = 0;
++  uint64_t perf_thread_cpu_previous_ns_ = 0;
 +  // Awaits a submission, counting it as a wait (with its time) when it has not
 +  // completed yet.
 +  void AwaitSubmissionCounted(uint64_t submission, WaitReason reason);
@@ -4791,7 +4950,7 @@ index 5fdd917..0040180 100644
    void CreateGpuTimeQueryPool();
    void DestroyGpuTimeQueryPool();
    void CollectCompletedGpuTimeQueries();
-@@ -1093,6 +1159,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -1092,6 +1165,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // .inc for ScaledResolveReadbackInfo.
    bool DownscaleScaledResolve(uint32_t written_address,
                                const ScaledResolveReadbackInfo& scaled_info);
@@ -4805,7 +4964,7 @@ index 5fdd917..0040180 100644
                                           uint32_t written_length,
                                           reg::RB_COPY_DEST_INFO copy_dest_info,
 diff --git a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc b/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
-index 505aac1..246923b 100644
+index 266495e99..4d49948ae 100644
 --- a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
 @@ -8,7 +8,9 @@
@@ -4818,7 +4977,7 @@ index 505aac1..246923b 100644
  #include <chrono>
  #include <cstdint>
  #include <cstring>
-@@ -2309,8 +2311,11 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
+@@ -2338,8 +2340,11 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
      pso_create_start = std::chrono::steady_clock::now();
    }
    VkPipeline pipeline;
@@ -4831,7 +4990,7 @@ index 505aac1..246923b 100644
    if (result == VK_SUCCESS && profile) {
      // Driver SPIR-V->ISA compile + link time.
      XELOGI(
-@@ -2548,17 +2553,62 @@ void VulkanPipelineCache::InitializeShaderStorage(
+@@ -2554,17 +2559,62 @@ void VulkanPipelineCache::InitializeShaderStorage(
            xe::filesystem::OpenFile(vk_pipeline_cache_path_, "rb")) {
      xe::filesystem::Seek(cache_file, 0, SEEK_END);
      int64_t cache_size = xe::filesystem::Tell(cache_file);
@@ -4894,7 +5053,7 @@ index 505aac1..246923b 100644
    // Recreate the VkPipelineCache with the loaded data.
    if (vk_pipeline_cache_ != VK_NULL_HANDLE) {
      dfn.vkDestroyPipelineCache(device, vk_pipeline_cache_, nullptr);
-@@ -2582,6 +2632,11 @@ void VulkanPipelineCache::InitializeShaderStorage(
+@@ -2588,6 +2638,11 @@ void VulkanPipelineCache::InitializeShaderStorage(
                                &vk_pipeline_cache_);
    }
  
@@ -4903,20 +5062,11 @@ index 505aac1..246923b 100644
 +    XELOGW("Pipeline cache: no stored pipelines for {:08X} yet",
 +           shader_storage_title_id_);
 +  }
-   // Create pipelines from stored descriptions.
-   if (!pipeline_stored_descriptions.empty()) {
-     uint64_t pipeline_creation_start = xe::Clock::QueryHostTickCount();
-@@ -2757,7 +2812,7 @@ void VulkanPipelineCache::InitializeShaderStorage(
-       }
-     }
- 
--    XELOGI("Pipeline cache: {} created, {} already exist, {} total in {} ms",
-+    XELOGW("Pipeline cache: {} created, {} already exist, {} total in {} ms",
-            pipelines_created, pipelines_already_exist,
-            pipeline_stored_descriptions.size(),
-            (xe::Clock::QueryHostTickCount() - pipeline_creation_start) * 1000 /
-@@ -2784,31 +2839,167 @@ void VulkanPipelineCache::InitializeShaderStorage(
-   }
+   if (ReplayStoredPipelines(
+           pipeline_stored_descriptions,
+           [this](const PipelineStoredDescription& pipeline_stored_description,
+@@ -2736,31 +2791,167 @@ const char* VulkanPipelineCache::QueueStoredPipeline(
+   return nullptr;
  }
  
 -void VulkanPipelineCache::ShutdownShaderStorage() {
@@ -5106,7 +5256,7 @@ index 505aac1..246923b 100644
  
    // Shut down the storage writer (closes files, stops write thread).
 diff --git a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.h b/src/xenia/gpu/vulkan/vulkan_pipeline_cache.h
-index 650dca0..2427851 100644
+index 5436d7f0c..002f2020a 100644
 --- a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.h
 +++ b/src/xenia/gpu/vulkan/vulkan_pipeline_cache.h
 @@ -11,6 +11,8 @@
@@ -5118,7 +5268,7 @@ index 650dca0..2427851 100644
  #include <cstddef>
  #include <cstdio>
  #include <cstring>
-@@ -139,6 +141,12 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
+@@ -140,6 +142,12 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
        const std::filesystem::path& cache_root, uint32_t title_id, bool blocking,
        std::function<void()> completion_callback = nullptr);
    void ShutdownShaderStorage();
@@ -5130,8 +5280,8 @@ index 650dca0..2427851 100644
 +  bool SavePipelineCacheSnapshot() noexcept;
  
    void EndSubmission();
-   bool IsCreatingPipelines();
-@@ -596,6 +604,10 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
+   // Whether the non-blocking storage warm-up is still creating pipelines.
+@@ -610,6 +618,10 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
  
    // VkPipelineCache persistence path.
    std::filesystem::path vk_pipeline_cache_path_;
@@ -5143,7 +5293,7 @@ index 650dca0..2427851 100644
  
  }  // namespace vulkan
 diff --git a/src/xenia/gpu/vulkan/vulkan_primitive_processor.cc b/src/xenia/gpu/vulkan/vulkan_primitive_processor.cc
-index bf25330..b2ddc82 100644
+index bf2533069..b2ddc8261 100644
 --- a/src/xenia/gpu/vulkan/vulkan_primitive_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_primitive_processor.cc
 @@ -9,6 +9,8 @@
@@ -5180,7 +5330,7 @@ index bf25330..b2ddc82 100644
      Shutdown();
      return false;
 diff --git a/src/xenia/gpu/vulkan/vulkan_shared_memory.cc b/src/xenia/gpu/vulkan/vulkan_shared_memory.cc
-index e806840..eaddde6 100644
+index e8068404e..eaddde6a1 100644
 --- a/src/xenia/gpu/vulkan/vulkan_shared_memory.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_shared_memory.cc
 @@ -19,6 +19,13 @@
@@ -5236,7 +5386,7 @@ index e806840..eaddde6 100644
      }
  
 diff --git a/src/xenia/gpu/vulkan/vulkan_texture_cache.cc b/src/xenia/gpu/vulkan/vulkan_texture_cache.cc
-index d5014b9..ede4696 100644
+index 108718adf..e2aafce06 100644
 --- a/src/xenia/gpu/vulkan/vulkan_texture_cache.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_texture_cache.cc
 @@ -9,6 +9,7 @@
@@ -5248,7 +5398,7 @@ index d5014b9..ede4696 100644
  #include <array>
  #include <cstddef>
 diff --git a/src/xenia/kernel/guest_scheduler.h b/src/xenia/kernel/guest_scheduler.h
-index 4b254e5..f065118 100644
+index 4b254e51a..f065118bc 100644
 --- a/src/xenia/kernel/guest_scheduler.h
 +++ b/src/xenia/kernel/guest_scheduler.h
 @@ -174,6 +174,13 @@ class GuestScheduler {
@@ -5266,7 +5416,7 @@ index 4b254e5..f065118 100644
    // Xbox 360 logical CPU count, also the maximum number of dispatch threads.
    static constexpr int kMaxCpus = 6;
 diff --git a/src/xenia/kernel/kernel_flags.cc b/src/xenia/kernel/kernel_flags.cc
-index 57b097c..42a1420 100644
+index 57b097c11..42a142055 100644
 --- a/src/xenia/kernel/kernel_flags.cc
 +++ b/src/xenia/kernel/kernel_flags.cc
 @@ -11,6 +11,8 @@
@@ -5289,7 +5439,7 @@ index 57b097c..42a1420 100644
 +            "Kernel");
 +#endif
 diff --git a/src/xenia/kernel/kernel_flags.h b/src/xenia/kernel/kernel_flags.h
-index 54cab57..a778345 100644
+index 54cab574f..a778345b4 100644
 --- a/src/xenia/kernel/kernel_flags.h
 +++ b/src/xenia/kernel/kernel_flags.h
 @@ -10,9 +10,14 @@
@@ -5308,7 +5458,7 @@ index 54cab57..a778345 100644
  
  #endif  // XENIA_KERNEL_KERNEL_FLAGS_H_
 diff --git a/src/xenia/kernel/kernel_state.cc b/src/xenia/kernel/kernel_state.cc
-index a91eb94..2654da7 100644
+index c6895e607..b655347ee 100644
 --- a/src/xenia/kernel/kernel_state.cc
 +++ b/src/xenia/kernel/kernel_state.cc
 @@ -44,6 +44,13 @@ DEFINE_uint32(kernel_build_version, 1888, "Define current kernel version",
@@ -5427,7 +5577,7 @@ index a91eb94..2654da7 100644
              emulator_->imgui_drawer(), "Warning!",
 diff --git a/src/xenia/kernel/util/ldi_decompressor.cc b/src/xenia/kernel/util/ldi_decompressor.cc
 new file mode 100644
-index 0000000..b6a4f19
+index 000000000..b6a4f1997
 --- /dev/null
 +++ b/src/xenia/kernel/util/ldi_decompressor.cc
 @@ -0,0 +1,158 @@
@@ -5591,7 +5741,7 @@ index 0000000..b6a4f19
 +}  // namespace xe
 diff --git a/src/xenia/kernel/util/ldi_decompressor.h b/src/xenia/kernel/util/ldi_decompressor.h
 new file mode 100644
-index 0000000..819b273
+index 000000000..819b273b9
 --- /dev/null
 +++ b/src/xenia/kernel/util/ldi_decompressor.h
 @@ -0,0 +1,60 @@
@@ -5656,7 +5806,7 @@ index 0000000..819b273
 +
 +#endif  // XENIA_KERNEL_UTIL_LDI_DECOMPRESSOR_H_
 diff --git a/src/xenia/kernel/util/shim_utils.h b/src/xenia/kernel/util/shim_utils.h
-index 8cd62a2..170d3e0 100644
+index 8cd62a259..170d3e0f8 100644
 --- a/src/xenia/kernel/util/shim_utils.h
 +++ b/src/xenia/kernel/util/shim_utils.h
 @@ -570,18 +570,25 @@ struct ExportRegistrerHelper {
@@ -5697,7 +5847,7 @@ index 8cd62a2..170d3e0 100644
        }
      };
 diff --git a/src/xenia/kernel/xam/achievement_manager.cc b/src/xenia/kernel/xam/achievement_manager.cc
-index 2834a88..89d6a64 100644
+index 2834a8813..89d6a6433 100644
 --- a/src/xenia/kernel/xam/achievement_manager.cc
 +++ b/src/xenia/kernel/xam/achievement_manager.cc
 @@ -16,6 +16,9 @@
@@ -5738,7 +5888,7 @@ index 2834a88..89d6a64 100644
      return;
    }
 diff --git a/src/xenia/kernel/xam/app_manager.cc b/src/xenia/kernel/xam/app_manager.cc
-index 813e195..bc6b0c5 100644
+index 813e19524..bc6b0c560 100644
 --- a/src/xenia/kernel/xam/app_manager.cc
 +++ b/src/xenia/kernel/xam/app_manager.cc
 @@ -9,7 +9,14 @@
@@ -5804,7 +5954,7 @@ index 813e195..bc6b0c5 100644
    if (it == app_lookup_.end()) {
      return X_E_NOTFOUND;
 diff --git a/src/xenia/kernel/xam/apps/xam_app.cc b/src/xenia/kernel/xam/apps/xam_app.cc
-index 02c0da1..f3b4f35 100644
+index 2b23701da..c2edd7675 100644
 --- a/src/xenia/kernel/xam/apps/xam_app.cc
 +++ b/src/xenia/kernel/xam/apps/xam_app.cc
 @@ -10,7 +10,10 @@
@@ -5818,22 +5968,33 @@ index 02c0da1..f3b4f35 100644
  #include "xenia/kernel/xam/xam_content_device.h"
  #include "xenia/kernel/xenumerator.h"
  
-@@ -193,6 +196,37 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
-       XELOGD("XamUnk2B004, unimplemented");
+@@ -194,13 +197,40 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
        return X_E_SUCCESS;
      }
-+    case 0x0002C009: {
+     case 0x0002C009: {
+-      // Registers (non-zero) or removes (zero) a Kinect identity callback.
+-      // TODO(knuckleslee): Invoke the callback for identity notifications.
+-      if (!buffer_ptr) {
+-        return X_E_INVALIDARG;
 +      // Xbox360PS5: the title's NUI library registers its identity callback
 +      // with this message as the last step of NuiInitialize, and a refusal
 +      // fails the whole initialization: the title then shuts its camera
 +      // thread down and never reads a frame (seen in 4E4D084E). The verified
 +      // identity-map refresh is delivered when the virtual player changes.
-+      // Without the motion research the answer stays as it was, so that a
-+      // title with optional Kinect still finds no sensor.
++      // Without the motion research the upstream handling applies.
 +      if (!xbox360ps5::motion::enabled.load() ||
 +          kernel_state_->title_id() != xbox360ps5::motion::kVirtualNuiTitle) {
-+        break;
-+      }
++        // Registers (non-zero) or removes (zero) a Kinect identity callback.
++        // TODO(knuckleslee): Invoke the callback for identity notifications.
++        if (!buffer_ptr) {
++          return X_E_INVALIDARG;
++        }
++        XELOGD("XamApp: Kinect identity callback {:08X}",
++               xe::load_and_swap<uint32_t>(buffer));
++        return X_E_SUCCESS;
+       }
+-      XELOGD("XamApp: Kinect identity callback {:08X}",
+-             xe::load_and_swap<uint32_t>(buffer));
 +      // The reviewed image registers 8249D248. Its verified 2C00F callback
 +      // case takes (message, buffer), ignores buffer, and refreshes user slots.
 +      // Other images need their callback ABI traced before any dispatch.
@@ -5851,13 +6012,11 @@ index 02c0da1..f3b4f35 100644
 +      nui_identity_callback_ = callback;
 +      xbox360ps5::motion::nui_identity_callback = callback;
 +      XELOGW("Virtual Kinect: identity callback {:08X} registered", callback);
-+      return X_E_SUCCESS;
-+    }
+       return X_E_SUCCESS;
+     }
      // Causes dashboard to correctly process language/region change. It does not
-     // contain any buffer.
-     case 0x8000000D: {
 diff --git a/src/xenia/kernel/xam/apps/xam_app.h b/src/xenia/kernel/xam/apps/xam_app.h
-index 6f9e520..461ce56 100644
+index 6f9e52008..461ce5698 100644
 --- a/src/xenia/kernel/xam/apps/xam_app.h
 +++ b/src/xenia/kernel/xam/apps/xam_app.h
 @@ -24,6 +24,12 @@ class XamApp : public App {
@@ -5874,10 +6033,10 @@ index 6f9e520..461ce56 100644
  
  }  // namespace apps
 diff --git a/src/xenia/kernel/xam/profile_manager.cc b/src/xenia/kernel/xam/profile_manager.cc
-index 1fd3159..9741ac5 100644
+index a5cb274ef..fe9b9aea7 100644
 --- a/src/xenia/kernel/xam/profile_manager.cc
 +++ b/src/xenia/kernel/xam/profile_manager.cc
-@@ -683,6 +683,39 @@ void ProfileManager::UpdateConfig(const uint64_t xuid, const uint8_t slot) {
+@@ -686,6 +686,39 @@ void ProfileManager::UpdateConfig(const uint64_t xuid, const uint8_t slot) {
    return;
  }
  
@@ -5918,7 +6077,7 @@ index 1fd3159..9741ac5 100644
    const uint8_t user_index = GetUserIndexAssignedToProfile(xuid);
  
 diff --git a/src/xenia/kernel/xam/profile_manager.h b/src/xenia/kernel/xam/profile_manager.h
-index 8d48182..9da382e 100644
+index 8d48182b2..9da382eca 100644
 --- a/src/xenia/kernel/xam/profile_manager.h
 +++ b/src/xenia/kernel/xam/profile_manager.h
 @@ -82,6 +82,8 @@ class ProfileManager {
@@ -5931,10 +6090,10 @@ index 8d48182..9da382e 100644
    bool MountProfile(const uint64_t xuid, std::string mount_path = "");
    bool DismountProfile(const uint64_t xuid);
 diff --git a/src/xenia/kernel/xam/xam_info.cc b/src/xenia/kernel/xam/xam_info.cc
-index 8ddac9e..de777cf 100644
+index e6dfe95c1..c230c8e3d 100644
 --- a/src/xenia/kernel/xam/xam_info.cc
 +++ b/src/xenia/kernel/xam/xam_info.cc
-@@ -555,6 +555,20 @@ static void LaunchTitle(std::string path, std::string_view d_drive_path,
+@@ -572,6 +572,20 @@ static void LaunchTitle(std::string path, std::string_view d_drive_path,
      }
    }
  
@@ -5956,7 +6115,7 @@ index 8ddac9e..de777cf 100644
    if (!path.empty()) {
      loader_data.launch_data_present = true;
 diff --git a/src/xenia/kernel/xam/xam_module.cc b/src/xenia/kernel/xam/xam_module.cc
-index 7dcf0d2..5ee3295 100644
+index 7dcf0d23f..5ee329554 100644
 --- a/src/xenia/kernel/xam/xam_module.cc
 +++ b/src/xenia/kernel/xam/xam_module.cc
 @@ -67,6 +67,108 @@ void XamModule::RegisterExportTable(xe::cpu::ExportResolver* export_resolver) {
@@ -6069,7 +6228,7 @@ index 7dcf0d2..5ee3295 100644
  }  // namespace kernel
  }  // namespace xe
 diff --git a/src/xenia/kernel/xam/xam_module.h b/src/xenia/kernel/xam/xam_module.h
-index 4ce78d5..4f165e8 100644
+index 4ce78d565..4f165e881 100644
 --- a/src/xenia/kernel/xam/xam_module.h
 +++ b/src/xenia/kernel/xam/xam_module.h
 @@ -10,6 +10,8 @@
@@ -6114,7 +6273,7 @@ index 4ce78d5..4f165e8 100644
  
    const LoaderData& loader_data() const { return loader_data_; }
 diff --git a/src/xenia/kernel/xam/xam_nui.cc b/src/xenia/kernel/xam/xam_nui.cc
-index cb378fc..ccd3cbf 100644
+index 27a3b0d73..654a671e4 100644
 --- a/src/xenia/kernel/xam/xam_nui.cc
 +++ b/src/xenia/kernel/xam/xam_nui.cc
 @@ -7,7 +7,10 @@
@@ -6126,9 +6285,9 @@ index cb378fc..ccd3cbf 100644
 +#include "xbox360ps5/motion_input.hpp"
 +#include "xbox360ps5/virtual_nui.hpp"
  #include "xenia/emulator.h"
- #include "xenia/kernel/guest_scheduler.h"
  #include "xenia/kernel/kernel_state.h"
-@@ -22,6 +25,36 @@
+ #include "xenia/kernel/util/shim_utils.h"
+@@ -17,6 +20,36 @@
  namespace xe {
  namespace kernel {
  namespace xam {
@@ -6165,7 +6324,7 @@ index cb378fc..ccd3cbf 100644
  // https://web.cs.ucdavis.edu/~okreylos/ResDev/Kinect/MainPage.html
  
  struct X_NUI_DEVICE_STATUS {
-@@ -50,6 +83,23 @@ static_assert(sizeof(X_NUI_DEVICE_STATUS) == 24, "Size matters");
+@@ -45,6 +78,23 @@ static_assert(sizeof(X_NUI_DEVICE_STATUS) == 24, "Size matters");
  // Get
  dword_result_t XamNuiGetDeviceStatus_entry(
      pointer_t<X_NUI_DEVICE_STATUS> status_ptr) {
@@ -6189,7 +6348,7 @@ index cb378fc..ccd3cbf 100644
    /* Notes:
       - it does return a value that is not always used
       - returns values are X_ERROR_SUCCESS, 0xC0050006, and others
-@@ -82,12 +132,56 @@ dword_result_t XamXStudioRequest_entry(dword_t request_type,
+@@ -77,12 +127,56 @@ dword_result_t XamXStudioRequest_entry(dword_t request_type,
  }
  DECLARE_XAM_EXPORT1(XamXStudioRequest, kNone, kStub);
  
@@ -6247,7 +6406,7 @@ index cb378fc..ccd3cbf 100644
    for (uint32_t i = 0; i < XUserMaxUserCount; i++) {
      auto profile = kernel_state()->xam_state()->GetUserProfile(i);
      if (profile) {
-@@ -101,11 +195,29 @@ dword_result_t XamUserNuiGetUserIndexForSignin_entry(lpdword_t index) {
+@@ -96,11 +190,29 @@ dword_result_t XamUserNuiGetUserIndexForSignin_entry(lpdword_t index) {
  DECLARE_XAM_EXPORT1(XamUserNuiGetUserIndexForSignin, kNone, kImplemented);
  
  dword_result_t XamUserNuiGetUserIndexForBind_entry(lpdword_t index) {
@@ -6277,7 +6436,7 @@ index cb378fc..ccd3cbf 100644
    /* Notes:
       - Possible returns X_STATUS_NO_SUCH_FILE, and 0x10000000
    */
-@@ -115,6 +227,11 @@ DECLARE_XAM_EXPORT1(XamNuiGetDepthCalibration, kNone, kStub);
+@@ -110,6 +222,11 @@ DECLARE_XAM_EXPORT1(XamNuiGetDepthCalibration, kNone, kStub);
  
  // Skeleton
  qword_result_t XamNuiSkeletonGetBestSkeletonIndex_entry(int_t unk) {
@@ -6289,7 +6448,7 @@ index cb378fc..ccd3cbf 100644
    return 0xffffffffffffffff;
  }
  DECLARE_XAM_EXPORT1(XamNuiSkeletonGetBestSkeletonIndex, kNone, kStub);
-@@ -124,6 +241,25 @@ DECLARE_XAM_EXPORT1(XamNuiSkeletonGetBestSkeletonIndex, kNone, kStub);
+@@ -119,6 +236,25 @@ DECLARE_XAM_EXPORT1(XamNuiSkeletonGetBestSkeletonIndex, kNone, kStub);
  */
  
  dword_result_t XamNuiCameraTiltGetStatus_entry(lpvoid_t unk) {
@@ -6315,7 +6474,7 @@ index cb378fc..ccd3cbf 100644
    /* Notes:
       - Used by XamNuiCameraElevationGetAngle, and XamNuiCameraSetFlags
       - if it returns anything greater than -1 then both above functions continue
-@@ -137,6 +273,11 @@ DECLARE_XAM_EXPORT1(XamNuiCameraTiltGetStatus, kNone, kStub);
+@@ -132,6 +268,11 @@ DECLARE_XAM_EXPORT1(XamNuiCameraTiltGetStatus, kNone, kStub);
  
  dword_result_t XamNuiCameraElevationGetAngle_entry(lpqword_t unk1,
                                                     lpdword_t unk2) {
@@ -6327,7 +6486,7 @@ index cb378fc..ccd3cbf 100644
    /* Notes:
       - Xam 12611 does not show what unk1 is used for (Ghidra)
    */
-@@ -152,6 +293,11 @@ dword_result_t XamNuiCameraElevationGetAngle_entry(lpqword_t unk1,
+@@ -147,6 +288,11 @@ dword_result_t XamNuiCameraElevationGetAngle_entry(lpqword_t unk1,
  DECLARE_XAM_EXPORT1(XamNuiCameraElevationGetAngle, kNone, kStub);
  
  dword_result_t XamNuiCameraGetTiltControllerType_entry() {
@@ -6339,7 +6498,7 @@ index cb378fc..ccd3cbf 100644
    /* Notes:
       - undefined unk[8]
       - undefined8 local_28;
-@@ -170,6 +316,11 @@ dword_result_t XamNuiCameraGetTiltControllerType_entry() {
+@@ -165,6 +311,11 @@ dword_result_t XamNuiCameraGetTiltControllerType_entry() {
  DECLARE_XAM_EXPORT1(XamNuiCameraGetTiltControllerType, kNone, kStub);
  
  dword_result_t XamNuiCameraSetFlags_entry(qword_t unk1, dword_t unk2) {
@@ -6351,7 +6510,7 @@ index cb378fc..ccd3cbf 100644
    /* Notes:
       - if XamNuiCameraGetTiltControllerType returns 1 then operation is done
       - else 0xffffffff8007048f
-@@ -190,11 +341,24 @@ dword_result_t XamNuiCameraSetFlags_entry(qword_t unk1, dword_t unk2) {
+@@ -185,11 +336,24 @@ dword_result_t XamNuiCameraSetFlags_entry(qword_t unk1, dword_t unk2) {
  DECLARE_XAM_EXPORT1(XamNuiCameraSetFlags, kNone, kStub);
  
  dword_result_t XamIsNuiUIActive_entry() {
@@ -6376,7 +6535,7 @@ index cb378fc..ccd3cbf 100644
    /* device_state Notes:
     - used with XNotifyBroadcast(kXNotificationSystemNUIHardwareStatusChanged,
     device_state)
-@@ -213,6 +377,11 @@ dword_result_t XamNuiIsDeviceReady_entry() {
+@@ -208,6 +372,11 @@ dword_result_t XamNuiIsDeviceReady_entry() {
  DECLARE_XAM_EXPORT1(XamNuiIsDeviceReady, kNone, kImplemented);
  
  dword_result_t XamIsNuiAutomationEnabled_entry(unknown_t unk1, unknown_t unk2) {
@@ -6388,7 +6547,7 @@ index cb378fc..ccd3cbf 100644
    /* Notes:
       - XamIsNuiAutomationEnabled = XamIsNatalPlaybackEnabled
       - Always returns X_E_SUCCESS? Maybe check later versions
-@@ -224,6 +393,11 @@ dword_result_t XamIsNuiAutomationEnabled_entry(unknown_t unk1, unknown_t unk2) {
+@@ -219,6 +388,11 @@ dword_result_t XamIsNuiAutomationEnabled_entry(unknown_t unk1, unknown_t unk2) {
  DECLARE_XAM_EXPORT2(XamIsNuiAutomationEnabled, kNone, kStub, kHighFrequency);
  
  dword_result_t XamIsNatalPlaybackEnabled_entry(unknown_t unk1, unknown_t unk2) {
@@ -6400,7 +6559,7 @@ index cb378fc..ccd3cbf 100644
    /* Notes:
       - XamIsNuiAutomationEnabled = XamIsNatalPlaybackEnabled
       - Always returns X_E_SUCCESS? Maybe check later versions
-@@ -235,6 +409,11 @@ dword_result_t XamIsNatalPlaybackEnabled_entry(unknown_t unk1, unknown_t unk2) {
+@@ -230,6 +404,11 @@ dword_result_t XamIsNatalPlaybackEnabled_entry(unknown_t unk1, unknown_t unk2) {
  DECLARE_XAM_EXPORT2(XamIsNatalPlaybackEnabled, kNone, kStub, kHighFrequency);
  
  dword_result_t XamNuiIsChatMicEnabled_entry() {
@@ -6412,7 +6571,7 @@ index cb378fc..ccd3cbf 100644
    /* Notes:
       - calls a second function with a param of uint local_20 [4];
       - Second function calls ExGetXConfigSetting(7,9,local_30,0x1c,local_40);
-@@ -260,6 +439,11 @@ uint32_t engaged_tracking_id = 0;
+@@ -254,6 +433,11 @@ uint32_t engaged_tracking_id = 0;
  char nui_unknown_2 = '\0';
  
  dword_result_t XamNuiHudSetEngagedTrackingID_entry(dword_t id) {
@@ -6424,7 +6583,7 @@ index cb378fc..ccd3cbf 100644
    if (!id) {
      return X_STATUS_SUCCESS;
    }
-@@ -274,6 +458,11 @@ dword_result_t XamNuiHudSetEngagedTrackingID_entry(dword_t id) {
+@@ -268,6 +452,11 @@ dword_result_t XamNuiHudSetEngagedTrackingID_entry(dword_t id) {
  DECLARE_XAM_EXPORT1(XamNuiHudSetEngagedTrackingID, kNone, kImplemented);
  
  qword_result_t XamNuiHudGetEngagedTrackingID_entry() {
@@ -6436,7 +6595,7 @@ index cb378fc..ccd3cbf 100644
    if (nui_unknown_1 != 0) {
      return engaged_tracking_id;
    }
-@@ -283,6 +472,11 @@ qword_result_t XamNuiHudGetEngagedTrackingID_entry() {
+@@ -277,6 +466,11 @@ qword_result_t XamNuiHudGetEngagedTrackingID_entry() {
  DECLARE_XAM_EXPORT1(XamNuiHudGetEngagedTrackingID, kNone, kImplemented);
  
  dword_result_t XamNuiHudIsEnabled_entry() {
@@ -6448,8 +6607,8 @@ index cb378fc..ccd3cbf 100644
    /* Notes:
       - checks if XamNuiIsDeviceReady false, if nui_unknown_1 exists, and
       nui_unknown_2 is equal to null terminated string
-@@ -311,6 +505,11 @@ uint32_t XeXamNuiHudCheck(dword_t unk1) {
- }
+@@ -292,6 +486,11 @@ dword_result_t XamNuiHudIsEnabled_entry() {
+ DECLARE_XAM_EXPORT1(XamNuiHudIsEnabled, kNone, kImplemented);
  
  dword_result_t XamNuiHudGetInitializeFlags_entry() {
 +#if XE_PLATFORM_PS5
@@ -6460,7 +6619,7 @@ index cb378fc..ccd3cbf 100644
    /* HUD_Flags Notes:
       - set by 0x2B003
       - set to 0 by unnamed func alongside version_id
-@@ -323,6 +522,11 @@ dword_result_t XamNuiHudGetInitializeFlags_entry() {
+@@ -304,6 +503,11 @@ dword_result_t XamNuiHudGetInitializeFlags_entry() {
  DECLARE_XAM_EXPORT1(XamNuiHudGetInitializeFlags, kNone, kImplemented);
  
  void XamNuiHudGetVersions_entry(lpqword_t unk1, lpqword_t unk2) {
@@ -6472,43 +6631,7 @@ index cb378fc..ccd3cbf 100644
    /* version_id Notes:
       - set by 0x2B003
       - set to 0 by unnamed func alongside HUD_Flags
-@@ -340,6 +544,11 @@ DECLARE_XAM_EXPORT1(XamNuiHudGetVersions, kNone, kImplemented);
- dword_result_t XamShowNuiTroubleshooterUI_entry(dword_t user_index,
-                                                 dword_t tracking_id,
-                                                 dword_t flags) {
-+#if XE_PLATFORM_PS5
-+  static std::atomic<bool> motion_reported{false};
-+  if (xbox360ps5::motion::enabled.load() && !motion_reported.exchange(true))
-+    XELOGW("Motion research: XamShowNuiTroubleshooterUI called; guest sensor remains unavailable; {}", xbox360ps5::motion::Status());
-+#endif
-   /* Notes:
-      - calls XamPackageManagerGetExperienceMode(&var) with var = 1
-      - If returns less than zero or (var & 1) == 0 then get error message:
-@@ -384,6 +593,11 @@ dword_result_t XamShowNuiTroubleshooterUI_entry(dword_t user_index,
- DECLARE_XAM_EXPORT1(XamShowNuiTroubleshooterUI, kNone, kStub);
- 
- dword_result_t XamShowNuiHardwareRequiredUI_entry(unknown_t unk1) {
-+#if XE_PLATFORM_PS5
-+  static std::atomic<bool> motion_reported{false};
-+  if (xbox360ps5::motion::enabled.load() && !motion_reported.exchange(true))
-+    XELOGW("Motion research: XamShowNuiHardwareRequiredUI called; guest sensor remains unavailable; {}", xbox360ps5::motion::Status());
-+#endif
-   if (unk1 != 0) {
-     return X_ERROR_INVALID_PARAMETER;
-   }
-@@ -393,6 +607,11 @@ dword_result_t XamShowNuiHardwareRequiredUI_entry(unknown_t unk1) {
- DECLARE_XAM_EXPORT1(XamShowNuiHardwareRequiredUI, kNone, kImplemented);
- 
- dword_result_t XamShowNuiGuideUI_entry(unknown_t unk1, unknown_t unk2) {
-+#if XE_PLATFORM_PS5
-+  static std::atomic<bool> motion_reported{false};
-+  if (xbox360ps5::motion::enabled.load() && !motion_reported.exchange(true))
-+    XELOGW("Motion research: XamShowNuiGuideUI called; guest sensor remains unavailable; {}", xbox360ps5::motion::Status());
-+#endif
-   /* Notes:
-    - calls an unnamed function that checks XamNuiHudIsEnabled and
-    XamNuiHudSetEngagedTrackingID
-@@ -421,6 +640,11 @@ DECLARE_XAM_EXPORT1(XamShowNuiGuideUI, kNone, kStub);
+@@ -323,6 +527,11 @@ DECLARE_XAM_EXPORT1(XamNuiHudGetVersions, kNone, kImplemented);
  uint64_t NUI_Session_Id = 0;
  
  qword_result_t XamNuiIdentityGetSessionId_entry() {
@@ -6520,7 +6643,7 @@ index cb378fc..ccd3cbf 100644
    if (NUI_Session_Id == 0) {
      // xboxkrnl::XeCryptRandom_entry(NUI_Session_Id, 8);
      NUI_Session_Id = 0xDEADF00DDEADF00D;
-@@ -431,6 +655,11 @@ DECLARE_XAM_EXPORT1(XamNuiIdentityGetSessionId, kNone, kImplemented);
+@@ -333,6 +542,11 @@ DECLARE_XAM_EXPORT1(XamNuiIdentityGetSessionId, kNone, kImplemented);
  
  dword_result_t XamNuiIdentityEnrollForSignIn_entry(dword_t unk1, qword_t unk2,
                                                     qword_t unk3, dword_t unk4) {
@@ -6532,7 +6655,7 @@ index cb378fc..ccd3cbf 100644
    /* Notes:
       - Decompiler issues so double check
    */
-@@ -446,6 +675,11 @@ dword_result_t XamNuiIdentityEnrollForSignIn_entry(dword_t unk1, qword_t unk2,
+@@ -348,6 +562,11 @@ dword_result_t XamNuiIdentityEnrollForSignIn_entry(dword_t unk1, qword_t unk2,
  DECLARE_XAM_EXPORT1(XamNuiIdentityEnrollForSignIn, kNone, kStub);
  
  dword_result_t XamNuiIdentityAbort_entry(dword_t unk) {
@@ -6544,7 +6667,7 @@ index cb378fc..ccd3cbf 100644
    if (XamNuiHudIsEnabled_entry() == false) {
      return X_E_FAIL;
    }
-@@ -459,12 +693,22 @@ DECLARE_XAM_EXPORT1(XamNuiIdentityAbort, kNone, kStub);
+@@ -361,12 +580,22 @@ DECLARE_XAM_EXPORT1(XamNuiIdentityAbort, kNone, kStub);
  // Other
  dword_result_t XamUserNuiEnableBiometric_entry(dword_t user_index,
                                                 int_t enable) {
@@ -6568,10 +6691,17 @@ index cb378fc..ccd3cbf 100644
       - Only calls a second function with the params unk3, 0, and 0x1c in that
       order
 diff --git a/src/xenia/kernel/xam/xam_ui.cc b/src/xenia/kernel/xam/xam_ui.cc
-index 59f08fc..ab291e8 100644
+index 07b32f038..059c083be 100644
 --- a/src/xenia/kernel/xam/xam_ui.cc
 +++ b/src/xenia/kernel/xam/xam_ui.cc
-@@ -16,6 +16,7 @@
+@@ -10,12 +10,14 @@
+ #include "xenia/kernel/xam/xam_ui.h"
+ 
+ #include <algorithm>
++#include <atomic>
+ 
+ #include "xenia/app/emulator_window.h"
+ #include "xenia/base/png_utils.h"
  #include "xenia/base/system.h"
  #include "xenia/hid/input_system.h"
  #include "xenia/kernel/guest_scheduler.h"
@@ -6579,17 +6709,18 @@ index 59f08fc..ab291e8 100644
  #include "xenia/kernel/kernel_state.h"
  #include "xenia/kernel/title_id_utils.h"
  #include "xenia/kernel/util/shim_utils.h"
-@@ -24,6 +25,9 @@
+@@ -24,6 +26,10 @@
  #include "xenia/kernel/xam/xam_private.h"
  #include "xenia/ui/file_picker.h"
  #include "xenia/ui/imgui_dialog.h"
 +#if XE_PLATFORM_PS5
 +#include "xenia/ui/controller_keyboard_dialog.h"
++#include "xbox360ps5/motion_input.hpp"
 +#endif
  #include "xenia/ui/imgui_drawer.h"
  #include "xenia/ui/imgui_guest_notification.h"
  
-@@ -89,7 +93,7 @@ X_RESULT xeXamDispatchDialog(T* dialog,
+@@ -89,7 +95,7 @@ X_RESULT xeXamDispatchDialog(T* dialog,
      return result;
    };
    auto post = []() {
@@ -6598,7 +6729,7 @@ index 59f08fc..ab291e8 100644
        xe::threading::Sleep(kUIDelayMillis);
        kernel_state()->BroadcastNotification(kXNotificationSystemUI, false);
      });
-@@ -156,7 +160,7 @@ X_RESULT xeXamDispatchWithoutDialog(std::function<X_RESULT()> run_callback,
+@@ -156,7 +162,7 @@ X_RESULT xeXamDispatchWithoutDialog(std::function<X_RESULT()> run_callback,
      xe::threading::Sleep(std::chrono::milliseconds(25));
    };
    auto post = []() {
@@ -6607,7 +6738,7 @@ index 59f08fc..ab291e8 100644
        xe::threading::Sleep(kUIDelayMillis);
        kernel_state()->BroadcastNotification(kXNotificationSystemUI, false);
      });
-@@ -175,6 +179,25 @@ X_RESULT xeXamDispatchWithoutDialog(std::function<X_RESULT()> run_callback,
+@@ -175,6 +181,25 @@ X_RESULT xeXamDispatchWithoutDialog(std::function<X_RESULT()> run_callback,
    }
  }
  
@@ -6633,7 +6764,7 @@ index 59f08fc..ab291e8 100644
  template <typename T>
  X_RESULT xeXamDispatchDialogAsync(T* dialog,
                                    std::function<void(T*)> close_callback) {
-@@ -362,6 +385,17 @@ static dword_result_t XamShowMessageBoxUi(
+@@ -362,6 +387,17 @@ static dword_result_t XamShowMessageBoxUi(
    }
  
    X_RESULT result;
@@ -6651,7 +6782,7 @@ index 59f08fc..ab291e8 100644
    switch (flags & 0xF) {
      case XMBox_NOICON: {
      } break;
-@@ -467,6 +501,131 @@ dword_result_t XNotifyQueueUI_entry(dword_t exnq, dword_t dwUserIndex,
+@@ -467,6 +503,131 @@ dword_result_t XNotifyQueueUI_entry(dword_t exnq, dword_t dwUserIndex,
  }
  DECLARE_XAM_EXPORT1(XNotifyQueueUI, kUI, kSketchy);
  
@@ -6783,7 +6914,7 @@ index 59f08fc..ab291e8 100644
  // https://www.se7ensins.com/forums/threads/release-how-to-use-xshowkeyboardui-release.906568/
  dword_result_t XamShowKeyboardUI_entry(
      dword_t user_index, dword_t flags, lpu16string_t default_text,
-@@ -478,6 +637,31 @@ dword_result_t XamShowKeyboardUI_entry(
+@@ -478,6 +639,31 @@ dword_result_t XamShowKeyboardUI_entry(
  
    assert_not_null(overlapped);
  
@@ -6815,7 +6946,7 @@ index 59f08fc..ab291e8 100644
    auto close = [buffer, buffer_length](KeyboardInputDialog* dialog,
                                         uint32_t& extended_error,
                                         uint32_t& length) -> X_RESULT {
-@@ -549,7 +733,11 @@ dword_result_t XamShowDeviceSelectorUI_entry(
+@@ -549,7 +735,11 @@ dword_result_t XamShowDeviceSelectorUI_entry(
  
    std::vector<const DummyDeviceInfo*> devices = ListStorageDevices();
  
@@ -6828,9 +6959,9 @@ index 59f08fc..ab291e8 100644
      // Default to the first storage device (HDD).
      return xeXamDispatchWithoutDialog(
          [device_id_ptr, devices]() -> X_RESULT {
-@@ -609,6 +797,13 @@ void XamShowDirtyDiscErrorUI_entry(dword_t user_index,
-       "There's been an issue reading content from the game disc.\nThis is "
-       "likely caused by bad or unimplemented file IO calls.";
+@@ -609,6 +799,13 @@ void XamShowDirtyDiscErrorUI_entry(dword_t user_index,
+   XELOGE("XamShowDirtyDiscErrorUI: title reported a disc read error, lr {:08X}",
+          uint32_t(context->lr));
  
 +#if XE_PLATFORM_PS5
 +  if (cvars::headless) {
@@ -6842,7 +6973,7 @@ index 59f08fc..ab291e8 100644
    const Emulator* emulator = kernel_state()->emulator();
    xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
    xe::hid::InputSystem* input_system = emulator->input_system();
-@@ -670,6 +865,12 @@ dword_result_t XamShowMarketplaceUIEx_entry(dword_t user_index, dword_t ui_type,
+@@ -668,6 +865,12 @@ dword_result_t XamShowMarketplaceUIEx_entry(dword_t user_index, dword_t ui_type,
      return X_ERROR_NO_SUCH_USER;
    }
  
@@ -6855,7 +6986,7 @@ index 59f08fc..ab291e8 100644
    if (kernel_state()->xam_state()->IsUIActive()) {
      return X_ERROR_ACCESS_DENIED;
    }
-@@ -814,6 +1015,19 @@ dword_result_t XamShowMarketplaceDownloadItemsUI_entry(
+@@ -812,6 +1015,19 @@ dword_result_t XamShowMarketplaceDownloadItemsUI_entry(
      return X_ERROR_NO_SUCH_USER;
    }
  
@@ -6875,7 +7006,7 @@ index 59f08fc..ab291e8 100644
    if (kernel_state()->xam_state()->IsUIActive()) {
      return X_ERROR_ACCESS_DENIED;
    }
-@@ -956,6 +1170,25 @@ X_RESULT xeXamShowSigninUI(uint32_t user_index, uint32_t users_needed,
+@@ -967,6 +1183,25 @@ X_RESULT xeXamShowSigninUI(uint32_t user_index, uint32_t users_needed,
      return X_ERROR_INVALID_PARAMETER;
    }
  
@@ -6901,7 +7032,7 @@ index 59f08fc..ab291e8 100644
    if (kernel_state()->xam_state()->IsUIActive()) {
      return X_ERROR_ACCESS_DENIED;
    }
-@@ -978,6 +1211,12 @@ X_RESULT xeXamShowCreateProfileUIEx(uint32_t user_index, dword_t flag,
+@@ -989,6 +1224,12 @@ X_RESULT xeXamShowCreateProfileUIEx(uint32_t user_index, dword_t flag,
    Emulator* emulator = kernel_state()->emulator();
    xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
  
@@ -6914,8 +7045,44 @@ index 59f08fc..ab291e8 100644
    if (kernel_state()->xam_state()->IsUIActive()) {
      return X_ERROR_ACCESS_DENIED;
    }
+@@ -1167,6 +1408,11 @@ bool xeXamChooseIndieGame(std::string* file_name, uint32_t* device_id,
+ dword_result_t XamShowNuiTroubleshooterUI_entry(dword_t user_index,
+                                                 dword_t tracking_id,
+                                                 dword_t flags) {
++#if XE_PLATFORM_PS5
++  static std::atomic<bool> motion_reported{false};
++  if (xbox360ps5::motion::enabled.load() && !motion_reported.exchange(true))
++    XELOGW("Motion research: XamShowNuiTroubleshooterUI called; guest sensor remains unavailable; {}", xbox360ps5::motion::Status());
++#endif
+   /* Notes:
+      - calls XamPackageManagerGetExperienceMode(&var) with var = 1
+      - If returns less than zero or (var & 1) == 0 then get error message:
+@@ -1211,6 +1457,11 @@ dword_result_t XamShowNuiTroubleshooterUI_entry(dword_t user_index,
+ DECLARE_XAM_EXPORT1(XamShowNuiTroubleshooterUI, kNone, kStub);
+ 
+ dword_result_t XamShowNuiHardwareRequiredUI_entry(unknown_t unk1) {
++#if XE_PLATFORM_PS5
++  static std::atomic<bool> motion_reported{false};
++  if (xbox360ps5::motion::enabled.load() && !motion_reported.exchange(true))
++    XELOGW("Motion research: XamShowNuiHardwareRequiredUI called; guest sensor remains unavailable; {}", xbox360ps5::motion::Status());
++#endif
+   if (unk1 != 0) {
+     return X_ERROR_INVALID_PARAMETER;
+   }
+@@ -1220,6 +1471,11 @@ dword_result_t XamShowNuiHardwareRequiredUI_entry(unknown_t unk1) {
+ DECLARE_XAM_EXPORT1(XamShowNuiHardwareRequiredUI, kNone, kImplemented);
+ 
+ dword_result_t XamShowNuiGuideUI_entry(unknown_t tracking_id, unknown_t unk2) {
++#if XE_PLATFORM_PS5
++  static std::atomic<bool> motion_reported{false};
++  if (xbox360ps5::motion::enabled.load() && !motion_reported.exchange(true))
++    XELOGW("Motion research: XamShowNuiGuideUI called; guest sensor remains unavailable; {}", xbox360ps5::motion::Status());
++#endif
+   /* Notes:
+    - calls xeXamNuiHudCheck, if success call XamAppRequestLoadEx(4) and if
+    succeed call XMsgSystemProcessCall and some sub function that ensures correct
 diff --git a/src/xenia/kernel/xboxkrnl/xboxkrnl_debug.cc b/src/xenia/kernel/xboxkrnl/xboxkrnl_debug.cc
-index 58761d1..d0c4175 100644
+index 58761d1a0..d0c4175b6 100644
 --- a/src/xenia/kernel/xboxkrnl/xboxkrnl_debug.cc
 +++ b/src/xenia/kernel/xboxkrnl/xboxkrnl_debug.cc
 @@ -18,6 +18,9 @@
@@ -6953,7 +7120,7 @@ index 58761d1..d0c4175 100644
    auto* display_window = emulator->display_window();
    auto* imgui_drawer = emulator->imgui_drawer();
 diff --git a/src/xenia/kernel/xboxkrnl/xboxkrnl_io.cc b/src/xenia/kernel/xboxkrnl/xboxkrnl_io.cc
-index 7e79190..36aef7e 100644
+index 7e7919020..36aef7ee0 100644
 --- a/src/xenia/kernel/xboxkrnl/xboxkrnl_io.cc
 +++ b/src/xenia/kernel/xboxkrnl/xboxkrnl_io.cc
 @@ -14,6 +14,12 @@
@@ -7020,7 +7187,7 @@ index 7e79190..36aef7e 100644
  }  // namespace kernel
  }  // namespace xe
 diff --git a/src/xenia/kernel/xboxkrnl/xboxkrnl_module.cc b/src/xenia/kernel/xboxkrnl/xboxkrnl_module.cc
-index 3bcccc8..41bd116 100644
+index 3bcccc8ab..41bd1160d 100644
 --- a/src/xenia/kernel/xboxkrnl/xboxkrnl_module.cc
 +++ b/src/xenia/kernel/xboxkrnl/xboxkrnl_module.cc
 @@ -259,7 +259,10 @@ void XboxkrnlModule::RegisterExportTable(
@@ -7036,7 +7203,7 @@ index 3bcccc8..41bd116 100644
  }  // namespace xboxkrnl
  }  // namespace kernel
 diff --git a/src/xenia/kernel/xboxkrnl/xboxkrnl_module_export_groups.inc b/src/xenia/kernel/xboxkrnl/xboxkrnl_module_export_groups.inc
-index ca88ea0..fc7af3d 100644
+index ca88ea056..fc7af3daa 100644
 --- a/src/xenia/kernel/xboxkrnl/xboxkrnl_module_export_groups.inc
 +++ b/src/xenia/kernel/xboxkrnl/xboxkrnl_module_export_groups.inc
 @@ -30,3 +30,5 @@ XE_MODULE_EXPORT_GROUP(xboxkrnl, Usbcam)
@@ -7046,7 +7213,7 @@ index ca88ea0..fc7af3d 100644
 +
 +XE_MODULE_EXPORT_GROUP(xboxkrnl, PsCam)
 diff --git a/src/xenia/kernel/xboxkrnl/xboxkrnl_private.h b/src/xenia/kernel/xboxkrnl/xboxkrnl_private.h
-index 3795771..683655e 100644
+index 379577176..683655e2d 100644
 --- a/src/xenia/kernel/xboxkrnl/xboxkrnl_private.h
 +++ b/src/xenia/kernel/xboxkrnl/xboxkrnl_private.h
 @@ -27,6 +27,8 @@ xe::cpu::Export* RegisterExport_xboxkrnl(xe::cpu::Export* export_entry);
@@ -7060,7 +7227,7 @@ index 3795771..683655e 100644
  }  // namespace xe
 diff --git a/src/xenia/kernel/xboxkrnl/xboxkrnl_pscam.cc b/src/xenia/kernel/xboxkrnl/xboxkrnl_pscam.cc
 new file mode 100644
-index 0000000..6aed974
+index 000000000..6aed97499
 --- /dev/null
 +++ b/src/xenia/kernel/xboxkrnl/xboxkrnl_pscam.cc
 @@ -0,0 +1,1141 @@
@@ -8206,7 +8373,7 @@ index 0000000..6aed974
 +
 +DECLARE_XBOXKRNL_EMPTY_REGISTER_EXPORTS(PsCam);
 diff --git a/src/xenia/kernel/xboxkrnl/xboxkrnl_threading.cc b/src/xenia/kernel/xboxkrnl/xboxkrnl_threading.cc
-index 7139999..0ae7202 100644
+index 7139999aa..0ae720290 100644
 --- a/src/xenia/kernel/xboxkrnl/xboxkrnl_threading.cc
 +++ b/src/xenia/kernel/xboxkrnl/xboxkrnl_threading.cc
 @@ -867,6 +867,37 @@ dword_result_t NtReleaseSemaphore_entry(dword_t sem_handle,
@@ -8248,7 +8415,7 @@ index 7139999..0ae7202 100644
      lpdword_t handle_out, pointer_t<X_OBJECT_ATTRIBUTES> obj_attributes,
      dword_t initial_owner) {
 diff --git a/src/xenia/kernel/xboxkrnl/xboxkrnl_video.cc b/src/xenia/kernel/xboxkrnl/xboxkrnl_video.cc
-index 5018215..43026cb 100644
+index 501821580..43026cb63 100644
 --- a/src/xenia/kernel/xboxkrnl/xboxkrnl_video.cc
 +++ b/src/xenia/kernel/xboxkrnl/xboxkrnl_video.cc
 @@ -17,6 +17,7 @@
@@ -8269,7 +8436,7 @@ index 5018215..43026cb 100644
    assert(buffer_ptr);
    assert(fetch_ptr);
 diff --git a/src/xenia/kernel/xobject.cc b/src/xenia/kernel/xobject.cc
-index 27b8bf7..924072a 100644
+index 27b8bf7f5..924072a35 100644
 --- a/src/xenia/kernel/xobject.cc
 +++ b/src/xenia/kernel/xobject.cc
 @@ -496,6 +496,24 @@ xe::threading::WaitHandle* XObject::GetWaitHandleForCurrentThread(size_t slot) {
@@ -8323,7 +8490,7 @@ index 27b8bf7..924072a 100644
    const uint64_t deadline_ms =
        timeout_ms == std::chrono::milliseconds::max()
 diff --git a/src/xenia/kernel/xsocket.cc b/src/xenia/kernel/xsocket.cc
-index a8eac6c..c9d3cfd 100644
+index a8eac6cbe..c9d3cfd7b 100644
 --- a/src/xenia/kernel/xsocket.cc
 +++ b/src/xenia/kernel/xsocket.cc
 @@ -148,9 +148,12 @@ uint32_t AsioErrorToWSAError(const asio::error_code& ec) {
@@ -8410,7 +8577,7 @@ index a8eac6c..c9d3cfd 100644
      last_error_ = AsioErrorToWSAError(ec);
      return X_STATUS_UNSUCCESSFUL;
 diff --git a/src/xenia/kernel/xthread.cc b/src/xenia/kernel/xthread.cc
-index ca42c30..33d5a32 100644
+index ca42c30ee..33d5a32ce 100644
 --- a/src/xenia/kernel/xthread.cc
 +++ b/src/xenia/kernel/xthread.cc
 @@ -8,6 +8,9 @@
@@ -8581,7 +8748,7 @@ index ca42c30..33d5a32 100644
        reinterpret_cast<std::atomic_uint8_t*>(&guest_thread->suspend_count)
            ->fetch_add(1);
 diff --git a/src/xenia/kernel/xthread.h b/src/xenia/kernel/xthread.h
-index d6d79c1..9a194dc 100644
+index d6d79c1a8..9a194dcb6 100644
 --- a/src/xenia/kernel/xthread.h
 +++ b/src/xenia/kernel/xthread.h
 @@ -21,9 +21,7 @@
@@ -8633,7 +8800,7 @@ index d6d79c1..9a194dc 100644
    // When the cooperative scheduler is active, the guest thread runs on this
    // fiber instead of its own host thread (cpu::Thread::thread_).
 diff --git a/src/xenia/memory.cc b/src/xenia/memory.cc
-index bc5da37..77a627b 100644
+index bc5da3752..77a627bbe 100644
 --- a/src/xenia/memory.cc
 +++ b/src/xenia/memory.cc
 @@ -30,6 +30,9 @@
@@ -8813,7 +8980,7 @@ index bc5da37..77a627b 100644
    assert_true(address >= heap_base_);
    address -= heap_base_;
 diff --git a/src/xenia/memory.h b/src/xenia/memory.h
-index 03003e5..9863e5a 100644
+index 03003e563..9863e5a83 100644
 --- a/src/xenia/memory.h
 +++ b/src/xenia/memory.h
 @@ -33,6 +33,20 @@ namespace xe {
@@ -8867,7 +9034,7 @@ index 03003e5..9863e5a 100644
      uint32_t system_base = num << system_page_shift_;
      uint32_t offset = host_address_offset();
 diff --git a/src/xenia/ui/CMakeLists.txt b/src/xenia/ui/CMakeLists.txt
-index 8b8d175..18c9789 100644
+index 8b8d17583..18c9789fb 100644
 --- a/src/xenia/ui/CMakeLists.txt
 +++ b/src/xenia/ui/CMakeLists.txt
 @@ -7,12 +7,15 @@ file(GLOB _ui_exclude
@@ -8907,7 +9074,7 @@ index 8b8d175..18c9789 100644
         "${PROJECT_SOURCE_DIR}/assets/locale/*/xenia.po")
 diff --git a/src/xenia/ui/controller_keyboard.h b/src/xenia/ui/controller_keyboard.h
 new file mode 100644
-index 0000000..24f20af
+index 000000000..24f20af58
 --- /dev/null
 +++ b/src/xenia/ui/controller_keyboard.h
 @@ -0,0 +1,213 @@
@@ -9126,7 +9293,7 @@ index 0000000..24f20af
 +#endif
 diff --git a/src/xenia/ui/controller_keyboard_dialog.cc b/src/xenia/ui/controller_keyboard_dialog.cc
 new file mode 100644
-index 0000000..f33ec01
+index 000000000..f33ec01ae
 --- /dev/null
 +++ b/src/xenia/ui/controller_keyboard_dialog.cc
 @@ -0,0 +1,34 @@
@@ -9166,7 +9333,7 @@ index 0000000..f33ec01
 +}  // namespace xe::ui
 diff --git a/src/xenia/ui/controller_keyboard_dialog.h b/src/xenia/ui/controller_keyboard_dialog.h
 new file mode 100644
-index 0000000..a26e9c5
+index 000000000..a26e9c505
 --- /dev/null
 +++ b/src/xenia/ui/controller_keyboard_dialog.h
 @@ -0,0 +1,27 @@
@@ -9199,7 +9366,7 @@ index 0000000..a26e9c5
 +#endif
 diff --git a/src/xenia/ui/controller_keyboard_view.cc b/src/xenia/ui/controller_keyboard_view.cc
 new file mode 100644
-index 0000000..b3bed9f
+index 000000000..b3bed9fdc
 --- /dev/null
 +++ b/src/xenia/ui/controller_keyboard_view.cc
 @@ -0,0 +1,56 @@
@@ -9261,7 +9428,7 @@ index 0000000..b3bed9f
 +}  // namespace xe::ui
 diff --git a/src/xenia/ui/controller_keyboard_view.h b/src/xenia/ui/controller_keyboard_view.h
 new file mode 100644
-index 0000000..6be13e2
+index 000000000..6be13e27b
 --- /dev/null
 +++ b/src/xenia/ui/controller_keyboard_view.h
 @@ -0,0 +1,11 @@
@@ -9277,7 +9444,7 @@ index 0000000..6be13e2
 +}
 +#endif
 diff --git a/src/xenia/ui/imgui_drawer.cc b/src/xenia/ui/imgui_drawer.cc
-index 23fa672..1615383 100644
+index 23fa67211..16153831b 100644
 --- a/src/xenia/ui/imgui_drawer.cc
 +++ b/src/xenia/ui/imgui_drawer.cc
 @@ -32,7 +32,7 @@
@@ -9308,10 +9475,10 @@ index 23fa672..1615383 100644
    FcConfig* config = FcInitLoadConfigAndFonts();
    if (!config) {
 diff --git a/src/xenia/ui/presenter.cc b/src/xenia/ui/presenter.cc
-index 3fd1662..6be5047 100644
+index 3fd166235..6073a475d 100644
 --- a/src/xenia/ui/presenter.cc
 +++ b/src/xenia/ui/presenter.cc
-@@ -14,11 +14,24 @@
+@@ -14,11 +14,36 @@
  #include "xenia/base/logging.h"
  #include "xenia/base/platform.h"
  #include "xenia/ui/window.h"
@@ -9324,7 +9491,19 @@ index 3fd1662..6be5047 100644
  #include "xenia/ui/surface_win.h"
  #endif
  
++// PS5X360E: VideoOut's flip rate, in RADV's window system (PS5_Mesa aa44fa4):
++// 0 shows each flip for one refresh, 1 for two, 2 for three. Weak, so a driver
++// without it leaves the presenter repeating presents itself.
++#if XE_PLATFORM_PS5
++extern "C" int wsi_videoout_set_flip_rate(int rate) __attribute__((weak));
++#endif
++
 +// PS5X360E
++DEFINE_bool(present_frame_repeat_hardware, true,
++            "When present_frame_repeat is 2 or 3 on the PS5, let the display "
++            "hold each frame (VideoOut flip rate) instead of presenting it "
++            "again at every refresh.",
++            "Display");
 +DEFINE_uint32(
 +    present_frame_repeat, 0,
 +    "With a vsynced (FIFO) host swapchain, show each guest frame for exactly "
@@ -9336,7 +9515,7 @@ index 3fd1662..6be5047 100644
  // On Windows, InvalidateRect causes WM_PAINT to be sent quite quickly, so
  // presenting from the thread refreshing the guest output is not absolutely
  // necessary, but still may be nice for bypassing the scheduling and the
-@@ -246,6 +259,40 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+@@ -246,6 +271,49 @@ void Presenter::PaintFromUIThread(bool force_paint) {
    if (ui_thread_paint_requested_.exchange(false, std::memory_order_relaxed)) {
      do_paint = true;
    }
@@ -9347,7 +9526,7 @@ index 3fd1662..6be5047 100644
 +  // Otherwise the newest frame is taken at each refresh, and a frame landing
 +  // near a refresh gets 1 and its neighbour 3 (16.7 / 50 ms).
 +  hold_guest_output_.store(false, std::memory_order_relaxed);
-+  const uint32_t frame_repeat = cvars::present_frame_repeat;
++  uint32_t frame_repeat = cvars::present_frame_repeat;
 +  bool paced = false;
 +  if (frame_repeat && !force_paint &&
 +      surface_paint_connection_has_implicit_vsync_ &&
@@ -9361,6 +9540,12 @@ index 3fd1662..6be5047 100644
 +    if (std::chrono::steady_clock::now() - last_refresh <
 +        std::chrono::milliseconds(250)) {
 +      paced = true;
++      // The display holds each present for the frame's refreshes when it can:
++      // one present per frame, half (or a third) of the presents' GPU and CPU
++      // work, and the timing is the display's own.
++      if (SetHardwareRefreshesPerPresent(frame_repeat)) {
++        frame_repeat = 1;
++      }
 +      const uint64_t published =
 +          guest_output_sequence_published_.load(std::memory_order_acquire);
 +      if (paced_sequence_ && paced_presents_ < frame_repeat) {
@@ -9374,10 +9559,13 @@ index 3fd1662..6be5047 100644
 +      }
 +    }
 +  }
++  if (!paced) {
++    SetHardwareRefreshesPerPresent(1);
++  }
    PaintResult paint_result = PaintResult::kNotPresented;
    bool request_repaint_at_tick = false;
    bool request_repaint_immediately = false;
-@@ -292,6 +339,36 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+@@ -292,6 +360,36 @@ void Presenter::PaintFromUIThread(bool force_paint) {
        WaitForUITickFromUIThread();
  
        paint_result = PaintAndPresent(draw_ui);
@@ -9398,7 +9586,7 @@ index 3fd1662..6be5047 100644
 +        // Pacing statistics: present intervals, and refreshes per frame.
 +        xbox360ps5::gpu_diag::host_presents.Mark();
 +        if (sequence == stats_sequence_) {
-+          ++stats_presents_;
++          stats_presents_ += hardware_refreshes_per_present_;
 +        } else {
 +          if (stats_sequence_ && sequence > stats_sequence_) {
 +            xbox360ps5::gpu_diag::shown_refreshes[std::min<uint32_t>(
@@ -9408,13 +9596,13 @@ index 3fd1662..6be5047 100644
 +                sequence - stats_sequence_ - 1, std::memory_order_relaxed);
 +          }
 +          stats_sequence_ = sequence;
-+          stats_presents_ = 1;
++          stats_presents_ = hardware_refreshes_per_present_;
 +        }
 +      }
        if (surface_paint_connection_state_ ==
            SurfacePaintConnectionState::kConnectedOutdated) {
          // Request another PaintFromUIThread which will try to recover from the
-@@ -369,6 +446,7 @@ bool Presenter::RefreshGuestOutput(
+@@ -369,6 +467,7 @@ bool Presenter::RefreshGuestOutput(
    writable_properties.display_aspect_ratio_x = display_aspect_ratio_x;
    writable_properties.display_aspect_ratio_y = display_aspect_ratio_y;
    writable_properties.is_8bpc = false;
@@ -9422,7 +9610,7 @@ index 3fd1662..6be5047 100644
    bool is_active = writable_properties.IsActive();
    if (is_active) {
      if (!RefreshGuestOutputImpl(guest_output_mailbox_writable_,
-@@ -431,6 +509,8 @@ bool Presenter::RefreshGuestOutput(
+@@ -431,6 +530,8 @@ bool Presenter::RefreshGuestOutput(
    // Count this frame so the UI thread can tell the guest output is driving the
    // paint cadence and UI drawers don't request extra repaints on top of it.
    guest_output_refresh_count_.fetch_add(1, std::memory_order_relaxed);
@@ -9431,7 +9619,7 @@ index 3fd1662..6be5047 100644
    guest_output_last_refresh_ticks_.store(
        std::chrono::steady_clock::now().time_since_epoch().count(),
        std::memory_order_relaxed);
-@@ -503,6 +583,15 @@ void Presenter::SetGuestOutputPaintConfigFromUIThread(
+@@ -503,6 +604,15 @@ void Presenter::SetGuestOutputPaintConfigFromUIThread(
      modified = true;
      request_repaint = true;
    }
@@ -9447,7 +9635,7 @@ index 3fd1662..6be5047 100644
    if (modified) {
      {
        std::unique_lock<std::mutex> config_lock(
-@@ -646,8 +735,13 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
+@@ -646,8 +756,13 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
        guest_output_mailbox_acquired_and_ready_.load(std::memory_order_relaxed);
    // Desired acquired = current ready.
    // Desired ready = current ready (changed only by the producer).
@@ -9462,7 +9650,7 @@ index 3fd1662..6be5047 100644
    // Either the same image as during the last consumption, or a new one, is
    // satisfying. However, if it's new, using memory_order_acq_rel to acquire the
    // new ready image (to make it acquired) and to release the old acquired image
-@@ -657,7 +751,9 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
+@@ -657,7 +772,9 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
               old_acquired_and_ready, desired_acquired_and_ready,
               std::memory_order_acq_rel, std::memory_order_relaxed)) {
      desired_acquired_and_ready =
@@ -9473,7 +9661,7 @@ index 3fd1662..6be5047 100644
    }
    uint32_t mailbox_index = desired_acquired_and_ready & 3;
    // Give the current acquired image to the caller, or UINT32_MAX if it's
-@@ -669,6 +765,8 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
+@@ -669,9 +786,46 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
    if (properties_out) {
      *properties_out = properties;
    }
@@ -9482,8 +9670,46 @@ index 3fd1662..6be5047 100644
    return std::move(consumer_lock);
  }
  
++bool Presenter::SetHardwareRefreshesPerPresent(uint32_t refreshes) {
++#if XE_PLATFORM_PS5
++  if (!cvars::present_frame_repeat_hardware || refreshes > 3 ||
++      !wsi_videoout_set_flip_rate || hardware_flip_rate_refused_) {
++    refreshes = 1;
++  }
++  if (refreshes == hardware_refreshes_per_present_) {
++    return refreshes > 1;
++  }
++  if (!wsi_videoout_set_flip_rate) {
++    return false;
++  }
++  const int result = wsi_videoout_set_flip_rate(int(refreshes) - 1);
++  if (result < 0) {
++    XELOGW("Display: VideoOut refused flip rate {} ({}); presenting each "
++           "frame again instead",
++           refreshes - 1, result);
++    hardware_flip_rate_refused_ = true;
++    if (refreshes > 1) {
++      wsi_videoout_set_flip_rate(0);
++    }
++    hardware_refreshes_per_present_ = 1;
++    return false;
++  }
++  XELOGI("Display: each present shown for {} refresh(es) (VideoOut flip rate "
++         "{})",
++         refreshes, refreshes - 1);
++  hardware_refreshes_per_present_ = refreshes;
++  return refreshes > 1;
++#else
++  (void)refreshes;
++  return false;
++#endif
++}
++
+ Presenter::GuestOutputPaintFlow Presenter::GetGuestOutputPaintFlow(
+     const GuestOutputProperties& properties, uint32_t host_rt_width,
+     uint32_t host_rt_height, uint32_t max_rt_width, uint32_t max_rt_height,
 diff --git a/src/xenia/ui/presenter.h b/src/xenia/ui/presenter.h
-index 93f9250..e34a95b 100644
+index 93f9250e6..08ffd26ce 100644
 --- a/src/xenia/ui/presenter.h
 +++ b/src/xenia/ui/presenter.h
 @@ -47,6 +47,7 @@
@@ -9525,7 +9751,7 @@ index 93f9250..e34a95b 100644
  
      GuestOutputProperties() { SetToInactive(); }
  
-@@ -978,6 +995,20 @@ class Presenter {
+@@ -978,6 +995,29 @@ class Presenter {
    // presentation, so the UI thread can tell whether the guest output is driving
    // the paint cadence.
    std::atomic<uint64_t> guest_output_refresh_count_{0};
@@ -9539,6 +9765,15 @@ index 93f9250..e34a95b 100644
 +  std::atomic<uint64_t> last_consumed_guest_sequence_{0};
 +  uint64_t paced_sequence_ = 0;
 +  uint32_t paced_presents_ = 0;
++  // PS5X360E: the display's own frame rate (VideoOut flip rate, PS5_Mesa
++  // wsi_videoout_set_flip_rate) set for present_frame_repeat: refreshes each
++  // present is shown for (1: every refresh), and whether the driver refused.
++  // Painting thread only.
++  uint32_t hardware_refreshes_per_present_ = 1;
++  bool hardware_flip_rate_refused_ = false;
++  // Makes the display show each present for `refreshes` refreshes when the
++  // platform can (1 to 3); true when it does.
++  bool SetHardwareRefreshesPerPresent(uint32_t refreshes);
 +  // For the pacing statistics: the frame of the previous present and how many
 +  // presents it had.
 +  uint64_t stats_sequence_ = 0;
@@ -9548,7 +9783,7 @@ index 93f9250..e34a95b 100644
        0};
 diff --git a/src/xenia/ui/shaders/post_fxaa.ps.slang b/src/xenia/ui/shaders/post_fxaa.ps.slang
 new file mode 100644
-index 0000000..74595c0
+index 000000000..74595c091
 --- /dev/null
 +++ b/src/xenia/ui/shaders/post_fxaa.ps.slang
 @@ -0,0 +1,45 @@
@@ -9599,7 +9834,7 @@ index 0000000..74595c0
 +}
 diff --git a/src/xenia/ui/shaders/smaa.hlsli b/src/xenia/ui/shaders/smaa.hlsli
 new file mode 100644
-index 0000000..075cac9
+index 000000000..075cac9a5
 --- /dev/null
 +++ b/src/xenia/ui/shaders/smaa.hlsli
 @@ -0,0 +1,1361 @@
@@ -10966,7 +11201,7 @@ index 0000000..075cac9
 +#endif // SMAA_INCLUDE_PS
 diff --git a/src/xenia/ui/shaders/smaa_blend.ps.slang b/src/xenia/ui/shaders/smaa_blend.ps.slang
 new file mode 100644
-index 0000000..19e4000
+index 000000000..19e400060
 --- /dev/null
 +++ b/src/xenia/ui/shaders/smaa_blend.ps.slang
 @@ -0,0 +1,14 @@
@@ -10986,7 +11221,7 @@ index 0000000..19e4000
 +}
 diff --git a/src/xenia/ui/shaders/smaa_common.hlsli b/src/xenia/ui/shaders/smaa_common.hlsli
 new file mode 100644
-index 0000000..8c6a6bc
+index 000000000..8c6a6bcf6
 --- /dev/null
 +++ b/src/xenia/ui/shaders/smaa_common.hlsli
 @@ -0,0 +1,48 @@
@@ -11040,7 +11275,7 @@ index 0000000..8c6a6bc
 +}
 diff --git a/src/xenia/ui/shaders/smaa_edges.ps.slang b/src/xenia/ui/shaders/smaa_edges.ps.slang
 new file mode 100644
-index 0000000..eff4ac6
+index 000000000..eff4ac61d
 --- /dev/null
 +++ b/src/xenia/ui/shaders/smaa_edges.ps.slang
 @@ -0,0 +1,11 @@
@@ -11057,7 +11292,7 @@ index 0000000..eff4ac6
 +}
 diff --git a/src/xenia/ui/shaders/smaa_fullscreen.vs.slang b/src/xenia/ui/shaders/smaa_fullscreen.vs.slang
 new file mode 100644
-index 0000000..db5e4e8
+index 000000000..db5e4e857
 --- /dev/null
 +++ b/src/xenia/ui/shaders/smaa_fullscreen.vs.slang
 @@ -0,0 +1,13 @@
@@ -11076,7 +11311,7 @@ index 0000000..db5e4e8
 +}
 diff --git a/src/xenia/ui/shaders/smaa_weights.ps.slang b/src/xenia/ui/shaders/smaa_weights.ps.slang
 new file mode 100644
-index 0000000..b0cea8f
+index 000000000..b0cea8f1d
 --- /dev/null
 +++ b/src/xenia/ui/shaders/smaa_weights.ps.slang
 @@ -0,0 +1,14 @@
@@ -11095,7 +11330,7 @@ index 0000000..b0cea8f
 +                                         xe_smaa_texture_2, float4(0.0, 0.0, 0.0, 0.0));
 +}
 diff --git a/src/xenia/ui/surface.h b/src/xenia/ui/surface.h
-index 3d64036..8f2d873 100644
+index 3d64036e9..8f2d873c2 100644
 --- a/src/xenia/ui/surface.h
 +++ b/src/xenia/ui/surface.h
 @@ -36,6 +36,7 @@ class Surface {
@@ -11116,7 +11351,7 @@ index 3d64036..8f2d873 100644
    Surface(const Surface& surface) = delete;
 diff --git a/src/xenia/ui/vulkan/framegen/COPYING b/src/xenia/ui/vulkan/framegen/COPYING
 new file mode 100644
-index 0000000..f288702
+index 000000000..f288702d2
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/COPYING
 @@ -0,0 +1,674 @@
@@ -11796,7 +12031,7 @@ index 0000000..f288702
 +<https://www.gnu.org/licenses/why-not-lgpl.html>.
 diff --git a/src/xenia/ui/vulkan/framegen/PROVENANCE.json b/src/xenia/ui/vulkan/framegen/PROVENANCE.json
 new file mode 100644
-index 0000000..f99deb7
+index 000000000..f99deb71a
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/PROVENANCE.json
 @@ -0,0 +1,6 @@
@@ -11809,7 +12044,7 @@ index 0000000..f99deb7
 \ No newline at end of file
 diff --git a/src/xenia/ui/vulkan/framegen/adaptive_pacing.hpp b/src/xenia/ui/vulkan/framegen/adaptive_pacing.hpp
 new file mode 100644
-index 0000000..fb2b12e
+index 000000000..fb2b12e0f
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/adaptive_pacing.hpp
 @@ -0,0 +1,373 @@
@@ -12188,7 +12423,7 @@ index 0000000..fb2b12e
 +}  // namespace ps5x360::framegen
 diff --git a/src/xenia/ui/vulkan/framegen/framegen_config.hpp b/src/xenia/ui/vulkan/framegen/framegen_config.hpp
 new file mode 100644
-index 0000000..60a7b26
+index 000000000..60a7b26c3
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/framegen_config.hpp
 @@ -0,0 +1,167 @@
@@ -12361,7 +12596,7 @@ index 0000000..60a7b26
 +}  // namespace ps5x360::framegen
 diff --git a/src/xenia/ui/vulkan/framegen/pacing_adapter.hpp b/src/xenia/ui/vulkan/framegen/pacing_adapter.hpp
 new file mode 100644
-index 0000000..b789360
+index 000000000..b78936006
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/pacing_adapter.hpp
 @@ -0,0 +1,256 @@
@@ -12623,7 +12858,7 @@ index 0000000..b789360
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp b/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp
 new file mode 100644
-index 0000000..45de8c9
+index 000000000..45de8c918
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp
 @@ -0,0 +1,460 @@
@@ -13089,7 +13324,7 @@ index 0000000..45de8c9
 +}  // namespace xe::ui::vulkan
 diff --git a/src/xenia/ui/vulkan/framegen/shared/output_metrics.hpp b/src/xenia/ui/vulkan/framegen/shared/output_metrics.hpp
 new file mode 100644
-index 0000000..776f9e6
+index 000000000..776f9e669
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/shared/output_metrics.hpp
 @@ -0,0 +1,14 @@
@@ -13109,7 +13344,7 @@ index 0000000..776f9e6
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/source_clock.hpp b/src/xenia/ui/vulkan/framegen/source_clock.hpp
 new file mode 100644
-index 0000000..e4dc542
+index 000000000..e4dc54283
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/source_clock.hpp
 @@ -0,0 +1,29 @@
@@ -13144,7 +13379,7 @@ index 0000000..e4dc542
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/README.md b/src/xenia/ui/vulkan/framegen/upstream-shaders/README.md
 new file mode 100644
-index 0000000..950add5
+index 000000000..950add5c4
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/README.md
 @@ -0,0 +1,49 @@
@@ -13199,7 +13434,7 @@ index 0000000..950add5
 +and (`--seq`) on real frames of a frame dump.
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_common_types.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_common_types.h
 new file mode 100644
-index 0000000..076e282
+index 000000000..076e28289
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_common_types.h
 @@ -0,0 +1,558 @@
@@ -13763,7 +13998,7 @@ index 0000000..076e282
 +#endif // #ifndef FFX_COMMON_TYPES_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core.h
 new file mode 100644
-index 0000000..fdeecf6
+index 000000000..fdeecf6cd
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core.h
 @@ -0,0 +1,80 @@
@@ -13849,7 +14084,7 @@ index 0000000..fdeecf6
 +#endif // #if !defined(FFX_CORE_H)
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_cpu.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_cpu.h
 new file mode 100644
-index 0000000..ed25414
+index 000000000..ed254147c
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_cpu.h
 @@ -0,0 +1,338 @@
@@ -14193,7 +14428,7 @@ index 0000000..ed25414
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_gpu_common.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_gpu_common.h
 new file mode 100644
-index 0000000..4ef2dbd
+index 000000000..4ef2dbd23
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_gpu_common.h
 @@ -0,0 +1,2736 @@
@@ -16935,7 +17170,7 @@ index 0000000..4ef2dbd
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_gpu_common_half.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_gpu_common_half.h
 new file mode 100644
-index 0000000..3270ab1
+index 000000000..3270ab120
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_gpu_common_half.h
 @@ -0,0 +1,2981 @@
@@ -19922,7 +20157,7 @@ index 0000000..3270ab1
 +#endif  // FFX_HALF
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_hlsl.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_hlsl.h
 new file mode 100644
-index 0000000..d617c5b
+index 000000000..d617c5bbc
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_hlsl.h
 @@ -0,0 +1,1919 @@
@@ -21847,7 +22082,7 @@ index 0000000..d617c5b
 +#endif // #if defined(FFX_WAVE)
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_portability.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_portability.h
 new file mode 100644
-index 0000000..b488f5c
+index 000000000..b488f5c97
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/api/internal/gpu/ffx_core_portability.h
 @@ -0,0 +1,46 @@
@@ -21899,7 +22134,7 @@ index 0000000..b488f5c
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation.h
 new file mode 100644
-index 0000000..f73bd5a
+index 000000000..f73bd5a41
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation.h
 @@ -0,0 +1,777 @@
@@ -22682,7 +22917,7 @@ index 0000000..f73bd5a
 +#endif  // FFX_FRAMEINTERPOLATION_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h
 new file mode 100644
-index 0000000..6390fe6
+index 000000000..6390fe6eb
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h
 @@ -0,0 +1,852 @@
@@ -23540,7 +23775,7 @@ index 0000000..6390fe6
 +#endif // #if defined(FFX_GPU)
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h
 new file mode 100644
-index 0000000..afa5c5c
+index 000000000..afa5c5c93
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h
 @@ -0,0 +1,445 @@
@@ -23991,7 +24226,7 @@ index 0000000..afa5c5c
 +#endif //!defined(FFX_FRAMEINTERPOLATION_COMMON_H)
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_compute_game_vector_field_inpainting_pyramid.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_compute_game_vector_field_inpainting_pyramid.h
 new file mode 100644
-index 0000000..f5d3513
+index 000000000..f5d351372
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_compute_game_vector_field_inpainting_pyramid.h
 @@ -0,0 +1,121 @@
@@ -24118,7 +24353,7 @@ index 0000000..f5d3513
 +#endif // FFX_FRAMEINTERPOLATION_COMPUTE_GAME_VECTOR_FIELD_INPAINTING_PYRAMID_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_compute_inpainting_pyramid.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_compute_inpainting_pyramid.h
 new file mode 100644
-index 0000000..22635c1
+index 000000000..22635c141
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_compute_inpainting_pyramid.h
 @@ -0,0 +1,120 @@
@@ -24244,7 +24479,7 @@ index 0000000..22635c1
 +#endif // FFX_FRAMEINTERPOLATION_COMPUTE_INPAINTING_PYRAMID_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_debug_view.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_debug_view.h
 new file mode 100644
-index 0000000..fcf360d
+index 000000000..fcf360dec
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_debug_view.h
 @@ -0,0 +1,172 @@
@@ -24422,7 +24657,7 @@ index 0000000..fcf360d
 +#endif  // FFX_FRAMEINTERPOLATION_DEBUG_VIEW_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_disocclusion_mask.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_disocclusion_mask.h
 new file mode 100644
-index 0000000..1ee2cf9
+index 000000000..1ee2cf93f
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_disocclusion_mask.h
 @@ -0,0 +1,146 @@
@@ -24574,7 +24809,7 @@ index 0000000..1ee2cf9
 +#endif // FFX_FRAMEINTERPOLATION_DISOCCLUSION_MASK_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_game_motion_vector_field.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_game_motion_vector_field.h
 new file mode 100644
-index 0000000..03ca2fa
+index 000000000..03ca2fa51
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_game_motion_vector_field.h
 @@ -0,0 +1,123 @@
@@ -24703,7 +24938,7 @@ index 0000000..03ca2fa
 +#endif // FFX_FRAMEINTERPOLATION_GAME_MOTION_VECTOR_FIELD_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_inpainting.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_inpainting.h
 new file mode 100644
-index 0000000..d87d1c8
+index 000000000..d87d1c819
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_inpainting.h
 @@ -0,0 +1,150 @@
@@ -24859,7 +25094,7 @@ index 0000000..d87d1c8
 +#endif  // FFX_FRAMEINTERPOLATION_INPAINTING_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_optical_flow_vector_field.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_optical_flow_vector_field.h
 new file mode 100644
-index 0000000..bebd1a9
+index 000000000..bebd1a90a
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_optical_flow_vector_field.h
 @@ -0,0 +1,128 @@
@@ -24993,7 +25228,7 @@ index 0000000..bebd1a9
 +#endif // FFX_FRAMEINTERPOLATION_OPTICAL_FLOW_VECTOR_FIELD_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_reconstruct_dilated_velocity_and_previous_depth.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_reconstruct_dilated_velocity_and_previous_depth.h
 new file mode 100644
-index 0000000..9f4de64
+index 000000000..9f4de643d
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_reconstruct_dilated_velocity_and_previous_depth.h
 @@ -0,0 +1,123 @@
@@ -25122,7 +25357,7 @@ index 0000000..9f4de64
 +#endif //!defined( FFX_FRAMEINTERPOLATION_RECONSTRUCT_DILATED_VELOCITY_AND_PREVIOUS_DEPTH_H )
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_reconstruct_previous_depth.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_reconstruct_previous_depth.h
 new file mode 100644
-index 0000000..38bf02d
+index 000000000..38bf02dce
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_reconstruct_previous_depth.h
 @@ -0,0 +1,63 @@
@@ -25191,7 +25426,7 @@ index 0000000..38bf02d
 +#endif // FFX_FRAMEINTERPOLATION_RECONSTRUCT_PREVIOUS_DEPTH_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_resources.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_resources.h
 new file mode 100644
-index 0000000..d32049b
+index 000000000..d32049b91
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_resources.h
 @@ -0,0 +1,95 @@
@@ -25292,7 +25527,7 @@ index 0000000..d32049b
 +#endif //!defined( FFX_FRAMEINTERPOLATION_RESOURCES_H )
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_setup.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_setup.h
 new file mode 100644
-index 0000000..573de5d
+index 000000000..573de5d94
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_setup.h
 @@ -0,0 +1,54 @@
@@ -25352,7 +25587,7 @@ index 0000000..573de5d
 +#endif // FFX_FRAMEINTERPOLATION_SETUP_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_callbacks_hlsl.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_callbacks_hlsl.h
 new file mode 100644
-index 0000000..2028176
+index 000000000..2028176ef
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_callbacks_hlsl.h
 @@ -0,0 +1,631 @@
@@ -25989,7 +26224,7 @@ index 0000000..2028176
 +#endif // FFX_OPTICALFLOW_CALLBACKS_HLSL_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_common.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_common.h
 new file mode 100644
-index 0000000..beefe5b
+index 000000000..beefe5b06
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_common.h
 @@ -0,0 +1,99 @@
@@ -26094,7 +26329,7 @@ index 0000000..beefe5b
 +#endif //!defined(FFX_OPTICALFLOW_COMMON_H)
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_compute_luminance_pyramid.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_compute_luminance_pyramid.h
 new file mode 100644
-index 0000000..5e5ee53
+index 000000000..5e5ee5341
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_compute_luminance_pyramid.h
 @@ -0,0 +1,107 @@
@@ -26207,7 +26442,7 @@ index 0000000..5e5ee53
 +#endif // FFX_OPTICALFLOW_COMPUTE_LUMINANCE_PYRAMID_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_compute_optical_flow_v5.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_compute_optical_flow_v5.h
 new file mode 100644
-index 0000000..de3b2fd
+index 000000000..de3b2fd90
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_compute_optical_flow_v5.h
 @@ -0,0 +1,331 @@
@@ -26544,7 +26779,7 @@ index 0000000..de3b2fd
 +#endif // FFX_OPTICALFLOW_COMPUTE_OPTICAL_FLOW_V5_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_compute_scd_divergence.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_compute_scd_divergence.h
 new file mode 100644
-index 0000000..9e66e8e
+index 000000000..9e66e8e10
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_compute_scd_divergence.h
 @@ -0,0 +1,159 @@
@@ -26709,7 +26944,7 @@ index 0000000..9e66e8e
 +#endif // FFX_OPTICALFLOW_COMPUTE_SCD_DIVERGENCE_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_filter_optical_flow_v5.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_filter_optical_flow_v5.h
 new file mode 100644
-index 0000000..d26e08b
+index 000000000..d26e08bf9
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_filter_optical_flow_v5.h
 @@ -0,0 +1,58 @@
@@ -26773,7 +27008,7 @@ index 0000000..d26e08b
 +#endif // FFX_OPTICALFLOW_FILTER_OPTICAL_FLOW_V5_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_generate_scd_histogram.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_generate_scd_histogram.h
 new file mode 100644
-index 0000000..5492fa8
+index 000000000..5492fa8bb
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_generate_scd_histogram.h
 @@ -0,0 +1,92 @@
@@ -26871,7 +27106,7 @@ index 0000000..5492fa8
 +#endif // FFX_OPTICALFLOW_GENERATE_SCD_HISTOGRAM_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_prepare_luma.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_prepare_luma.h
 new file mode 100644
-index 0000000..52ff3d4
+index 000000000..52ff3d444
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_prepare_luma.h
 @@ -0,0 +1,106 @@
@@ -26983,7 +27218,7 @@ index 0000000..52ff3d4
 +#endif // FFX_OPTICALFLOW_PREPARE_LUMA_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_resources.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_resources.h
 new file mode 100644
-index 0000000..a17d468
+index 000000000..a17d46802
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_resources.h
 @@ -0,0 +1,74 @@
@@ -27063,7 +27298,7 @@ index 0000000..a17d468
 +#endif //!defined( FFX_OPTICALFLOW_RESOURCES_H )
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_scale_optical_flow_advanced_v5.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_scale_optical_flow_advanced_v5.h
 new file mode 100644
-index 0000000..9a22fa2
+index 000000000..9a22fa2cd
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_scale_optical_flow_advanced_v5.h
 @@ -0,0 +1,99 @@
@@ -27168,7 +27403,7 @@ index 0000000..9a22fa2
 +#endif // FFX_OPTICALFLOW_SCALE_OPTICAL_FLOW_ADVANCED_V5_H
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/spd/ffx_spd.h b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/spd/ffx_spd.h
 new file mode 100644
-index 0000000..c1ed537
+index 000000000..c1ed5371e
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/include/gpu/spd/ffx_spd.h
 @@ -0,0 +1,1014 @@
@@ -28188,7 +28423,7 @@ index 0000000..c1ed537
 +#endif // #if defined(FFX_GPU)
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_compute_luminance_pyramid_pass.hlsl b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_compute_luminance_pyramid_pass.hlsl
 new file mode 100644
-index 0000000..c778967
+index 000000000..c7789679d
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_compute_luminance_pyramid_pass.hlsl
 @@ -0,0 +1,57 @@
@@ -28251,7 +28486,7 @@ index 0000000..c778967
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_compute_optical_flow_advanced_pass_v5.hlsl b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_compute_optical_flow_advanced_pass_v5.hlsl
 new file mode 100644
-index 0000000..27733a3
+index 000000000..27733a308
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_compute_optical_flow_advanced_pass_v5.hlsl
 @@ -0,0 +1,65 @@
@@ -28322,7 +28557,7 @@ index 0000000..27733a3
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_compute_scd_divergence_pass.hlsl b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_compute_scd_divergence_pass.hlsl
 new file mode 100644
-index 0000000..3a304ef
+index 000000000..3a304ef86
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_compute_scd_divergence_pass.hlsl
 @@ -0,0 +1,58 @@
@@ -28386,7 +28621,7 @@ index 0000000..3a304ef
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_filter_optical_flow_pass_v5.hlsl b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_filter_optical_flow_pass_v5.hlsl
 new file mode 100644
-index 0000000..1e923e3
+index 000000000..1e923e363
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_filter_optical_flow_pass_v5.hlsl
 @@ -0,0 +1,58 @@
@@ -28450,7 +28685,7 @@ index 0000000..1e923e3
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_generate_scd_histogram_pass.hlsl b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_generate_scd_histogram_pass.hlsl
 new file mode 100644
-index 0000000..93e348c
+index 000000000..93e348c65
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_generate_scd_histogram_pass.hlsl
 @@ -0,0 +1,56 @@
@@ -28512,7 +28747,7 @@ index 0000000..93e348c
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_prepare_luma_pass.hlsl b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_prepare_luma_pass.hlsl
 new file mode 100644
-index 0000000..d7fec0c
+index 000000000..d7fec0c6f
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_prepare_luma_pass.hlsl
 @@ -0,0 +1,50 @@
@@ -28568,7 +28803,7 @@ index 0000000..d7fec0c
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_scale_optical_flow_advanced_pass_v5.hlsl b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_scale_optical_flow_advanced_pass_v5.hlsl
 new file mode 100644
-index 0000000..a5a8de0
+index 000000000..a5a8de0ea
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/ffx_opticalflow_scale_optical_flow_advanced_pass_v5.hlsl
 @@ -0,0 +1,64 @@
@@ -28638,7 +28873,7 @@ index 0000000..a5a8de0
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/fg_fi_interpolation_pass.hlsl b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/fg_fi_interpolation_pass.hlsl
 new file mode 100644
-index 0000000..5bd2ee1
+index 000000000..5bd2ee137
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/fg_fi_interpolation_pass.hlsl
 @@ -0,0 +1,49 @@
@@ -28693,7 +28928,7 @@ index 0000000..5bd2ee1
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/fg_fi_of_vector_field_pass.hlsl b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/fg_fi_of_vector_field_pass.hlsl
 new file mode 100644
-index 0000000..e1d246c
+index 000000000..e1d246c0b
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/fg_fi_of_vector_field_pass.hlsl
 @@ -0,0 +1,42 @@
@@ -28741,7 +28976,7 @@ index 0000000..e1d246c
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/fg_fi_setup_pass.hlsl b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/fg_fi_setup_pass.hlsl
 new file mode 100644
-index 0000000..6ee2b35
+index 000000000..6ee2b35ff
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/upstream-shaders/framegeneration/fsr3/internal/shaders/fg_fi_setup_pass.hlsl
 @@ -0,0 +1,42 @@
@@ -28789,7 +29024,7 @@ index 0000000..6ee2b35
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/vendor/framegen/fg_shaders.inc b/src/xenia/ui/vulkan/framegen/vendor/framegen/fg_shaders.inc
 new file mode 100644
-index 0000000..9a66eb0
+index 000000000..9a66eb0e3
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/vendor/framegen/fg_shaders.inc
 @@ -0,0 +1,4600 @@
@@ -33395,7 +33630,7 @@ index 0000000..9a66eb0
 +};
 diff --git a/src/xenia/ui/vulkan/framegen/vendor/ps5_framegen.cpp b/src/xenia/ui/vulkan/framegen/vendor/ps5_framegen.cpp
 new file mode 100644
-index 0000000..8d6a9da
+index 000000000..8d6a9da19
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/vendor/ps5_framegen.cpp
 @@ -0,0 +1,1346 @@
@@ -34747,7 +34982,7 @@ index 0000000..8d6a9da
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/vendor/ps5_framegen.h b/src/xenia/ui/vulkan/framegen/vendor/ps5_framegen.h
 new file mode 100644
-index 0000000..4934a9d
+index 000000000..4934a9dda
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/vendor/ps5_framegen.h
 @@ -0,0 +1,225 @@
@@ -34978,7 +35213,7 @@ index 0000000..4934a9d
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/vendor/ps5_framegen_pacing.h b/src/xenia/ui/vulkan/framegen/vendor/ps5_framegen_pacing.h
 new file mode 100644
-index 0000000..e93c817
+index 000000000..e93c8176e
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/vendor/ps5_framegen_pacing.h
 @@ -0,0 +1,317 @@
@@ -35301,7 +35536,7 @@ index 0000000..e93c817
 +} // namespace ps5::framegen
 diff --git a/src/xenia/ui/vulkan/framegen/vendor/sword_dispatch.hpp b/src/xenia/ui/vulkan/framegen/vendor/sword_dispatch.hpp
 new file mode 100644
-index 0000000..fef49d8
+index 000000000..fef49d84f
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/vendor/sword_dispatch.hpp
 @@ -0,0 +1,86 @@
@@ -35393,7 +35628,7 @@ index 0000000..fef49d8
 +#define vkUpdateDescriptorSets ps5x360::sword_dispatch::vkUpdateDescriptorSets
 diff --git a/src/xenia/ui/vulkan/framegen/vendor/sword_loader.hpp b/src/xenia/ui/vulkan/framegen/vendor/sword_loader.hpp
 new file mode 100644
-index 0000000..b0a114c
+index 000000000..b0a114c11
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/vendor/sword_loader.hpp
 @@ -0,0 +1,3 @@
@@ -35402,7 +35637,7 @@ index 0000000..b0a114c
 +namespace ps5x360::sword_dispatch { bool Bind(VkInstance, VkDevice, PFN_vkGetInstanceProcAddr); }
 diff --git a/src/xenia/ui/vulkan/framegen_vendor.cc b/src/xenia/ui/vulkan/framegen_vendor.cc
 new file mode 100644
-index 0000000..ffb2abf
+index 000000000..ffb2abfd6
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen_vendor.cc
 @@ -0,0 +1,6 @@
@@ -35414,7 +35649,7 @@ index 0000000..ffb2abf
 +#include "xenia/ui/vulkan/framegen/vendor/ps5_framegen.cpp"
 diff --git a/src/xenia/ui/vulkan/smaa_area_tex.h b/src/xenia/ui/vulkan/smaa_area_tex.h
 new file mode 100644
-index 0000000..0e8c35c
+index 000000000..0e8c35c68
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/smaa_area_tex.h
 @@ -0,0 +1,14980 @@
@@ -50400,7 +50635,7 @@ index 0000000..0e8c35c
 +#endif
 diff --git a/src/xenia/ui/vulkan/smaa_search_tex.h b/src/xenia/ui/vulkan/smaa_search_tex.h
 new file mode 100644
-index 0000000..20b96e6
+index 000000000..20b96e6ad
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/smaa_search_tex.h
 @@ -0,0 +1,132 @@
@@ -50537,10 +50772,10 @@ index 0000000..20b96e6
 +
 +#endif
 diff --git a/src/xenia/ui/vulkan/vulkan_device.cc b/src/xenia/ui/vulkan/vulkan_device.cc
-index 8e0e43f..8815219 100644
+index 18ac55375..83ed579d6 100644
 --- a/src/xenia/ui/vulkan/vulkan_device.cc
 +++ b/src/xenia/ui/vulkan/vulkan_device.cc
-@@ -806,6 +806,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -814,6 +814,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
      XE_UI_VULKAN_FEATURE(sparseBinding)
      XE_UI_VULKAN_FEATURE(sparseResidencyBuffer)
    }
@@ -50552,7 +50787,7 @@ index 8e0e43f..8815219 100644
    if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
      if (with_gpu_emulation) {
 diff --git a/src/xenia/ui/vulkan/vulkan_device.h b/src/xenia/ui/vulkan/vulkan_device.h
-index ff52ddf..ae7e807 100644
+index 7fd2cefe7..5f2f0bbd2 100644
 --- a/src/xenia/ui/vulkan/vulkan_device.h
 +++ b/src/xenia/ui/vulkan/vulkan_device.h
 @@ -16,6 +16,12 @@
@@ -50568,7 +50803,7 @@ index ff52ddf..ae7e807 100644
  
  namespace xe {
  namespace ui {
-@@ -375,7 +381,7 @@ class VulkanDevice {
+@@ -381,7 +387,7 @@ class VulkanDevice {
                                 const VkSubmitInfo* const submits,
                                 const VkFence fence) {
      const VkResult submit_result =
@@ -50578,7 +50813,7 @@ index ff52ddf..ae7e807 100644
        if (SetLost()) {
          LogFaultInfo();
 diff --git a/src/xenia/ui/vulkan/vulkan_gpu_completion_timeline.cc b/src/xenia/ui/vulkan/vulkan_gpu_completion_timeline.cc
-index 5de4363..4834334 100644
+index 5de4363c0..4834334ba 100644
 --- a/src/xenia/ui/vulkan/vulkan_gpu_completion_timeline.cc
 +++ b/src/xenia/ui/vulkan/vulkan_gpu_completion_timeline.cc
 @@ -25,7 +25,7 @@ VulkanGPUCompletionTimeline::~VulkanGPUCompletionTimeline() {
@@ -50600,7 +50835,7 @@ index 5de4363..4834334 100644
              &std::prev(submission_end_iterator)->second, VK_TRUE, UINT64_MAX);
      if (fence_wait_result != VK_SUCCESS) {
 diff --git a/src/xenia/ui/vulkan/vulkan_instance.cc b/src/xenia/ui/vulkan/vulkan_instance.cc
-index f62272e..8a1c1f6 100644
+index f62272e92..8a1c1f6a8 100644
 --- a/src/xenia/ui/vulkan/vulkan_instance.cc
 +++ b/src/xenia/ui/vulkan/vulkan_instance.cc
 @@ -23,7 +23,9 @@
@@ -50652,7 +50887,7 @@ index f62272e..8a1c1f6 100644
      dlclose(loader_);
    }
 diff --git a/src/xenia/ui/vulkan/vulkan_instance.h b/src/xenia/ui/vulkan/vulkan_instance.h
-index fd3e34d..ec38ab0 100644
+index fd3e34d1c..ec38ab067 100644
 --- a/src/xenia/ui/vulkan/vulkan_instance.h
 +++ b/src/xenia/ui/vulkan/vulkan_instance.h
 @@ -98,6 +98,7 @@ class VulkanInstance {
@@ -50664,7 +50899,7 @@ index fd3e34d..ec38ab0 100644
      bool ext_KHR_xcb_surface = false;  // #6
  #endif
 diff --git a/src/xenia/ui/vulkan/vulkan_presenter.cc b/src/xenia/ui/vulkan/vulkan_presenter.cc
-index 9cf803f..5f6f1aa 100644
+index 9cf803fd6..5f6f1aaea 100644
 --- a/src/xenia/ui/vulkan/vulkan_presenter.cc
 +++ b/src/xenia/ui/vulkan/vulkan_presenter.cc
 @@ -17,6 +17,10 @@
@@ -51931,7 +52166,7 @@ index 9cf803f..5f6f1aa 100644
  }  // namespace ui
  }  // namespace xe
 diff --git a/src/xenia/ui/vulkan/vulkan_presenter.h b/src/xenia/ui/vulkan/vulkan_presenter.h
-index fa151fb..78b2846 100644
+index fa151fb4c..78b28464f 100644
 --- a/src/xenia/ui/vulkan/vulkan_presenter.h
 +++ b/src/xenia/ui/vulkan/vulkan_presenter.h
 @@ -501,6 +501,78 @@ class VulkanPresenter final : public Presenter {
@@ -52014,7 +52249,7 @@ index fa151fb..78b2846 100644
  
  }  // namespace vulkan
 diff --git a/src/xenia/vfs/devices/disc_image_device.cc b/src/xenia/vfs/devices/disc_image_device.cc
-index 8baf666..9c38004 100644
+index 8baf6669e..9c380043e 100644
 --- a/src/xenia/vfs/devices/disc_image_device.cc
 +++ b/src/xenia/vfs/devices/disc_image_device.cc
 @@ -10,6 +10,7 @@
@@ -52244,7 +52479,7 @@ index 8baf666..9c38004 100644
    }
  
 diff --git a/src/xenia/vfs/devices/disc_image_device.h b/src/xenia/vfs/devices/disc_image_device.h
-index 9178264..f9260ff 100644
+index 9178264fc..f9260ffaf 100644
 --- a/src/xenia/vfs/devices/disc_image_device.h
 +++ b/src/xenia/vfs/devices/disc_image_device.h
 @@ -11,6 +11,7 @@
@@ -52289,7 +52524,7 @@ index 9178264..f9260ff 100644
  };
  
 diff --git a/src/xenia/vfs/devices/disc_image_entry.cc b/src/xenia/vfs/devices/disc_image_entry.cc
-index 7c71c2f..e7b4372 100644
+index 7c71c2f70..e7b437280 100644
 --- a/src/xenia/vfs/devices/disc_image_entry.cc
 +++ b/src/xenia/vfs/devices/disc_image_entry.cc
 @@ -44,6 +44,10 @@ std::unique_ptr<MappedMemory> DiscImageEntry::OpenMapped(
@@ -52304,7 +52539,7 @@ index 7c71c2f..e7b4372 100644
    size_t real_length = length ? std::min(length, data_size_) : data_size_;
    return mmap_->Slice(real_offset, real_length);
 diff --git a/src/xenia/vfs/devices/disc_image_entry.h b/src/xenia/vfs/devices/disc_image_entry.h
-index fd458d8..198f955 100644
+index fd458d84f..198f95552 100644
 --- a/src/xenia/vfs/devices/disc_image_entry.h
 +++ b/src/xenia/vfs/devices/disc_image_entry.h
 @@ -37,7 +37,8 @@ class DiscImageEntry : public Entry {
@@ -52318,7 +52553,7 @@ index fd458d8..198f955 100644
                                             size_t offset,
                                             size_t length) override;
 diff --git a/src/xenia/vfs/devices/disc_image_file.cc b/src/xenia/vfs/devices/disc_image_file.cc
-index d1db59d..f8a6a94 100644
+index d1db59d68..f8a6a94db 100644
 --- a/src/xenia/vfs/devices/disc_image_file.cc
 +++ b/src/xenia/vfs/devices/disc_image_file.cc
 @@ -35,7 +35,10 @@ X_STATUS DiscImageFile::ReadSync(std::span<uint8_t> buffer, size_t byte_offset,
@@ -52334,10 +52569,10 @@ index d1db59d..f8a6a94 100644
    return X_STATUS_SUCCESS;
  }
 diff --git a/src/xenia/vfs/devices/host_path_entry.cc b/src/xenia/vfs/devices/host_path_entry.cc
-index 6d6c6ff..85acc42 100644
+index e103ec2bb..85f2d76f5 100644
 --- a/src/xenia/vfs/devices/host_path_entry.cc
 +++ b/src/xenia/vfs/devices/host_path_entry.cc
-@@ -18,6 +18,7 @@
+@@ -20,6 +20,7 @@
  #include "xenia/vfs/device.h"
  #include "xenia/vfs/devices/host_path_device.h"
  #include "xenia/vfs/devices/host_path_file.h"
@@ -52345,7 +52580,7 @@ index 6d6c6ff..85acc42 100644
  
  namespace xe {
  namespace vfs {
-@@ -59,8 +60,29 @@ X_STATUS HostPathEntry::Open(uint32_t desired_access, File** out_file) {
+@@ -77,8 +78,29 @@ X_STATUS HostPathEntry::Open(uint32_t desired_access, File** out_file) {
      XELOGE("Attempting to open file for write access on read-only device");
      return X_STATUS_ACCESS_DENIED;
    }
@@ -52377,7 +52612,7 @@ index 6d6c6ff..85acc42 100644
      return X_STATUS_NO_SUCH_FILE;
 diff --git a/src/xenia/vfs/devices/host_readonly_file_pool.h b/src/xenia/vfs/devices/host_readonly_file_pool.h
 new file mode 100644
-index 0000000..e8c2225
+index 000000000..e8c222591
 --- /dev/null
 +++ b/src/xenia/vfs/devices/host_readonly_file_pool.h
 @@ -0,0 +1,209 @@
@@ -52591,7 +52826,7 @@ index 0000000..e8c2225
 +
 +#endif  // XENIA_VFS_DEVICES_HOST_READONLY_FILE_POOL_H_
 diff --git a/src/xenia/vfs/devices/xcontent_container_file.cc b/src/xenia/vfs/devices/xcontent_container_file.cc
-index 15c4a7a..1434a1d 100644
+index 15c4a7a8a..1434a1d41 100644
 --- a/src/xenia/vfs/devices/xcontent_container_file.cc
 +++ b/src/xenia/vfs/devices/xcontent_container_file.cc
 @@ -15,7 +15,21 @@ namespace vfs {
@@ -52660,7 +52895,7 @@ index 15c4a7a..1434a1d 100644
  
  }  // namespace vfs
 diff --git a/src/xenia/vfs/devices/xcontent_container_file.h b/src/xenia/vfs/devices/xcontent_container_file.h
-index 2e129e2..8777eee 100644
+index 2e129e2a2..8777eee00 100644
 --- a/src/xenia/vfs/devices/xcontent_container_file.h
 +++ b/src/xenia/vfs/devices/xcontent_container_file.h
 @@ -39,6 +39,9 @@ class XContentContainerFile : public File {
@@ -52674,7 +52909,7 @@ index 2e129e2..8777eee 100644
  
  }  // namespace vfs
 diff --git a/src/xenia/vfs/devices/xcontent_devices/stfs_container_device.cc b/src/xenia/vfs/devices/xcontent_devices/stfs_container_device.cc
-index af35cef..f34f651 100644
+index af35cefe6..f34f65193 100644
 --- a/src/xenia/vfs/devices/xcontent_devices/stfs_container_device.cc
 +++ b/src/xenia/vfs/devices/xcontent_devices/stfs_container_device.cc
 @@ -66,7 +66,10 @@ StfsContainerDevice::Result StfsContainerDevice::Read() {
@@ -52702,7 +52937,7 @@ index af35cef..f34f651 100644
  
    uint32_t record = block_index % kBlocksPerHashLevel[0];
 diff --git a/src/xenia/vfs/devices/xcontent_devices/stfs_container_file.cc b/src/xenia/vfs/devices/xcontent_devices/stfs_container_file.cc
-index 1ee035d..352f377 100644
+index 1ee035dd1..352f377af 100644
 --- a/src/xenia/vfs/devices/xcontent_devices/stfs_container_file.cc
 +++ b/src/xenia/vfs/devices/xcontent_devices/stfs_container_file.cc
 @@ -23,8 +23,10 @@ void StfsContainerFile::Destroy() { delete this; }
@@ -52719,7 +52954,7 @@ index 1ee035d..352f377 100644
  
  }  // namespace vfs
 diff --git a/src/xenia/vfs/xbe_metadata.cc b/src/xenia/vfs/xbe_metadata.cc
-index 2bcfbfa..a2f487e 100644
+index 2bcfbfa96..a2f487e0d 100644
 --- a/src/xenia/vfs/xbe_metadata.cc
 +++ b/src/xenia/vfs/xbe_metadata.cc
 @@ -13,6 +13,7 @@
@@ -52822,7 +53057,7 @@ index 2bcfbfa..a2f487e 100644
  
  }  // namespace vfs
 diff --git a/src/xenia/vfs/xbe_metadata.h b/src/xenia/vfs/xbe_metadata.h
-index 071ac32..7ba4323 100644
+index 071ac3259..7ba43238e 100644
 --- a/src/xenia/vfs/xbe_metadata.h
 +++ b/src/xenia/vfs/xbe_metadata.h
 @@ -43,6 +43,10 @@ std::optional<XbeMetadata> ExtractXbeMetadata(const uint8_t* data, size_t size);
@@ -52837,10 +53072,10 @@ index 071ac32..7ba4323 100644
  }  // namespace vfs
  }  // namespace xe
 diff --git a/third_party/CMakeLists.txt b/third_party/CMakeLists.txt
-index 9713067..7253000 100644
+index 88a937a44..6605b3df6 100644
 --- a/third_party/CMakeLists.txt
 +++ b/third_party/CMakeLists.txt
-@@ -192,6 +192,12 @@ if(WIN32 AND CMAKE_CROSSCOMPILING AND XE_TARGET_AARCH64
+@@ -184,6 +184,12 @@ if(WIN32 AND CMAKE_CROSSCOMPILING AND XE_TARGET_AARCH64
      AND CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
    set(_xe_use_host_shader_cc TRUE)
  endif()
@@ -52853,7 +53088,7 @@ index 9713067..7253000 100644
  
  if(NOT _xe_use_host_shader_cc)
  
-@@ -427,6 +433,17 @@ if(MSVC)
+@@ -419,6 +425,17 @@ if(MSVC)
    target_compile_options(xenia-shader-cc PRIVATE /EHsc)
  endif()
  
@@ -52871,7 +53106,7 @@ index 9713067..7253000 100644
  else()  # _xe_use_host_shader_cc: x64→ARM64 cross-compile, use native build's binary
  
  # Native x64 build lives at <repo>/build/ (xenia-build.py: get_build_dir(None)).
-@@ -685,6 +702,8 @@ if(WIN32)
+@@ -699,6 +716,8 @@ if(WIN32)
    target_include_directories(libusb PUBLIC libusb/libusb PRIVATE libusb/msvc)
  endif()
  
@@ -52880,7 +53115,7 @@ index 9713067..7253000 100644
  # ==============================================================================
  # SDL3
  # ==============================================================================
-@@ -782,6 +801,8 @@ if(MSVC)
+@@ -796,6 +815,8 @@ if(MSVC)
    endforeach()
  endif()
  
@@ -52889,7 +53124,7 @@ index 9713067..7253000 100644
  # ==============================================================================
  # FFmpeg — upstream source lives in the FFmpeg submodule; xenia's static
  # config.h / asm configuration overlay lives in ffmpeg-xenia alongside it.
-@@ -876,11 +897,16 @@ function(ffmpeg_common target)
+@@ -890,11 +911,16 @@ function(ffmpeg_common target)
      )
      # glibc POSIX feature macros — FFmpeg assumes them for certain
      # syscalls and string extensions.
@@ -52911,7 +53146,7 @@ index 9713067..7253000 100644
    endif()
  
    if(MSVC)
-@@ -1159,7 +1185,8 @@ ffmpeg_common(libavformat)
+@@ -1098,7 +1124,8 @@ ffmpeg_common(libavformat)
  # ==============================================================================
  # wxWidgets
  # ==============================================================================
@@ -52922,7 +53157,7 @@ index 9713067..7253000 100644
      # on Linux gives us a known-good 3.3 (system 3.2 has GTK3/Wayland issues).
      # Strip the directory-level /W0 (or -w) so wxWidgets's own /W3 doesn't
 diff --git a/third_party/ffmpeg-xenia/config.h b/third_party/ffmpeg-xenia/config.h
-index 3df8db9..8a23c84 100644
+index 3df8db9e5..8a23c840a 100644
 --- a/third_party/ffmpeg-xenia/config.h
 +++ b/third_party/ffmpeg-xenia/config.h
 @@ -339,7 +339,7 @@

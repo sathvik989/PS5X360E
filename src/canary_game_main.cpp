@@ -929,6 +929,7 @@ class ConsoleLogSink final : public xe::LogSink {
   std::atomic<int64_t> second_{0};
   std::atomic<int> lines_{0};
 };
+namespace xbox360ps5 { void CaptureDriverMessages(); }
 int main(int argc, char** argv) {
   const std::filesystem::path storage = "/download0/ps5x360e";
   std::error_code error;
@@ -1062,6 +1063,8 @@ int main(int argc, char** argv) {
   xe::AddLogSink(std::move(owned_game_log));
   xe::AddLogSink(std::make_unique<ConsoleLogSink>());
   if (log_ready) XELOGW("Logs: {}", game_log->session.Path().string());
+  // RADV's own messages (its submission time breakdown among them) go to the log.
+  xbox360ps5::CaptureDriverMessages();
   XELOGW("Graphics renderer requested: {}", xbox360ps5::RendererName(started.renderer));
   if (!xbox360ps5::RendererAvailable(started.renderer)) {
     XELOGE("Requested OpenGL game backend is not linked in this executable; launch cancelled");

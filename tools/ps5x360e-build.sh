@@ -97,7 +97,7 @@ clone_at() {
 	echo "   $(basename "$dir") at ${rev:0:12}"
 }
 
-echo "== 1/7 Your fork, branch $BRANCH (latest)"
+echo "== 1/5 Your fork, branch $BRANCH (latest)"
 if [[ ! -d $R/.git ]]; then
 	git clone -q https://github.com/sathvik989/PS5X360E "$R"
 fi
@@ -105,10 +105,10 @@ git -C "$R" fetch -q origin
 git -C "$R" checkout -q -f -B "$BRANCH" "origin/$BRANCH"
 echo "   PS5X360E at $(git -C "$R" rev-parse --short HEAD): $(git -C "$R" log -1 --format=%s)"
 
-echo "== 2/7 Pinned dependencies (versions from PS5X360's docs/CREDITS.md and PS5_Vulkan's scripts)"
-clone_at https://github.com/mihawk-99/PS5_Vulkan     "$REFS/PS5_Vulkan"     3f3ee69607013b345d2baa6d6a37c86745649a08
-clone_at https://github.com/mihawk-99/PS5_Mesa       "$REFS/PS5_Mesa"       0b2d6d1a61d9bbf89cf8beb88a696144f67c61f8
-clone_at https://github.com/mihawk-99/PS5_PayloadSDK "$REFS/PS5_PayloadSDK" 95c08f27386fc698f6bbe21dde3030140a41d10b
+echo "== 2/5 Pinned dependencies, the SDK and RADV (the fork's tools/ps5x360e-deps.sh)"
+# The pins live in the fork, so a new pin needs no new copy of this script.
+# RADV's release build is the slow step; it runs again only when its pin changes.
+bash "$R/tools/ps5x360e-deps.sh"
 # Castation's pinned commit (94dfef7) was never published; only tools/verify-image.py
 # is needed from it, and the public version has it.
 if [[ ! -d /ws/Castation/native-ps5/.git ]]; then
@@ -116,13 +116,7 @@ if [[ ! -d /ws/Castation/native-ps5/.git ]]; then
 fi
 echo "   castation at $(git -C /ws/Castation/native-ps5 rev-parse --short HEAD) (public head; see note above)"
 
-echo "== 3/7 PS5 payload SDK and zlib (PS5_Vulkan tools/setup-native-dependencies.sh)"
-( cd "$REFS/PS5_Vulkan" && bash tools/setup-native-dependencies.sh )
-
-echo "== 4/7 RADV release build (PS5_Vulkan tools/build-radv.sh release) - the slow step, first time only"
-( cd "$REFS/PS5_Vulkan" && bash tools/build-radv.sh release )
-
-echo "== 5/7 Xenia Edge at the pinned commit + the PS5 patch + PS5X360E's patches"
+echo "== 3/5 Xenia Edge at the pinned commit + the PS5 patch + PS5X360E's patches"
 mkdir -p "$R/build/native-runtime-stage/tools"
 cp /ws/Castation/native-ps5/tools/verify-image.py "$R/build/native-runtime-stage/tools/verify-image.py"
 # PS5X360's prepare_canary.py expects Canary already checked out: on a fresh
@@ -167,7 +161,7 @@ else
 	echo "$WANT" > "$STAMP"
 fi
 
-echo "== 6/7 Xenia Edge's shader compiler for this machine (first time several minutes)"
+echo "== 4/5 Xenia Edge's shader compiler for this machine (first time several minutes)"
 H=$R/build/host-shader-cc
 if [[ ! -f $H/build.ninja ]]; then
 	cmake -S "$R/tools/host-shader-cc" -B "$H" -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -175,7 +169,7 @@ if [[ ! -f $H/build.ninja ]]; then
 fi
 ninja -C "$H" -j"$(nproc)" xenia-shader-cc | tail -1
 
-echo "== 7/7 Building the PS5 title"
+echo "== 5/5 Building the PS5 title"
 ( cd "$R" && PS5_PAYLOAD_SDK="$REFS/PS5_Vulkan/.deps/native/ps5-payload-sdk" JOBS="$(nproc)" \
 	XE_HOST_SHADER_CC="$H/xenia-shader-cc" SLANGC_PATH="$SLANGC_PATH" \
 	bash tools/build-canary-game.sh )
