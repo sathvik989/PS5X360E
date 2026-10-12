@@ -45,6 +45,8 @@ DECLARE_uint32(framerate_limit);  // PS5X360E: 32-bit in Xenia Edge.
 DECLARE_uint32(guest_vblank_rate_override);
 DECLARE_uint32(guest_vblank_rate_millihz);
 DECLARE_uint32(present_frame_repeat);
+DECLARE_bool(readback_resolve_async);
+DECLARE_bool(resolve_sync_only_watched);
 DECLARE_uint32(kernel_display_gamma_type);
 DECLARE_bool(present_letterbox);
 DECLARE_bool(depth_float24_convert_in_pixel_shader);
@@ -192,7 +194,7 @@ const std::vector<Option>& Options() {
       {"render_scale", &S::render_scale, 0, W::start, 0, true, "Resolução de renderização",
        "O jogo desenha em 2x a resolução original (720p vira 1440p): imagem bem mais nítida, mais trabalho para o vídeo e mais memória. Alguns efeitos podem sair errados em 2x; volte a 1x se aparecerem.",
        {"1x (720p, original)", "2x (1440p, pesado)"}},
-      {"frame_pacing", &S::frame_pacing, 0, W::start, 0, true, "Ritmo dos quadros",
+      {"frame_pacing", &S::frame_pacing, 0, W::live, 0, true, "Ritmo dos quadros",
        "Para jogos que rodam a 30 quadros: mostra cada quadro por exatamente duas atualizações da tela, para um movimento uniforme sem trancos. Jogos a 60 quadros ficam limitados a 30; deixe em Automático para eles.",
        {"Automático", "30 FPS uniforme"}},
       {"vsync", &S::vsync, 0, W::start, 1, true, "VSync",
@@ -222,7 +224,7 @@ const std::vector<Option>& Options() {
        "Como o emulador responde quando o jogo pergunta se um objeto está visível (brilho do sol, objetos escondidos). Rápida: pergunta ao vídeo sem esperar. Falsa: responde sem perguntar, mais leve, alguns efeitos podem errar. Precisa: espera a resposta, mais lenta. Precisa sem espera: a resposta real assim que o vídeo a tem, sem parar a emulação.",
        {"Rápida", "Falsa (mais leve)", "Rápida alternativa", "Precisa (mais lenta)", "Precisa sem espera"}},
       {"readback", &S::readback, 1, W::live, 0, true, "Leitura da imagem pelo jogo",
-       "Alguns jogos leem de volta a imagem desenhada (foto do save, alguns efeitos). Desligada é o mais rápido. Use Rápida ou Completa só se um jogo mostrar imagens pretas ou efeitos faltando.",
+       "Alguns jogos leem de volta a imagem desenhada (foto do save, alguns efeitos). Desligada é o mais rápido. Use Rápida ou Completa só se um jogo mostrar imagens pretas ou efeitos faltando. Rápida não espera pelo vídeo: o jogo pode ler a imagem do quadro anterior. Completa espera a imagem atual.",
        {"Desligada", "Rápida", "Completa (lenta)"}},
       {"memexport", &S::memexport, 1, W::live, 0, true, "Leitura de dados gerados no vídeo",
        "Poucos jogos leem no processador dados que o vídeo grava. Deixa o jogo mais lento; ligue só se faltarem personagens ou partículas.", off_on},
@@ -339,10 +341,11 @@ GameOverrides GamePreset(const std::string& title_id) {
       // alternative fast visibility queries fixed its collision sparks.
       // Accurate visibility queries keep lens flares of lights out of view (the
       // hallway light in the elevator) from staying on screen (user,
-      // alpha.39); strict cost 55-90 ms a second of GPU waits in some scenes,
-      // so the same real results without waiting (async, alpha.41). Even 30
-      // FPS pacing for its 30 FPS.
-      {"4541094A", {{"readback", 1}, {"fast_locks", 1}, {"memory_boost", 1}, {"occlusion", 4},
+      // alpha.39). The same results without waiting (async, alpha.41) came too
+      // late: the game reads them without waiting for them, and the hallway
+      // light itself stayed in the elevator again (user). Even 30 FPS pacing
+      // for its 30 FPS.
+      {"4541094A", {{"readback", 1}, {"fast_locks", 1}, {"memory_boost", 1}, {"occlusion", 3},
                     {"frame_pacing", 1}}},
   };
   GameOverrides preset;
@@ -431,6 +434,11 @@ void Settings::Apply() const {
   if (cvars::occlusion_query != kOcclusion[occlusion_mode]) cvars::occlusion_query = kOcclusion[occlusion_mode];
   // PS5X360E: Xenia Edge copies resolves back when the CPU touches them; only "none" turns it off.
   cvars::readback_resolve = readback % 3 != 0;
+  // PS5X360E: Fast: render output the game reads regularly is copied for it on
+  // the GPU and its reads don't wait (they may see the previous frame's); no
+  // early submissions for them. Full: each read waits for the GPU.
+  cvars::readback_resolve_async = readback == 1;
+  cvars::resolve_sync_only_watched = readback == 1;
   // PS5X360E: Xenia Edge always reads memexport results back; the setting is kept but unused.
   (void)memexport;
   cvars::async_shader_compilation = async_shaders != 0;

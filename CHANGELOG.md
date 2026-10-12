@@ -3,6 +3,17 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.42+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
+
+- NFS The Run: visibility queries back to Strict. The no-waiting kind came too late for it: the
+  game reads them without waiting, and the hallway light itself stayed in the elevator again.
+- Image readback "Fast" now means the new copy without waiting (alpha.41), "Full" waits for the
+  current image as before. Both, and Frame pacing, can be switched in the guide while playing,
+  to compare them in the same scene: alpha.41's car sequence ran at 20-23 FPS against about 29
+  in alpha.39, and the slower part has to be found.
+- The performance line splits the GPU waits into frames in flight, export output the game waits
+  on, and other.
+
 ## 0.2-alpha.41+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 Aimed at a locked 30 FPS with even frame times at 2x (1440p) in NFS The Run.

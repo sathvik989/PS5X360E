@@ -3612,7 +3612,7 @@ index e6b7d535c..0f0eb959b 100644
      SharedMemory::WatchHandle base_watch_handle_ = nullptr;
      SharedMemory::WatchHandle mips_watch_handle_ = nullptr;
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index 76fc1a45f..705795256 100644
+index 76fc1a45f..d372fc188 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,7 +8,11 @@
@@ -4390,6 +4390,15 @@ index 76fc1a45f..705795256 100644
    }
  
    PumpQueryResolves();
+@@ -5385,7 +5943,7 @@ void VulkanCommandProcessor::LogRecentSubmissions(const char* context) {
+ }
+ 
+ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
+-    uint64_t await_submission) {
++    uint64_t await_submission, WaitReason reason) {
+   // Only report once, no need to retry a wait that won't succeed anyway.
+   if (device_lost_) {
+     return;
 @@ -5393,6 +5951,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
  
    if (await_submission >= GetCurrentSubmission()) {
@@ -4403,11 +4412,20 @@ index 76fc1a45f..705795256 100644
    }
  
 -  completion_timeline_.AwaitSubmissionAndUpdateCompleted(await_submission);
-+  AwaitSubmissionCounted(await_submission, WaitReason::kOther);
++  AwaitSubmissionCounted(await_submission, reason);
  
    const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
  
-@@ -5678,6 +6237,76 @@ bool VulkanCommandProcessor::CanEndSubmissionImmediately() const {
+@@ -5524,7 +6083,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+       is_opening_frame
+           ? closed_frame_submissions_[frame_current_ % kMaxFramesInFlight]
+           : 0;
+-  CheckSubmissionCompletionAndDeviceLoss(await_submission);
++  CheckSubmissionCompletionAndDeviceLoss(await_submission, WaitReason::kFrame);
+   const uint64_t completed_submission = GetCompletedSubmission();
+   if (device_lost_ || completed_submission < await_submission) {
+     return false;
+@@ -5678,6 +6237,81 @@ bool VulkanCommandProcessor::CanEndSubmissionImmediately() const {
           !pipeline_cache_->IsCreatingPipelines();
  }
  
@@ -4461,9 +4479,10 @@ index 76fc1a45f..705795256 100644
 +      "GPU busy {:.0f}% ({:.1f} ms/s over {} timed submissions, {} untimed); "
 +      "submissions {:.0f}/s: swap {:.0f}, guest buffer end {:.0f}, resolve "
 +      "sync {:.0f}, occlusion query {:.0f}, wait {:.0f}, other {:.0f}; GPU "
-+      "waits: occlusion query {:.0f}/s {:.1f} ms/s, other {:.0f}/s {:.1f} "
-+      "ms/s, resolve read by CPU {:.0f}/s {:.1f} ms/s; render output copied "
-+      "for the CPU without waiting {:.0f}/s",
++      "waits: occlusion query {:.0f}/s {:.1f} ms/s, frames in flight {:.0f}/s "
++      "{:.1f} ms/s, export output for the guest {:.0f}/s {:.1f} ms/s, other "
++      "{:.0f}/s {:.1f} ms/s, resolve read by CPU {:.0f}/s {:.1f} ms/s; render "
++      "output copied for the CPU without waiting {:.0f}/s",
 +      100.0 * double(busy) / double(now - since), ms_per_s(busy), timed,
 +      untimed, per_s(total_submits),
 +      per_s(submits[uint32_t(SubmitReason::kSwap)]),
@@ -4474,6 +4493,10 @@ index 76fc1a45f..705795256 100644
 +      per_s(submits[uint32_t(SubmitReason::kOther)]),
 +      per_s(waits[uint32_t(WaitReason::kQuery)]),
 +      ms_per_s(wait_ns[uint32_t(WaitReason::kQuery)]),
++      per_s(waits[uint32_t(WaitReason::kFrame)]),
++      ms_per_s(wait_ns[uint32_t(WaitReason::kFrame)]),
++      per_s(waits[uint32_t(WaitReason::kMemexport)]),
++      ms_per_s(wait_ns[uint32_t(WaitReason::kMemexport)]),
 +      per_s(waits[uint32_t(WaitReason::kOther)]),
 +      ms_per_s(wait_ns[uint32_t(WaitReason::kOther)]),
 +      per_s(waits[uint32_t(WaitReason::kFaultCopy)]),
@@ -4484,7 +4507,7 @@ index 76fc1a45f..705795256 100644
  void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    if (!vulkan_device->properties().timestampPeriod) {
-@@ -5724,13 +6353,22 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
+@@ -5724,13 +6358,22 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
                                    sizeof(uint64_t),
                                    VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
          timestamps[1] > timestamps[0]) {
@@ -4508,7 +4531,7 @@ index 76fc1a45f..705795256 100644
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5885,6 +6523,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5885,6 +6528,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
          gpu_time_pool_available && !gpu_time_query_submissions_[gpu_time_slot];
      if (gpu_time_pool_available && !gpu_time_recorded) {
        ++gpu_time_untimed_submissions_;
@@ -4516,7 +4539,7 @@ index 76fc1a45f..705795256 100644
      }
      if (gpu_time_recorded) {
        dfn.vkCmdResetQueryPool(command_buffer.buffer, gpu_time_query_pool_,
-@@ -5954,6 +6593,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5954,6 +6598,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        }
        return false;
      }
@@ -4525,7 +4548,7 @@ index 76fc1a45f..705795256 100644
      current_submission_wait_stage_masks_.clear();
      for (VkSemaphore semaphore : current_submission_wait_semaphores_) {
        submissions_in_flight_semaphores_.emplace_back(submission_index,
-@@ -6879,20 +7520,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6879,20 +7525,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
          std::memcpy(mapping, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X],
                      sizeof(float) * 4 * 256);
        } else {
@@ -4549,7 +4572,7 @@ index 76fc1a45f..705795256 100644
        }
      }
      // Pixel shader float constants.
-@@ -6906,20 +7536,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6906,20 +7541,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
        if (!mapping) {
          return false;
        }
@@ -4574,7 +4597,7 @@ index 76fc1a45f..705795256 100644
      // Bool and loop constants.
      if (!(current_constant_buffers_up_to_date_ &
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.h b/src/xenia/gpu/vulkan/vulkan_command_processor.h
-index 5fdd9173a..c71330186 100644
+index 5fdd9173a..1a1d25494 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.h
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.h
 @@ -238,6 +238,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
@@ -4607,6 +4630,15 @@ index 5fdd9173a..c71330186 100644
    uint64_t GetResolveSubmittedThrough() const {
      return resolve_submitted_through_.load(std::memory_order_acquire);
    }
+@@ -365,7 +378,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+   void StageMemexportReadback();
+   void FlushMemexportStagingReadback();
+   void AwaitMemexportSubmission(uint64_t submission) {
+-    CheckSubmissionCompletionAndDeviceLoss(submission);
++    CheckSubmissionCompletionAndDeviceLoss(submission, WaitReason::kMemexport);
+   }
+   // Export ranges staged but not yet copied out, in record order - a later
+   // copy of an overlapping range has to win.
 @@ -379,6 +392,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
    std::vector<MemexportStagedRange> memexport_staged_;
    // For EnsureMemexportRangeInDeviceBuffer.
@@ -4629,7 +4661,26 @@ index 5fdd9173a..c71330186 100644
    void InitializeTrace() override;
    bool DumpEdramSnapshotToFile(const std::filesystem::path& path) override;
  
-@@ -576,6 +597,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -520,7 +541,17 @@ class VulkanCommandProcessor final : public CommandProcessor {
+   // Rechecks submission number and reclaims per-submission resources. Pass 0 as
+   // the submission to await to simply check status, or pass
+   // GetCurrentSubmission() to wait for all queue operations to be completed.
+-  void CheckSubmissionCompletionAndDeviceLoss(uint64_t await_submission);
++  // PS5X360E: why the GPU thread waited for the GPU, for the performance line.
++  enum class WaitReason : uint32_t {
++    kQuery,
++    kOther,
++    kFaultCopy,
++    kMemexport,
++    kFrame,
++    kCount
++  };
++  void CheckSubmissionCompletionAndDeviceLoss(
++      uint64_t await_submission, WaitReason reason = WaitReason::kOther);
+   // If is_guest_command is true, a new full frame - with full cleanup of
+   // resources and, if needed, starting capturing - is opened if pending (as
+   // opposed to simply resuming after mid-frame synchronization). Returns
+@@ -576,6 +607,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
    void PumpQueryResolves() override;
    bool AwaitQueryResolve(ReportHandle report_handle,
                           uint64_t wait_for_submission) override;
@@ -4638,7 +4689,7 @@ index 5fdd9173a..c71330186 100644
  
    bool EnsureVIZPredicateBuffer();
    // Drains the queued predicate copies.
-@@ -702,7 +725,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -702,7 +735,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
  
    // A timestamp pair per in-flight submission, so the summed GPU busy time is
    // comparable against the Metal backend's completion-handler figure.
@@ -4647,7 +4698,7 @@ index 5fdd9173a..c71330186 100644
    VkQueryPool gpu_time_query_pool_ = VK_NULL_HANDLE;
    uint64_t gpu_time_query_submissions_[kGpuTimeQuerySubmissions] = {};
    uint32_t gpu_time_query_slot_ = 0;
-@@ -714,6 +737,35 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -714,6 +747,34 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // which sums per-submission intervals and misleads without it.
    uint64_t gpu_time_submissions_window_start_ = 0;
    uint64_t gpu_time_window_start_ns_ = 0;
@@ -4664,7 +4715,6 @@ index 5fdd9173a..c71330186 100644
 +    kCount
 +  };
 +  SubmitReason submit_reason_ = SubmitReason::kOther;
-+  enum class WaitReason : uint32_t { kQuery, kOther, kFaultCopy, kCount };
 +  std::atomic<uint64_t>
 +      perf_submits_[uint32_t(SubmitReason::kCount)] = {};
 +  std::atomic<uint64_t> perf_waits_[uint32_t(WaitReason::kCount)] = {};
@@ -4683,7 +4733,7 @@ index 5fdd9173a..c71330186 100644
    void CreateGpuTimeQueryPool();
    void DestroyGpuTimeQueryPool();
    void CollectCompletedGpuTimeQueries();
-@@ -1093,6 +1145,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -1093,6 +1154,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // .inc for ScaledResolveReadbackInfo.
    bool DownscaleScaledResolve(uint32_t written_address,
                                const ScaledResolveReadbackInfo& scaled_info);
