@@ -3,6 +3,18 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.44+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Its own app: PPSA50360, named PS5X360E.** It installs beside PS5X360 (PPSA50011) and runs
+  alongside it. Settings, saves, shader caches and logs are its own (`/data/homebrew/PPSA50360`,
+  `/download0/ps5x360e`); nothing of PS5X360's is read or changed.
+- Games are shared: `/data/homebrew/xbox360` and PS5X360's `assets/roms` are in the default
+  game list, so the same game copy works in both for comparing.
+- The build now produces the whole app folder, `dist/PPSA50360` (eboot, sce_sys, the runtime
+  libc, fonts, sounds, Kinect page, presets, PS5X360 0.6.0's game patch files, licenses):
+  copy it to `/data/homebrew/`. The images are PS5X360's until PS5X360E has its own.
+- Names shown on screen, in notifications, the phone pages and log downloads say PS5X360E.
+
 ## 0.2-alpha.43+0.6.0 (PS5X360E, on Xenia Edge)
 
 Brought up to PS5X360 0.6.0 (and the 0.5.8 / 0.5.9 launcher work it builds on), on Xenia Edge.

@@ -36,7 +36,7 @@ unsigned short port = 0;
 // title in the interface's language.
 const char kPage[] = R"HTML(<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PS5X360</title>
+<title>PS5X360E</title>
 <style>
 :root{color-scheme:dark}
 body{margin:0;background:#0a0c11;color:#d5dae2;font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
@@ -64,7 +64,7 @@ h3{font-size:14px;color:#9aa3b2;margin:16px 0 8px;font-weight:600}
 #saved{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:#35d07f;color:#06130c;padding:8px 16px;border-radius:20px;font-weight:600;opacity:0;transition:opacity .2s}
 #saved.on{opacity:1}
 </style></head><body>
-<header><h1>PS5X360<small id="version"></small></h1><div id="running"></div></header>
+<header><h1>PS5X360E<small id="version"></small></h1><div id="running"></div></header>
 <main><div id="gate" hidden><div id="gatetext">Code shown on the TV</div><input id="code" maxlength="6" autocapitalize="off" autocomplete="off"><br><button id="enter">OK</button></div>
 <div id="app" hidden><select id="scope"></select><nav id="tabs"></nav><div id="list"></div></div></main>
 <div id="saved"></div>
@@ -304,7 +304,7 @@ void SendLogsZip(int client, const std::string& game) {
   tm utc{};
   gmtime_r(&now, &utc);
   std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &utc);
-  const std::string head = "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Disposition: attachment; filename=\"PS5X360-logs-" +
+  const std::string head = "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Disposition: attachment; filename=\"PS5X360E-logs-" +
       game + "-" + stamp + ".zip\"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n";
   if (!SendAll(client, head)) return;
   const auto le = [](std::string& out, uint32_t value, int bytes) { for (int n = 0; n < bytes; ++n) out += char(value >> (8 * n)); };

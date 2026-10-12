@@ -21,7 +21,7 @@ fs::path launched_game;
 std::string module_override;
 fs::path PendingFile() {
 #if XE_PLATFORM_PS5
-  return "/download0/xbox360ps5/next-title.txt";
+  return "/download0/ps5x360e/next-title.txt";
 #else
   return fs::temp_directory_path() / "xbox360ps5-next-title.txt";
 #endif
@@ -82,9 +82,9 @@ std::string TakeModuleOverride() { return std::exchange(module_override, std::st
 namespace {
 std::vector<fs::path> GameConfigFiles(const std::string& title_id) {
 #if XE_PLATFORM_PS5
-  const fs::path folders[] = {"/app0/assets/game-configs", "/download0/xbox360ps5/game-configs"};
+  const fs::path folders[] = {"/app0/assets/game-configs", "/download0/ps5x360e/game-configs"};
 #else
-  const fs::path folders[] = {"dist/PPSA50011/assets/game-configs"};
+  const fs::path folders[] = {"dist/PPSA50360/assets/game-configs"};
 #endif
   std::vector<fs::path> files;
   for (const auto& folder : folders) {
@@ -100,9 +100,9 @@ bool HasGameConfig(const std::string& title_id) {
 }
 void LoadGameConfigs(const std::string& title_id) {
 #if XE_PLATFORM_PS5
-  const fs::path folders[] = {"/app0/assets/game-configs", "/download0/xbox360ps5/game-configs"};
+  const fs::path folders[] = {"/app0/assets/game-configs", "/download0/ps5x360e/game-configs"};
 #else
-  const fs::path folders[] = {"dist/PPSA50011/assets/game-configs"};
+  const fs::path folders[] = {"dist/PPSA50360/assets/game-configs"};
 #endif
   // PS5X360E: built-in emulator settings for titles that need them, set for
   // every title (so one game's value doesn't carry over to the next) before

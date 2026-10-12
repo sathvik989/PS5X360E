@@ -54,7 +54,7 @@ namespace xbox360ps5::phone_tls {
 namespace {
 constexpr int kAuthorityDays = 398, kCertificateDays = 397, kMaxConnections = 6;
 constexpr const char* kAssets = "/app0/assets/kinect/";
-constexpr const char* kAuthorityName = "CN=PS5X360 Kinect camera (this console),O=PS5X360";
+constexpr const char* kAuthorityName = "CN=PS5X360E Kinect camera (this console),O=PS5X360E";
 
 std::mutex state_mutex;           // authority_pem, url, folder, the certificate objects
 std::string authority_pem, url, folder, key;
@@ -160,7 +160,7 @@ bool MakeCertificate(const std::string& address, std::string* authority, std::st
   *authority = Pem(ca);
 
   Writer leaf;
-  const std::string subject = "CN=" + address + ",O=PS5X360";
+  const std::string subject = "CN=" + address + ",O=PS5X360E";
   mbedtls_asn1_sequence server_auth{};
   server_auth.buf.tag = MBEDTLS_ASN1_OID;
   server_auth.buf.p = reinterpret_cast<unsigned char*>(const_cast<char*>(MBEDTLS_OID_SERVER_AUTH));
@@ -395,7 +395,7 @@ bool Start(const std::string& certificate_folder, std::function<std::string()> a
   key = pairing_key;
   mbedtls_entropy_init(&entropy);
   mbedtls_ctr_drbg_init(&drbg);
-  static const char personal[] = "PS5X360 phone camera";
+  static const char personal[] = "PS5X360E phone camera";
   if (mbedtls_ctr_drbg_seed(&drbg, mbedtls_entropy_func, &entropy, reinterpret_cast<const unsigned char*>(personal),
                             sizeof(personal) - 1))
     return false;

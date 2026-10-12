@@ -181,15 +181,15 @@ void KernelLogMirror(char prefix, const char* text, size_t size) {
   xbox360ps5::NetLog(buffer, std::min<size_t>(size_t(length), sizeof(buffer) - 1));
 }
 int main(int argc, char** argv) {
-  const std::filesystem::path storage = "/download0/xbox360ps5";
+  const std::filesystem::path storage = "/download0/ps5x360e";
   std::error_code error;
   std::filesystem::create_directories(storage, error);
   if (error) { std::fprintf(stderr, "Writable storage unavailable: %s\n", error.message().c_str()); return 1; }
-  xbox360ps5::InstallCrashReport("/download0/xbox360ps5/boot.log");
+  xbox360ps5::InstallCrashReport("/download0/ps5x360e/boot.log");
   using xbox360ps5::Stage;
   Stage("BOOT main entered");
   // Relative paths must resolve to "no such file" rather than a sandbox error.
-  if (chdir("/download0/xbox360ps5")) Stage("BOOT chdir refused");
+  if (chdir("/download0/ps5x360e")) Stage("BOOT chdir refused");
   xbox360ps5::ReportPlatformMemory();
   Stage(xbox360ps5::StartNetLog(9100) ? "BOOT log stream on TCP 9100" : "BOOT log stream unavailable");
   xe::log_mirror = KernelLogMirror;

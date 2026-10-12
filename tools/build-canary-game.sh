@@ -100,5 +100,4 @@ tool="$work/host/ps5-native-tool"
 python3 build/native-runtime-stage/tools/verify-image.py "$work/llvm-pie.elf" "$work/eboot.elf"
 "$tool" self --sign --in "$work/eboot.elf" --out "$work/eboot.bin" --magic 0x1D3D154F
 ls -la "$work/eboot.bin"
-mkdir -p "$root/dist/PPSA50011/assets/fonts"
-cp "$root/assets/fonts/"* "$root/dist/PPSA50011/assets/fonts/"
+# PS5X360E: the complete app folder (dist/PPSA50360) is made by tools/package-ps5x360e.sh.

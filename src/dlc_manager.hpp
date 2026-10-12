@@ -4,7 +4,7 @@
 // instead of dropping it silently.
 //   active:    <saves>/0000000000000000/<TITLE>/00000002/<file>      (the folder the game lists)
 //   disabled:  <saves>/0000000000000000/<TITLE>/00000002-off/<file>  (kept, not listed)
-//   available: a dlc folder (PPSA50011/dlc, the game's dlc folder, each library root's dlc)
+//   available: a dlc folder (PPSA50360/dlc, the game's dlc folder, each library root's dlc)
 // Enabling and disabling move the file between the first two; installing copies an available
 // package into the first (staged in 00000002-installing, checked, then renamed).
 #pragma once

@@ -6069,7 +6069,7 @@ index 7dcf0d2..5ee3295 100644
  }  // namespace kernel
  }  // namespace xe
 diff --git a/src/xenia/kernel/xam/xam_module.h b/src/xenia/kernel/xam/xam_module.h
-index 4ce78d5..59db98a 100644
+index 4ce78d5..4f165e8 100644
 --- a/src/xenia/kernel/xam/xam_module.h
 +++ b/src/xenia/kernel/xam/xam_module.h
 @@ -10,6 +10,8 @@
@@ -6089,7 +6089,7 @@ index 4ce78d5..59db98a 100644
 +// request to start another executable was lost with the restart.
 +#if XE_PLATFORM_PS5
 +static constexpr std::string_view kXamModuleLoaderDataFileName =
-+    "/download0/xbox360ps5/launch_data.bin";
++    "/download0/ps5x360e/launch_data.bin";
 +#else
 +static constexpr std::string_view kXamModuleLoaderDataFileName =
 +    "launch_data.bin";

@@ -1,0 +1,34 @@
+# Title-specific compatibility settings. Explicit user overrides take priority.
+# These recommendations do not claim console gameplay validation.
+# PES 2013 / Winning Eleven 2013: players require image readback.
+# https://github.com/xenia-canary/game-compatibility/issues/447
+# Upstream evidence; PS5 verification is still pending.
+[4B4E084C]
+readback=1
+video_clock=0
+
+# Left 4 Dead GOTY: current console log resolves GPU-generated glyph data
+# with CPU readback disabled; the related L4D2 font path uses full readback.
+# Targeted correctness candidate, not a confirmed fix or a global setting.
+[45410830]
+readback=2
+
+# State of Decay: readable guest zero page, per-title only.
+# Explicit per-game overrides retain priority. Requires process restart.
+# https://github.com/xenia-project/game-compatibility/issues/899
+[584111E8]
+zero_page=1
+
+# I Am Alive: the game reads back a chain of small resolves (512 KiB down to
+# 4 KiB) to work out the scene brightness; without readback the picture turns
+# white. Fast readback fixed it but the brightness still jumped at times
+# (a late/stale result), so the complete readback is used.
+# https://github.com/xenia-canary/game-compatibility/issues/356
+[58410B3A]
+readback=2
+
+# Prince of Persia: The Forgotten Sands: scenery flickers in gameplay; the
+# Anvil engine culls by occlusion queries (upstream report 177 also notes the
+# sun glowing through walls). Accurate occlusion queries; slower.
+[5553083E]
+occlusion=3

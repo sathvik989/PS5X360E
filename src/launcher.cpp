@@ -79,7 +79,7 @@ extern "C" int sceSystemServiceParamGetInt(int parameter_id, int* value);
 namespace xbox360ps5 {
 namespace {
 namespace fs = std::filesystem;
-const fs::path kStorage = "/download0/xbox360ps5";
+const fs::path kStorage = "/download0/ps5x360e";
 const char* const kFont = "/app0/assets/fonts/NotoSans-Regular.ttf";
 const char* const kHeadingFont = "/app0/assets/fonts/NotoSans-SemiBold.ttf";
 // Accurate render targets: Xenia's Vulkan "fsi" path. Kept outside Settings to
@@ -1979,7 +1979,7 @@ void Launcher::DrawShelf(Canvas& c) {
   c.alpha = header;
   c.offset_y = -10.0f * (1.0f - header);
   // Top bar: the name, the filters and what is connected.
-  c.Text("PS5X360", 96, 54, 28, kText);
+  c.Text("PS5X360E", 96, 54, 28, kText);
   c.Fill(96, 96, 44, 4, kAccent, 1.0f, 2);
   float tab = 420;
   for (int n = 0; n < int(std::size(kFilters)); ++n) {
@@ -2003,7 +2003,7 @@ void Launcher::DrawShelf(Canvas& c) {
   if (games_.empty()) {
     c.Text(Tr("Sua prateleira está vazia"), 960, 380, 48, kText, 1.0f, 1);
     c.Text(Tr("Copie cada jogo por FTP para uma pasta em"), 960, 470, 24, kMuted, 1.0f, 1);
-    c.Text("/data/homebrew/PPSA50011/assets/roms/", 960, 510, 28, kAccent, 1.0f, 1);
+    c.Text("/data/homebrew/PPSA50360/assets/roms/", 960, 510, 28, kAccent, 1.0f, 1);
     c.Text(Tr("Vale pasta extraída (com default.xex), imagem .iso ou pacote GOD/STFS."), 960, 570, 24, kMuted, 1.0f, 1);
     c.Text(Tr("O jogo aparece aqui sozinho alguns segundos depois do fim da cópia."), 960, 610, 24, kMuted, 1.0f, 1);
   } else if (!count) {
@@ -2148,7 +2148,7 @@ void Launcher::DrawGameSheet(Canvas& c) {
         : other_version_ ? Tr("Há patches para este jogo, mas feitos para outra versão do executável. Não são aplicados.")
                          : Tr("Nenhum patch para este jogo na pasta de patches.");
     c.Wrapped(reason, x + 56, 340, 24, kMuted, 740);
-    c.Wrapped(Tr("Arquivos .patch.toml (formato do Xenia Canary) ficam em /data/homebrew/PPSA50011/assets/patches/."),
+    c.Wrapped(Tr("Arquivos .patch.toml (formato do Xenia Canary) ficam em /data/homebrew/PPSA50360/assets/patches/."),
               x + 56, 440, 20, kFaint, 740);
   } else {
     const int shown = 6;
@@ -2277,9 +2277,9 @@ void Launcher::DrawDlcs(Canvas& c, float x) {
     }
   }
   c.Wrapped(FramegenText(
-      "Ativada: o jogo encontra a DLC. Desativada: fica guardada, mas o jogo não a vê. Copie pacotes novos para PPSA50011/dlc ou para a pasta dlc do jogo: eles são instalados sozinhos quando você aperta Jogar (ou aqui, com X).",
-      "On: the game finds the DLC. Off: kept, but the game does not see it. Copy new packages to PPSA50011/dlc or to the game's dlc folder: they install by themselves when you press Play (or here, with X).",
-      "Activada: el juego encuentra el DLC. Desactivada: se guarda, pero el juego no lo ve. Copia paquetes nuevos en PPSA50011/dlc o en la carpeta dlc del juego: se instalan solos al pulsar Jugar (o aquí, con X)."),
+      "Ativada: o jogo encontra a DLC. Desativada: fica guardada, mas o jogo não a vê. Copie pacotes novos para PPSA50360/dlc ou para a pasta dlc do jogo: eles são instalados sozinhos quando você aperta Jogar (ou aqui, com X).",
+      "On: the game finds the DLC. Off: kept, but the game does not see it. Copy new packages to PPSA50360/dlc or to the game's dlc folder: they install by themselves when you press Play (or here, with X).",
+      "Activada: el juego encuentra el DLC. Desactivada: se guarda, pero el juego no lo ve. Copia paquetes nuevos en PPSA50360/dlc o en la carpeta dlc del juego: se instalan solos al pulsar Jugar (o aquí, con X)."),
     x + 56, 330, 21, kMuted, 740);
   const auto& page = DlcPage();
   const int rows = int(page.items.size());
@@ -2346,9 +2346,9 @@ void DrawUpdates(Surface& c, float x) {
     }
   }
   c.Wrapped(FramegenText(
-      "Uma atualização fica ativa por vez. Copie o arquivo para PPSA50011/updates ou para a pasta updates do jogo: a mais nova é instalada sozinha ao apertar Jogar (ou aqui, com X). Patches feitos para o jogo sem atualização não valem com ela ativa.",
-      "One update is active at a time. Copy the file to PPSA50011/updates or to the game's updates folder: the newest installs by itself when you press Play (or here, with X). Patches made for the game without an update do not apply while one is active.",
-      "Solo una actualización está activa a la vez. Copia el archivo en PPSA50011/updates o en la carpeta updates del juego: la más nueva se instala sola al pulsar Jugar (o aquí, con X). Los parches hechos para el juego sin actualización no se aplican con ella activa."),
+      "Uma atualização fica ativa por vez. Copie o arquivo para PPSA50360/updates ou para a pasta updates do jogo: a mais nova é instalada sozinha ao apertar Jogar (ou aqui, com X). Patches feitos para o jogo sem atualização não valem com ela ativa.",
+      "One update is active at a time. Copy the file to PPSA50360/updates or to the game's updates folder: the newest installs by itself when you press Play (or here, with X). Patches made for the game without an update do not apply while one is active.",
+      "Solo una actualización está activa a la vez. Copia el archivo en PPSA50360/updates o en la carpeta updates del juego: la más nueva se instala sola al pulsar Jugar (o aquí, con X). Los parches hechos para el juego sin actualización no se aplican con ella activa."),
     x + 56, 330, 21, kMuted, 740);
   const auto& page = sheet.page;
   const int rows = int(page.items.size());
@@ -2753,7 +2753,7 @@ void Launcher::DrawSettingsSheet(Canvas& c) {
               x + 244, 922, 18, kMuted, 570);
   } else {
     c.Text(Tr("Sobre"), x + 56, 820, 28, kText);
-    c.Wrapped(std::string(Tr("PS5X360: emulador experimental de Xbox 360 para PlayStation 5.")) +
+    c.Wrapped(std::string(Tr("PS5X360E: emulador experimental de Xbox 360 para PlayStation 5.")) +
               " Xenia. " + Tr("Vídeo RADV (PS5_Vulkan), áudio XMA (FFmpeg) e patches Xenia Canary. Nenhum jogo, BIOS ou chave acompanha o emulador."),
               x + 56, 860, 20, kMuted, 750);
   }
@@ -2869,7 +2869,7 @@ void Launcher::DrawPaths(Canvas& c) {
   }
   if (!count) c.Text(Tr("Nenhuma pasta configurada."), x + 56, 240, 24, kMuted);
   if (!path_error_.empty()) c.Wrapped(path_error_, x + 56, 868, 20, kWarning, 750);
-  c.Wrapped(Tr("Remover um local não apaga os jogos. Logs: /download0/xbox360ps5/LOGS"), x + 56, 920, 20, kMuted, 750);
+  c.Wrapped(Tr("Remover um local não apaga os jogos. Logs: /download0/ps5x360e/LOGS"), x + 56, 920, 20, kMuted, 750);
   float hint = c.Hint('s', Tr("Adicionar"), x + 56, 1004);
   hint = c.Hint('t', Tr("Remover"), hint, 1004);
   c.Hint('o', Tr("Voltar"), hint, 1004);

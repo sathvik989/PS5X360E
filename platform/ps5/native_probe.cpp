@@ -27,7 +27,7 @@ unsigned translation_cases = 0, translation_failures = 0;
 #endif
 
 void trace(const char* text) noexcept {
-  const int fd = open("/download0/xbox360ps5-m1.log", O_CREAT | O_WRONLY | O_APPEND, 0644);
+  const int fd = open("/download0/ps5x360e-m1.log", O_CREAT | O_WRONLY | O_APPEND, 0644);
   if (fd >= 0) {
     (void)fchmod(fd, 0644);
     (void)write(fd, text, __builtin_strlen(text));

@@ -110,7 +110,7 @@ void Notify(Toast toast) {
 std::string SaveAchievementIcon(uint32_t title_id, uint32_t achievement_id, std::span<const uint8_t> png) {
   if (png.size() < 8 || std::memcmp(png.data(), "\x89PNG", 4)) return {};
   // The installation folder by the path the whole console knows it by.
-  const std::filesystem::path folder = "/data/homebrew/PPSA50011/cache/achievements";
+  const std::filesystem::path folder = "/data/homebrew/PPSA50360/cache/achievements";
   std::error_code error;
   std::filesystem::create_directories(folder, error);
   char name[40];

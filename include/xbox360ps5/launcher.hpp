@@ -29,7 +29,7 @@ struct GameEntry {
   uint64_t hash = 0;           // Executable hash, known after the first launch.
   int cover = -1;              // Index into the launcher's textures.
 };
-// Options kept in /download0/xbox360ps5/settings.txt. Every choice is a small
+// Options kept in /download0/ps5x360e/settings.txt. Every choice is a small
 // integer. Options() describes the ones the menus show: the settings sheet's
 // sub-menus, a game's own sheet and the guide over a running game all draw
 // from it, and so do the files.
@@ -256,7 +256,7 @@ class Launcher {
   void DrawSavesSheet(Canvas& c);
   void RefreshSaves();
   int save_row_ = 0;
-  std::filesystem::path save_root_ = "/download0/xbox360ps5/content";
+  std::filesystem::path save_root_ = "/download0/ps5x360e/content";
   std::vector<std::string> save_titles_;
   void DrawProfilesSheet(Canvas& c);
   void DrawNameSheet(Canvas& c);

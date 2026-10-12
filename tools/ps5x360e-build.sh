@@ -183,13 +183,17 @@ echo "== 7/7 Building the PS5 title"
 	XE_HOST_SHADER_CC="$H/xenia-shader-cc" SLANGC_PATH="$SLANGC_PATH" \
 	bash tools/build-canary-game.sh )
 
+echo "== Packaging the PS5X360E app folder (PPSA50360)"
+( cd "$R" && bash tools/package-ps5x360e.sh )
+
 echo
 echo "== DONE"
 ls -l "$R/build/canary-game/eboot.bin"
+echo "   app folder: PS5X360E/dist/PPSA50360"
 echo "   built from PS5X360E $(git -C "$R" rev-parse --short HEAD), $(date)"
 INNER
 
 echo
-echo "Next: on the PS5, close PS5X360, then replace /data/homebrew/PPSA50011/eboot.bin"
-echo "with PS5X360E/build/canary-game/eboot.bin (keep a copy of the original first)."
+echo "Next: copy the whole folder PS5X360E/dist/PPSA50360 to /data/homebrew/ on the PS5"
+echo "(replace an older PPSA50360 folder; PS5X360 in PPSA50011 is not touched)."
 echo "Full log: $LOG"

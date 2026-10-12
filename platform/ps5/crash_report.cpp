@@ -277,7 +277,7 @@ void ProbeThread(void* thread, const char* name) {
 }
 void InstallCrashReport(const char* path) {
   report_file = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
-  if (report_file < 0) report_file = open("/download0/xbox360ps5/boot.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+  if (report_file < 0) report_file = open("/download0/ps5x360e/boot.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
   (void)!pipe(probe_pipe);
   struct sigaction action{};
   action.sa_sigaction = Handle;

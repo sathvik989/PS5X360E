@@ -12,7 +12,7 @@
 namespace xbox360ps5 {
 namespace {
 const char* const kRequest = "/app0/assets/autotest.txt";
-const char* const kState = "/download0/xbox360ps5/autotest-state.txt";
+const char* const kState = "/download0/ps5x360e/autotest-state.txt";
 void Collect(void* context, void* data, int size) {
   auto* bytes = static_cast<std::vector<uint8_t>*>(context);
   bytes->insert(bytes->end(), static_cast<uint8_t*>(data), static_cast<uint8_t*>(data) + size);

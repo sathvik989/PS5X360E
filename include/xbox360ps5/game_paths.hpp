@@ -17,7 +17,10 @@ inline std::string NormalizeGamePath(std::string path) {
   return path == "/" ? std::string{} : path;
 }
 inline std::vector<std::string> DefaultGamePaths() {
-  return {"/app0/assets/roms", "/data/xbox360", "/mnt/usb0/xbox360", "/mnt/usb1/xbox360",
+  // PS5X360E: /data/homebrew/xbox360 is the game folder shared with PS5X360, and
+  // PS5X360's own games folder is listed too, so both apps see the same games.
+  return {"/app0/assets/roms", "/data/homebrew/xbox360", "/data/homebrew/PPSA50011/assets/roms",
+          "/data/xbox360", "/mnt/usb0/xbox360", "/mnt/usb1/xbox360",
           "/mnt/ext0/xbox360", "/mnt/ext1/xbox360"};
 }
 inline bool ReadGamePaths(const std::filesystem::path& file, std::vector<std::string>& paths) {

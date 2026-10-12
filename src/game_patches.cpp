@@ -36,7 +36,7 @@ fs::path ChoiceFile(uint32_t title_id) {
   char name[32];
   std::snprintf(name, sizeof(name), "%08X.txt", title_id);
 #if XE_PLATFORM_PS5
-  return fs::path("/download0/xbox360ps5/patches") / name;
+  return fs::path("/download0/ps5x360e/patches") / name;
 #else
   if (const char* folder = std::getenv("XBOX360PS5_PATCH_CHOICES")) return fs::path(folder) / name;
   return fs::temp_directory_path() / "xbox360ps5-patches" / name;

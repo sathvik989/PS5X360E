@@ -286,7 +286,7 @@ class Guide final : public xe::ui::ImGuiDialog {
     const auto at = [&](float x, float y) { return ImVec2(x * scale, y * scale); };
     const float left = 412, right = 1508, top = 304, bottom = 778, blade = 66;
     // Header: the guide's name, who is signed in, what is running.
-    list->AddText(large, 36 * scale, at(left + 136, 238), fade(245, 247, 250), Tr("Guia PS5X360"));
+    list->AddText(large, 36 * scale, at(left + 136, 238), fade(245, 247, 250), Tr("Guia PS5X360E"));
     char speed[32];
     std::snprintf(speed, sizeof(speed), "%.0f FPS", fps_);
     const std::string who = profile_.empty() ? std::string(speed) : profile_ + "   ·   " + speed;
@@ -744,7 +744,7 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
   xe::FlushLog();
 }
 // The profile the user chose in the launcher, kept between runs.
-const char kProfileFile[] = "/download0/xbox360ps5/profile.txt";
+const char kProfileFile[] = "/download0/ps5x360e/profile.txt";
 uint64_t SavedProfile() {
   std::ifstream file(kProfileFile);
   std::string text;
@@ -772,7 +772,7 @@ class NativeContext final : public xe::ui::WindowedAppContext {
 };
 class NativeWindow final : public xe::ui::Window {
  public:
-  explicit NativeWindow(NativeContext& context) : Window(context, "PS5X360", 1920, 1080) {}
+  explicit NativeWindow(NativeContext& context) : Window(context, "PS5X360E", 1920, 1080) {}
   ~NativeWindow() override { EnterDestructor(); }
   void Paint() { OnPaint(); }
   std::vector<uint8_t> TakeIcon() { return std::move(icon_); }
@@ -930,13 +930,13 @@ class ConsoleLogSink final : public xe::LogSink {
   std::atomic<int> lines_{0};
 };
 int main(int argc, char** argv) {
-  const std::filesystem::path storage = "/download0/xbox360ps5";
+  const std::filesystem::path storage = "/download0/ps5x360e";
   std::error_code error;
   std::filesystem::create_directories(storage, error);
   if (error) { std::fprintf(stderr, "Writable storage unavailable: %s\n", error.message().c_str()); return 1; }
   std::error_code boot_log_error;
   std::filesystem::create_directories("/app0/logs", boot_log_error);
-  xbox360ps5::InstallCrashReport(boot_log_error ? "/download0/xbox360ps5/boot.log" : "/app0/logs/boot.log");
+  xbox360ps5::InstallCrashReport(boot_log_error ? "/download0/ps5x360e/boot.log" : "/app0/logs/boot.log");
   using xbox360ps5::Stage;
   Stage("BOOT main entered");
   {
@@ -965,7 +965,7 @@ int main(int argc, char** argv) {
   }
   Stage("BOOT version " XBOX360PS5_VERSION);
   // Relative paths must resolve to "no such file" rather than a sandbox error.
-  if (chdir("/download0/xbox360ps5")) Stage("BOOT chdir refused");
+  if (chdir("/download0/ps5x360e")) Stage("BOOT chdir refused");
   xbox360ps5::ReportPlatformMemory();
   Stage(xbox360ps5::StartNetLog(9100) ? "BOOT log stream on TCP 9100" : "BOOT log stream unavailable");
   // The general options: what the launcher shows, changes and saves.
@@ -1046,7 +1046,7 @@ int main(int argc, char** argv) {
   bool log_ready = false;
   // Prefer the visible installation folder. Some title mounts deny writes
   // outside download0, so preserve logging even in those environments.
-  for (const auto& candidate : {std::filesystem::path("/data/homebrew/PPSA50011/logs"),
+  for (const auto& candidate : {std::filesystem::path("/data/homebrew/PPSA50360/logs"),
                                 std::filesystem::path("/app0/logs"), storage / "LOGS"}) {
     if (game_log->session.Begin(candidate, "Launcher", "", "library", XBOX360PS5_VERSION)) {
       log_root = candidate;
@@ -1058,7 +1058,7 @@ int main(int argc, char** argv) {
   cvars::log_file = log_ready ? std::filesystem::path("/dev/null") : storage / "engine.log";
   // The kernel's dialogs (sign-in, messages) answer themselves for now.
   cvars::headless = true;
-  xe::InitializeLogging("PS5X360");
+  xe::InitializeLogging("PS5X360E");
   xe::AddLogSink(std::move(owned_game_log));
   xe::AddLogSink(std::make_unique<ConsoleLogSink>());
   if (log_ready) XELOGW("Logs: {}", game_log->session.Path().string());
@@ -1076,7 +1076,7 @@ int main(int argc, char** argv) {
   if (global.web_page && log_ready)
     XELOGW("Web settings: {}", xbox360ps5::StartWebSettings(log_root) ? "page server started" : "the page server could not start");
   if (log_ready && log_root == storage / "LOGS")
-    XELOGW("Installation folder is not writable; desktop log downloader exports sessions to /data/homebrew/PPSA50011/logs");
+    XELOGW("Installation folder is not writable; desktop log downloader exports sessions to /data/homebrew/PPSA50360/logs");
   std::filesystem::path game;
   if (argc > 1 && argv[1]) game = argv[1];
   else {
@@ -1187,7 +1187,7 @@ int main(int argc, char** argv) {
     }
     Stage("BOOT emulator constructor");
     Stage("BOOT preparing homebrew saves (original content retained)");
-    auto saves = xbox360ps5::PrepareSaveStorage(storage / "content", "/data/homebrew/PPSA50011/saves");
+    auto saves = xbox360ps5::PrepareSaveStorage(storage / "content", "/data/homebrew/PPSA50360/saves");
     if (saves.root == storage / "content") {
       XELOGW("Saves: {}; trying installation mount /app0/saves", saves.notice);
       saves = xbox360ps5::PrepareSaveStorage(storage / "content", "/app0/saves");
@@ -1285,7 +1285,7 @@ int main(int argc, char** argv) {
         // A notification without earning anything: a file put in the title's folder asks for one.
         std::error_code test_error;
         if (std::filesystem::remove("/app0/notify-test.txt", test_error))
-          xbox360ps5::Notify({"PS5X360", Tr("Avisos de conquista funcionando"), "", true});
+          xbox360ps5::Notify({"PS5X360E", Tr("Avisos de conquista funcionando"), "", true});
       }
       int toasts_were = global.achievement_toasts;
       // The settings page: what it shows, and the changes it asked for. A change
@@ -1412,7 +1412,7 @@ int main(int argc, char** argv) {
             const auto* profile = profiles->GetProfile(uint8_t(slot));
             const std::string name = profile ? profile->name() : "Player " + std::to_string(slot + 1);
             XELOGW("Local player {}: {} ({})", slot + 1, sample.connected ? "connected" : "disconnected", name);
-            xbox360ps5::Notify({"PS5X360", name + " — " + Tr(sample.connected ? "Controle conectado" : "Controle desconectado"), "", false});
+            xbox360ps5::Notify({"PS5X360E", name + " — " + Tr(sample.connected ? "Controle conectado" : "Controle desconectado"), "", false});
           }
         }
       };
@@ -1563,7 +1563,7 @@ int main(int argc, char** argv) {
             else if (pressed & 0xCF0) xbox360ps5::PlayUiSound(xbox360ps5::UiSound::move);
             // Switching the achievement notifications on shows what one looks like.
             if (global.achievement_toasts && !toasts_were)
-              xbox360ps5::Notify({"PS5X360", Tr("Avisos de conquista ligados"), "", true});
+              xbox360ps5::Notify({"PS5X360E", Tr("Avisos de conquista ligados"), "", true});
             toasts_were = global.achievement_toasts;
             if (apply_web(false) || ++web_tick % 90 == 0) { show_web_address(); publish_web("", ""); }
             context.Tick(); window.Paint();

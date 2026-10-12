@@ -102,8 +102,8 @@ int main(int argc,char** argv) {
     for(int i=0;i<3;++i) launcher.Press(xbox360ps5::Key::right);
     uint32_t assigned_player = 99;
     if (argc == 3 && std::string(argv[2]) == "ui-volume") {
-      fs::create_directories("/download0/xbox360ps5");
-      std::ofstream("/download0/xbox360ps5/settings.txt") << "volume=3\nui_sounds=1\n";
+      fs::create_directories("/download0/ps5x360e");
+      std::ofstream("/download0/ps5x360e/settings.txt") << "volume=3\nui_sounds=1\n";
       xbox360ps5::Settings legacy; legacy.Load();
       if (legacy.ui_sound_volume != 2 || legacy.volume != 3) throw std::runtime_error("Legacy settings must default interface volume to 20% and keep game volume");
       legacy.ui_sound_volume = 1; legacy.Save();
@@ -133,8 +133,8 @@ int main(int argc,char** argv) {
       launcher.Press(xbox360ps5::Key::cross);
       for(int i=0;i<3;++i) launcher.Press(xbox360ps5::Key::r1);
     } else if (argc == 3 && std::string(argv[2]) == "logging") {
-      fs::create_directories("/download0/xbox360ps5");
-      std::ofstream("/download0/xbox360ps5/settings.txt") << "detailed_logs=1\nvsync=0\n";
+      fs::create_directories("/download0/ps5x360e");
+      std::ofstream("/download0/ps5x360e/settings.txt") << "detailed_logs=1\nvsync=0\n";
       xbox360ps5::Settings migrated; migrated.Load(); migrated.Apply();
       if (migrated.detailed_logs || migrated.vsync || cvars::log_level != 1 || cvars::log_to_stdout)
         throw std::runtime_error("Logging migration must disable traces and preserve VSync");
@@ -155,7 +155,7 @@ int main(int argc,char** argv) {
         l.Press(xbox360ps5::Key::cross);
         for (int i=0;i<7;++i) l.Press(xbox360ps5::Key::down);
       };
-      fs::create_directories("/download0/xbox360ps5");
+      fs::create_directories("/download0/ps5x360e");
       cvars::vsync = true;
       launcher.SetStarted(settings);
       to_vsync(launcher);
@@ -179,14 +179,14 @@ int main(int argc,char** argv) {
       puts("PASS: VSync off persists, restart requested, live flag unchanged, reverting cancels restart");
       to_vsync(launcher);
     } else if (argc == 3 && std::string(argv[2]) == "saves") {
-      fs::create_directories("/data/homebrew/PPSA50011/saves/0009000000000001/454108CF");
-      launcher.SetSaveRoot("/data/homebrew/PPSA50011/saves");
+      fs::create_directories("/data/homebrew/PPSA50360/saves/0009000000000001/454108CF");
+      launcher.SetSaveRoot("/data/homebrew/PPSA50360/saves");
       launcher.Press(xbox360ps5::Key::square);
       for (int i=0;i<10;++i) launcher.Press(xbox360ps5::Key::down);
       launcher.Press(xbox360ps5::Key::cross);
     } else if (argc == 3 && std::string(argv[2]) == "game") {
       // A game the emulator has identified: its sheet's second page holds its own options.
-      fs::create_directories("/download0/xbox360ps5");
+      fs::create_directories("/download0/ps5x360e");
       const auto paths = launcher.GamePaths();
       launcher.RecordLaunch({"Visual sample 1", paths[0], "XEX", paths[0].parent_path().string()}, 0x545407F2,
                             "Visual sample 1", {}, 0);
@@ -216,7 +216,7 @@ int main(int argc,char** argv) {
                              std::string(argv[2]) == "pergame" || std::string(argv[2]) == "pergame-open")) {
       // Two identified games: one with a built-in preset and a setting of its own, one with nothing.
       const std::string what = argv[2];
-      fs::create_directories("/download0/xbox360ps5");
+      fs::create_directories("/download0/ps5x360e");
       const auto paths = launcher.GamePaths();
       launcher.RecordLaunch({"Visual sample 2", paths[1], "XEX", paths[1].parent_path().string()}, 0x4D5307E6,
                             "Visual sample 2", {}, 0);

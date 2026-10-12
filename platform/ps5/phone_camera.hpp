@@ -86,7 +86,7 @@ inline std::string ReadPublicCA() {
 
 inline constexpr char kLanding[] = R"CAMERA(<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="referrer" content="no-referrer"><title>PS5X360 · Phone camera</title>
+<meta name="referrer" content="no-referrer"><title>PS5X360E · Phone camera</title>
 <style>
 :root{color-scheme:dark}body{margin:0;background:#0a0c11;color:#d5dae2;font:16px/1.5 system-ui,sans-serif}
 main{max-width:640px;margin:auto;padding:24px 18px}h1{font-size:24px;color:#f3f5f8}
@@ -124,7 +124,7 @@ const text=pt?{
  ios:'Download the certificate and allow the profile. In Settings → General → VPN & Device Management, install the profile. Then in General → About → Certificate Trust Settings, enable full trust for this CA. Reopen the HTTPS service in Safari.',
  limitations:'This HTTP settings page does not access the camera. The local HTTPS service is required; camera availability and pairing depend on that service.'
 };
-document.documentElement.lang=pt?'pt-BR':'en';document.title='PS5X360 · '+text.title;
+document.documentElement.lang=pt?'pt-BR':'en';document.title='PS5X360E · '+text.title;
 for(const [id,value] of Object.entries(text))document.getElementById(id).textContent=value;
 document.getElementById('pairing').textContent=boot.key;
 document.getElementById('console').textContent=location.origin+'/';

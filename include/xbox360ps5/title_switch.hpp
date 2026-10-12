@@ -29,7 +29,7 @@ void SetModuleOverride(const std::string& module);
 std::string TakeModuleOverride();
 // Per-game settings in Xenia's game config format (<TITLEID>.config.toml, keys
 // such as GPU.readback_resolve): first the ones shipped with the title in
-// assets/game-configs, then the user's in /download0/xbox360ps5/game-configs.
+// assets/game-configs, then the user's in /download0/ps5x360e/game-configs.
 void LoadGameConfigs(const std::string& title_id);
 // Whether a game-configs folder holds <title id>.config.toml.
 bool HasGameConfig(const std::string& title_id);

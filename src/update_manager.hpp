@@ -2,7 +2,7 @@
 // The game sheet's Updates page: title updates, Xbox 360 content type 000B0000.
 //   active:    <saves>/0000000000000000/<TITLE>/000B0000/<file>      (the emulator applies it at launch)
 //   disabled:  <saves>/0000000000000000/<TITLE>/000B0000-off/<file>  (kept, not applied)
-//   available: an updates or dlc folder (PPSA50011/updates, the game's own, each library root's)
+//   available: an updates or dlc folder (PPSA50360/updates, the game's own, each library root's)
 // The emulator applies the first package it lists in the active folder, whichever that is, so
 // one update is active at a time: activating one moves the others to the disabled folder.
 // An update is made for one edition of a game (its media ID, kept in both headers); one made

@@ -274,7 +274,7 @@ std::string ReadIsoTitleId(const fs::path& iso) {
 
 fs::path CoverFile(const std::string& title_id) {
 #if XE_PLATFORM_PS5
-  const fs::path folder = "/download0/xbox360ps5/covers";
+  const fs::path folder = "/download0/ps5x360e/covers";
 #else
   const fs::path folder = fs::temp_directory_path() / "xbox360ps5-covers";
 #endif

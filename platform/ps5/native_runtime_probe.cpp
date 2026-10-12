@@ -20,7 +20,7 @@ int RunActualRuntimeProbe(unsigned&, unsigned&);
 namespace {
 unsigned previous = 0, runs = 0, cases = 0, failures = 0;
 int pad = -1, status = -1;
-constexpr const char* log_path = "/download0/xbox360ps5-m7.log";
+constexpr const char* log_path = "/download0/ps5x360e-m7.log";
 void Trace(const char* message) {
   int fd = open(log_path, O_CREAT | O_WRONLY | O_APPEND, 0644);
   if (fd >= 0) {
