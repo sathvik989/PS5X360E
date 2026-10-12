@@ -461,9 +461,7 @@ void Settings::Save() const {
          << "\nlogging_policy=1\nresolution_scale=" << resolution_scale << "\n";
   for (const auto& option : Options()) output << option.key << "=" << this->*option.field << "\n";
 }
-namespace {
 bool FramegenOnAtStart();  // below, with the frame generation choice
-}
 void Settings::Apply() const {
   cvars::gpu_allow_invalid_fetch_constants = true;
   ui_language.store(SupportedUiLanguage(interface_language ? interface_language : console_language));

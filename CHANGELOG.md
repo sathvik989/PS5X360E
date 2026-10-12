@@ -3,6 +3,47 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.43+0.6.0 (PS5X360E, on Xenia Edge)
+
+Brought up to PS5X360 0.6.0 (and the 0.5.8 / 0.5.9 launcher work it builds on), on Xenia Edge.
+
+- **Frame generation** (Settings > Performance > Frame generation: Off, Automatic, 2x, 3x, 4x; off
+  by default): Swordpdf's ps5-framegen (FSR3 optical flow, GPL-3.0), with PS5X360's adaptive
+  pacing for uneven frame rates. It adds pictures between the game's frames; it does not make the
+  game run faster. SMAA / FXAA run on the generated pictures too. With frame generation on, the
+  "Even 30 FPS" frame pacing steps aside (frame generation paces its own presents). The output
+  rate row (120 Hz) is untested, as in PS5X360. A restart applies a change.
+- **Title updates**: the game sheet's Updates tab (install, turn on, turn off; one active at a
+  time; an update for another edition is flagged). Copy the package to `PPSA50011/updates` or an
+  `updates` folder beside the game; Play installs the newest by itself. Xenia Edge applies it at
+  launch from `saves/0000000000000000/<title>/000B0000`; a refused update is logged as
+  `Skipping incompatible title update` (that warning no longer touches a window the PS5 does not
+  have).
+- **DLC tab**: On / Off / Not installed per package, the reason a file was ignored, and waiting DLC
+  installed on Play (the installer now checks packages with Xenia Edge's own container reader).
+- **Kinect with a phone, without a PC**: the camera page and its HTTPS server run on the console
+  (mbedTLS 3.6.7, fetched by the build script); scan the Kinect QR code in Settings. The 0.5.9
+  virtual NUI / skeleton / hands work is merged into Edge's Kinect code. Still experimental (Dragon
+  Ball Z for Kinect). The page itself comes from PS5X360's `assets/kinect`.
+- **Multi-disc games**: the other discs ("Disc N" folders or images beside the first, or a
+  `discs.m3u`) are offered in Xenia Edge's own disc swap dialog when the game asks for one; the
+  library shows a disc set as one game.
+- **Controller keyboard**: games asking for text get PS5X360's on-screen keyboard typed with the
+  pad (was: the default text was answered without asking).
+- Game FPS overlay also shows the output (presented) rate and whether frame generation is active.
+- State of Decay: a bind the console refuses is moved to an endpoint it allows (same port on any
+  address, port + 10000, then a system port); refused binds report Winsock codes.
+- Bully and other games that keep many files open: read-only game files share at most 64 native
+  descriptors, and the descriptor limit is raised within its hard limit.
+- Controller: capability queries other than "gamepad only" are answered; a refused vibration no
+  longer makes the pad read as disconnected.
+- Prince of Persia: The Forgotten Sands: PS5X360's audio deadlock patch file is included.
+- The pipeline cache is also saved at exit / restart (PS5X360 0.5.9).
+- Taken from Xenia Edge rather than ported, as Edge already does it its own way: a draw waiting
+  for its shader (Edge waits only for one-off, small or memexport targets), guest APCs in
+  alertable waits and thread suspension races (Edge's guest scheduler).
+- Not taken: PS5X360's OpenGL renderer (research, not a supported renderer there either).
+
 ## 0.2-alpha.42+0.5.7-fix.1 (PS5X360E, on Xenia Edge)
 
 - NFS The Run: visibility queries back to Strict. The no-waiting kind came too late for it: the
