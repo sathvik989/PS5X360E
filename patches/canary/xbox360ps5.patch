@@ -5804,18 +5804,21 @@ index 813e195..bc6b0c5 100644
    if (it == app_lookup_.end()) {
      return X_E_NOTFOUND;
 diff --git a/src/xenia/kernel/xam/apps/xam_app.cc b/src/xenia/kernel/xam/apps/xam_app.cc
-index 02c0da1..413a539 100644
+index 02c0da1..f3b4f35 100644
 --- a/src/xenia/kernel/xam/apps/xam_app.cc
 +++ b/src/xenia/kernel/xam/apps/xam_app.cc
-@@ -10,6 +10,7 @@
+@@ -10,7 +10,10 @@
  #include "xenia/kernel/xam/apps/xam_app.h"
  
  #include "xenia/base/logging.h"
 +#include "xbox360ps5/motion_input.hpp"
++#include "xbox360ps5/virtual_nui.hpp"
  #include "xenia/kernel/kernel_state.h"
++#include "xenia/kernel/user_module.h"
  #include "xenia/kernel/xam/xam_content_device.h"
  #include "xenia/kernel/xenumerator.h"
-@@ -193,6 +194,23 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+ 
+@@ -193,6 +196,37 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
        XELOGD("XamUnk2B004, unimplemented");
        return X_E_SUCCESS;
      }
@@ -5823,16 +5826,30 @@ index 02c0da1..413a539 100644
 +      // Xbox360PS5: the title's NUI library registers its identity callback
 +      // with this message as the last step of NuiInitialize, and a refusal
 +      // fails the whole initialization: the title then shuts its camera
-+      // thread down and never reads a frame (seen in 4E4D084E). The callback
-+      // is kept and not called: no identity service produces events for it.
++      // thread down and never reads a frame (seen in 4E4D084E). The verified
++      // identity-map refresh is delivered when the virtual player changes.
 +      // Without the motion research the answer stays as it was, so that a
 +      // title with optional Kinect still finds no sensor.
-+      if (!xbox360ps5::motion::enabled.load()) {
++      if (!xbox360ps5::motion::enabled.load() ||
++          kernel_state_->title_id() != xbox360ps5::motion::kVirtualNuiTitle) {
 +        break;
 +      }
++      // The reviewed image registers 8249D248. Its verified 2C00F callback
++      // case takes (message, buffer), ignores buffer, and refreshes user slots.
++      // Other images need their callback ABI traced before any dispatch.
++      auto module = kernel_state_->GetExecutableModule();
++      if (!module || module->hash() != 0x8FDD4F4AB147612Aull || !buffer_ptr ||
++          (buffer_ptr & 3) ||
++          uint64_t(buffer_ptr) + 4 > 0x100000000ull) return X_E_INVALIDARG;
++      auto* heap = memory_->LookupHeap(buffer_ptr);
++      uint32_t protection = 0;
++      if (!heap || !heap->QueryProtect(buffer_ptr, &protection) ||
++          !(protection & kMemoryProtectRead)) return X_E_INVALIDARG;
 +      const uint32_t callback =
 +          buffer_ptr ? xe::load_and_swap<uint32_t>(buffer) : 0;
++      if (callback && callback != 0x8249D248) return X_E_INVALIDARG;
 +      nui_identity_callback_ = callback;
++      xbox360ps5::motion::nui_identity_callback = callback;
 +      XELOGW("Virtual Kinect: identity callback {:08X} registered", callback);
 +      return X_E_SUCCESS;
 +    }
@@ -5840,17 +5857,18 @@ index 02c0da1..413a539 100644
      // contain any buffer.
      case 0x8000000D: {
 diff --git a/src/xenia/kernel/xam/apps/xam_app.h b/src/xenia/kernel/xam/apps/xam_app.h
-index 6f9e520..3393a33 100644
+index 6f9e520..461ce56 100644
 --- a/src/xenia/kernel/xam/apps/xam_app.h
 +++ b/src/xenia/kernel/xam/apps/xam_app.h
-@@ -24,6 +24,11 @@ class XamApp : public App {
+@@ -24,6 +24,12 @@ class XamApp : public App {
  
    X_HRESULT DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
                                  uint32_t buffer_length) override;
 +
 + private:
 +  // Xbox360PS5: guest callback of the title's NUI identity code (message
-+  // 0x0002C009), 0 for none. Kept, never called.
++  // 0x0002C009), 0 for none. The traced player-map refresh is delivered by
++  // the virtual skeleton source when its signed-in player binding changes.
 +  uint32_t nui_identity_callback_ = 0;
  };
  
@@ -6096,23 +6114,73 @@ index 4ce78d5..59db98a 100644
  
    const LoaderData& loader_data() const { return loader_data_; }
 diff --git a/src/xenia/kernel/xam/xam_nui.cc b/src/xenia/kernel/xam/xam_nui.cc
-index cb378fc..9b323cb 100644
+index cb378fc..ccd3cbf 100644
 --- a/src/xenia/kernel/xam/xam_nui.cc
 +++ b/src/xenia/kernel/xam/xam_nui.cc
-@@ -7,7 +7,9 @@
+@@ -7,7 +7,10 @@
   ******************************************************************************
   */
  
 +#include <cstring>
  #include "xenia/base/logging.h"
 +#include "xbox360ps5/motion_input.hpp"
++#include "xbox360ps5/virtual_nui.hpp"
  #include "xenia/emulator.h"
  #include "xenia/kernel/guest_scheduler.h"
  #include "xenia/kernel/kernel_state.h"
-@@ -50,6 +52,11 @@ static_assert(sizeof(X_NUI_DEVICE_STATUS) == 24, "Size matters");
+@@ -22,6 +25,36 @@
+ namespace xe {
+ namespace kernel {
+ namespace xam {
++namespace {
++bool VirtualNuiMode() {
++  return kernel_state()->title_id() == xbox360ps5::motion::kVirtualNuiTitle &&
++         xbox360ps5::motion::enabled.load();
++}
++uint32_t NuiSignedInMask() {
++  uint32_t mask = 0;
++  for (uint32_t slot = 0; slot < XUserMaxUserCount; ++slot) {
++    if (kernel_state()->xam_state()->IsUserSignedIn(slot) &&
++        kernel_state()->xam_state()->GetUserProfile(slot)) mask |= 1u << slot;
++  }
++  return mask;
++}
++bool NuiWritable(uint32_t address, size_t size) {
++  if (!address || uint64_t(address) + size > 0x100000000ull) return false;
++  for (uint64_t at = address; at < uint64_t(address) + size;
++       at = (at & ~uint64_t(4095)) + 4096) {
++    auto* heap = kernel_state()->memory()->LookupHeap(uint32_t(at));
++    uint32_t protection = 0;
++    if (!heap || !heap->QueryProtect(uint32_t(at), &protection) ||
++        !(protection & kMemoryProtectRead) ||
++        !(protection & kMemoryProtectWrite)) return false;
++  }
++  return true;
++}
++xbox360ps5::motion::NuiBinding BoundNuiPlayer() {
++  return xbox360ps5::motion::LiveNuiBinding(kernel_state()->title_id(),
++                                          NuiSignedInMask());
++}
++}  // namespace
+ // https://web.cs.ucdavis.edu/~okreylos/ResDev/Kinect/MainPage.html
+ 
+ struct X_NUI_DEVICE_STATUS {
+@@ -50,6 +83,23 @@ static_assert(sizeof(X_NUI_DEVICE_STATUS) == 24, "Size matters");
  // Get
  dword_result_t XamNuiGetDeviceStatus_entry(
      pointer_t<X_NUI_DEVICE_STATUS> status_ptr) {
++  if (VirtualNuiMode()) {
++    if (!NuiWritable(status_ptr.guest_address(), sizeof(X_NUI_DEVICE_STATUS)))
++      return X_E_INVALIDARG;
++    status_ptr.Zero();
++    const bool live = xbox360ps5::motion::VirtualNuiCameraLive(
++        kernel_state()->title_id());
++    // Camera service only: no audio/microphone device has been implemented.
++    status_ptr->unk1 = live ? X_STATUS_SUCCESS : 0xC000009D;
++    status_ptr->unk2 = 0xC000009D;
++    status_ptr->status = live ? 4 : 0;
++    return live ? X_ERROR_SUCCESS : 0xC0050006;
++  }
 +#if XE_PLATFORM_PS5
 +  static std::atomic<bool> motion_reported{false};
 +  if (xbox360ps5::motion::enabled.load() && !motion_reported.exchange(true))
@@ -6121,10 +6189,24 @@ index cb378fc..9b323cb 100644
    /* Notes:
       - it does return a value that is not always used
       - returns values are X_ERROR_SUCCESS, 0xC0050006, and others
-@@ -83,11 +90,21 @@ dword_result_t XamXStudioRequest_entry(dword_t request_type,
+@@ -82,12 +132,56 @@ dword_result_t XamXStudioRequest_entry(dword_t request_type,
+ }
  DECLARE_XAM_EXPORT1(XamXStudioRequest, kNone, kStub);
  
- dword_result_t XamUserNuiGetUserIndex_entry(unknown_t unk, lpdword_t index) {
+-dword_result_t XamUserNuiGetUserIndex_entry(unknown_t unk, lpdword_t index) {
++dword_result_t XamUserNuiGetUserIndex_entry(dword_t enrollment, lpdword_t index) {
++  if (VirtualNuiMode()) {
++    if (!NuiWritable(index.guest_address(), 4) || uint32_t(enrollment) >= 8)
++      return X_E_INVALIDARG;
++    *index = xbox360ps5::motion::kUserIndexNone;
++    const auto binding = BoundNuiPlayer();
++    if (binding.user_index < XUserMaxUserCount &&
++        binding.enrollment == uint32_t(enrollment)) {
++      *index = binding.user_index;
++      return X_E_SUCCESS;
++    }
++    return X_E_NO_SUCH_USER;
++  }
 +#if XE_PLATFORM_PS5
 +  static std::atomic<bool> motion_reported{false};
 +  if (xbox360ps5::motion::enabled.load() && !motion_reported.exchange(true))
@@ -6134,7 +6216,29 @@ index cb378fc..9b323cb 100644
  }
  DECLARE_XAM_EXPORT1(XamUserNuiGetUserIndex, kNone, kStub);
  
++// DBZ's 824AE13C passes a real signed-in user index in r3 and output in r4.
++dword_result_t XamUserNuiGetEnrollmentIndex_entry(dword_t user_index,
++                                                 lpdword_t enrollment) {
++  if (!VirtualNuiMode()) return X_E_NO_SUCH_USER;
++  if (!NuiWritable(enrollment.guest_address(), 4) ||
++      uint32_t(user_index) >= XUserMaxUserCount) return X_E_INVALIDARG;
++  *enrollment = xbox360ps5::motion::kEnrollmentUnknown;
++  const auto binding = BoundNuiPlayer();
++  if (binding.user_index != uint32_t(user_index)) return X_E_NO_SUCH_USER;
++  *enrollment = binding.enrollment;
++  return X_E_SUCCESS;
++}
++DECLARE_XAM_EXPORT1(XamUserNuiGetEnrollmentIndex, kNone, kSketchy);
++
  dword_result_t XamUserNuiGetUserIndexForSignin_entry(lpdword_t index) {
++  if (VirtualNuiMode()) {
++    if (!NuiWritable(index.guest_address(), 4)) return X_E_INVALIDARG;
++    *index = xbox360ps5::motion::kUserIndexNone;
++    const auto binding = BoundNuiPlayer();
++    if (binding.user_index >= XUserMaxUserCount) return X_E_ACCESS_DENIED;
++    *index = binding.user_index;
++    return X_E_SUCCESS;
++  }
 +#if XE_PLATFORM_PS5
 +  static std::atomic<bool> motion_reported{false};
 +  if (xbox360ps5::motion::enabled.load() && !motion_reported.exchange(true))
@@ -6143,10 +6247,18 @@ index cb378fc..9b323cb 100644
    for (uint32_t i = 0; i < XUserMaxUserCount; i++) {
      auto profile = kernel_state()->xam_state()->GetUserProfile(i);
      if (profile) {
-@@ -101,11 +118,21 @@ dword_result_t XamUserNuiGetUserIndexForSignin_entry(lpdword_t index) {
+@@ -101,11 +195,29 @@ dword_result_t XamUserNuiGetUserIndexForSignin_entry(lpdword_t index) {
  DECLARE_XAM_EXPORT1(XamUserNuiGetUserIndexForSignin, kNone, kImplemented);
  
  dword_result_t XamUserNuiGetUserIndexForBind_entry(lpdword_t index) {
++  if (VirtualNuiMode()) {
++    if (!NuiWritable(index.guest_address(), 4)) return X_E_INVALIDARG;
++    *index = xbox360ps5::motion::kUserIndexNone;
++    const auto binding = BoundNuiPlayer();
++    if (binding.user_index >= XUserMaxUserCount) return X_E_NO_SUCH_USER;
++    *index = binding.user_index;
++    return X_E_SUCCESS;
++  }
 +#if XE_PLATFORM_PS5
 +  static std::atomic<bool> motion_reported{false};
 +  if (xbox360ps5::motion::enabled.load() && !motion_reported.exchange(true))
@@ -6165,7 +6277,7 @@ index cb378fc..9b323cb 100644
    /* Notes:
       - Possible returns X_STATUS_NO_SUCH_FILE, and 0x10000000
    */
-@@ -115,6 +142,11 @@ DECLARE_XAM_EXPORT1(XamNuiGetDepthCalibration, kNone, kStub);
+@@ -115,6 +227,11 @@ DECLARE_XAM_EXPORT1(XamNuiGetDepthCalibration, kNone, kStub);
  
  // Skeleton
  qword_result_t XamNuiSkeletonGetBestSkeletonIndex_entry(int_t unk) {
@@ -6177,12 +6289,12 @@ index cb378fc..9b323cb 100644
    return 0xffffffffffffffff;
  }
  DECLARE_XAM_EXPORT1(XamNuiSkeletonGetBestSkeletonIndex, kNone, kStub);
-@@ -124,6 +156,25 @@ DECLARE_XAM_EXPORT1(XamNuiSkeletonGetBestSkeletonIndex, kNone, kStub);
+@@ -124,6 +241,25 @@ DECLARE_XAM_EXPORT1(XamNuiSkeletonGetBestSkeletonIndex, kNone, kStub);
  */
  
  dword_result_t XamNuiCameraTiltGetStatus_entry(lpvoid_t unk) {
 +  // Stationary virtual camera, using the status layout documented in PR 1277.
-+  if (xbox360ps5::motion::enabled.load()) {
++  if (VirtualNuiMode() && xbox360ps5::motion::guest_camera_open.load()) {
 +    const uint32_t address=unk.guest_address();
 +    if (!address || uint64_t(address)+0x50>0x100000000ull) return X_E_FAIL;
 +    for(uint64_t at=address;at<uint64_t(address)+0x50;at=(at&~uint64_t(4095))+4096){
@@ -6203,7 +6315,7 @@ index cb378fc..9b323cb 100644
    /* Notes:
       - Used by XamNuiCameraElevationGetAngle, and XamNuiCameraSetFlags
       - if it returns anything greater than -1 then both above functions continue
-@@ -137,6 +188,11 @@ DECLARE_XAM_EXPORT1(XamNuiCameraTiltGetStatus, kNone, kStub);
+@@ -137,6 +273,11 @@ DECLARE_XAM_EXPORT1(XamNuiCameraTiltGetStatus, kNone, kStub);
  
  dword_result_t XamNuiCameraElevationGetAngle_entry(lpqword_t unk1,
                                                     lpdword_t unk2) {
@@ -6215,7 +6327,7 @@ index cb378fc..9b323cb 100644
    /* Notes:
       - Xam 12611 does not show what unk1 is used for (Ghidra)
    */
-@@ -152,6 +208,11 @@ dword_result_t XamNuiCameraElevationGetAngle_entry(lpqword_t unk1,
+@@ -152,6 +293,11 @@ dword_result_t XamNuiCameraElevationGetAngle_entry(lpqword_t unk1,
  DECLARE_XAM_EXPORT1(XamNuiCameraElevationGetAngle, kNone, kStub);
  
  dword_result_t XamNuiCameraGetTiltControllerType_entry() {
@@ -6227,7 +6339,7 @@ index cb378fc..9b323cb 100644
    /* Notes:
       - undefined unk[8]
       - undefined8 local_28;
-@@ -170,6 +231,11 @@ dword_result_t XamNuiCameraGetTiltControllerType_entry() {
+@@ -170,6 +316,11 @@ dword_result_t XamNuiCameraGetTiltControllerType_entry() {
  DECLARE_XAM_EXPORT1(XamNuiCameraGetTiltControllerType, kNone, kStub);
  
  dword_result_t XamNuiCameraSetFlags_entry(qword_t unk1, dword_t unk2) {
@@ -6239,7 +6351,7 @@ index cb378fc..9b323cb 100644
    /* Notes:
       - if XamNuiCameraGetTiltControllerType returns 1 then operation is done
       - else 0xffffffff8007048f
-@@ -190,11 +256,21 @@ dword_result_t XamNuiCameraSetFlags_entry(qword_t unk1, dword_t unk2) {
+@@ -190,11 +341,24 @@ dword_result_t XamNuiCameraSetFlags_entry(qword_t unk1, dword_t unk2) {
  DECLARE_XAM_EXPORT1(XamNuiCameraSetFlags, kNone, kStub);
  
  dword_result_t XamIsNuiUIActive_entry() {
@@ -6253,6 +6365,9 @@ index cb378fc..9b323cb 100644
  DECLARE_XAM_EXPORT1(XamIsNuiUIActive, kNone, kImplemented);
  
  dword_result_t XamNuiIsDeviceReady_entry() {
++  if (VirtualNuiMode()) {
++    return xbox360ps5::motion::VirtualNuiCameraLive(kernel_state()->title_id());
++  }
 +#if XE_PLATFORM_PS5
 +  static std::atomic<bool> motion_reported{false};
 +  if (xbox360ps5::motion::enabled.load() && !motion_reported.exchange(true))
@@ -6261,7 +6376,7 @@ index cb378fc..9b323cb 100644
    /* device_state Notes:
     - used with XNotifyBroadcast(kXNotificationSystemNUIHardwareStatusChanged,
     device_state)
-@@ -213,6 +289,11 @@ dword_result_t XamNuiIsDeviceReady_entry() {
+@@ -213,6 +377,11 @@ dword_result_t XamNuiIsDeviceReady_entry() {
  DECLARE_XAM_EXPORT1(XamNuiIsDeviceReady, kNone, kImplemented);
  
  dword_result_t XamIsNuiAutomationEnabled_entry(unknown_t unk1, unknown_t unk2) {
@@ -6273,7 +6388,7 @@ index cb378fc..9b323cb 100644
    /* Notes:
       - XamIsNuiAutomationEnabled = XamIsNatalPlaybackEnabled
       - Always returns X_E_SUCCESS? Maybe check later versions
-@@ -224,6 +305,11 @@ dword_result_t XamIsNuiAutomationEnabled_entry(unknown_t unk1, unknown_t unk2) {
+@@ -224,6 +393,11 @@ dword_result_t XamIsNuiAutomationEnabled_entry(unknown_t unk1, unknown_t unk2) {
  DECLARE_XAM_EXPORT2(XamIsNuiAutomationEnabled, kNone, kStub, kHighFrequency);
  
  dword_result_t XamIsNatalPlaybackEnabled_entry(unknown_t unk1, unknown_t unk2) {
@@ -6285,7 +6400,7 @@ index cb378fc..9b323cb 100644
    /* Notes:
       - XamIsNuiAutomationEnabled = XamIsNatalPlaybackEnabled
       - Always returns X_E_SUCCESS? Maybe check later versions
-@@ -235,6 +321,11 @@ dword_result_t XamIsNatalPlaybackEnabled_entry(unknown_t unk1, unknown_t unk2) {
+@@ -235,6 +409,11 @@ dword_result_t XamIsNatalPlaybackEnabled_entry(unknown_t unk1, unknown_t unk2) {
  DECLARE_XAM_EXPORT2(XamIsNatalPlaybackEnabled, kNone, kStub, kHighFrequency);
  
  dword_result_t XamNuiIsChatMicEnabled_entry() {
@@ -6297,7 +6412,7 @@ index cb378fc..9b323cb 100644
    /* Notes:
       - calls a second function with a param of uint local_20 [4];
       - Second function calls ExGetXConfigSetting(7,9,local_30,0x1c,local_40);
-@@ -260,6 +351,11 @@ uint32_t engaged_tracking_id = 0;
+@@ -260,6 +439,11 @@ uint32_t engaged_tracking_id = 0;
  char nui_unknown_2 = '\0';
  
  dword_result_t XamNuiHudSetEngagedTrackingID_entry(dword_t id) {
@@ -6309,7 +6424,7 @@ index cb378fc..9b323cb 100644
    if (!id) {
      return X_STATUS_SUCCESS;
    }
-@@ -274,6 +370,11 @@ dword_result_t XamNuiHudSetEngagedTrackingID_entry(dword_t id) {
+@@ -274,6 +458,11 @@ dword_result_t XamNuiHudSetEngagedTrackingID_entry(dword_t id) {
  DECLARE_XAM_EXPORT1(XamNuiHudSetEngagedTrackingID, kNone, kImplemented);
  
  qword_result_t XamNuiHudGetEngagedTrackingID_entry() {
@@ -6321,7 +6436,7 @@ index cb378fc..9b323cb 100644
    if (nui_unknown_1 != 0) {
      return engaged_tracking_id;
    }
-@@ -283,6 +384,11 @@ qword_result_t XamNuiHudGetEngagedTrackingID_entry() {
+@@ -283,6 +472,11 @@ qword_result_t XamNuiHudGetEngagedTrackingID_entry() {
  DECLARE_XAM_EXPORT1(XamNuiHudGetEngagedTrackingID, kNone, kImplemented);
  
  dword_result_t XamNuiHudIsEnabled_entry() {
@@ -6333,7 +6448,7 @@ index cb378fc..9b323cb 100644
    /* Notes:
       - checks if XamNuiIsDeviceReady false, if nui_unknown_1 exists, and
       nui_unknown_2 is equal to null terminated string
-@@ -311,6 +417,11 @@ uint32_t XeXamNuiHudCheck(dword_t unk1) {
+@@ -311,6 +505,11 @@ uint32_t XeXamNuiHudCheck(dword_t unk1) {
  }
  
  dword_result_t XamNuiHudGetInitializeFlags_entry() {
@@ -6345,7 +6460,7 @@ index cb378fc..9b323cb 100644
    /* HUD_Flags Notes:
       - set by 0x2B003
       - set to 0 by unnamed func alongside version_id
-@@ -323,6 +434,11 @@ dword_result_t XamNuiHudGetInitializeFlags_entry() {
+@@ -323,6 +522,11 @@ dword_result_t XamNuiHudGetInitializeFlags_entry() {
  DECLARE_XAM_EXPORT1(XamNuiHudGetInitializeFlags, kNone, kImplemented);
  
  void XamNuiHudGetVersions_entry(lpqword_t unk1, lpqword_t unk2) {
@@ -6357,7 +6472,7 @@ index cb378fc..9b323cb 100644
    /* version_id Notes:
       - set by 0x2B003
       - set to 0 by unnamed func alongside HUD_Flags
-@@ -340,6 +456,11 @@ DECLARE_XAM_EXPORT1(XamNuiHudGetVersions, kNone, kImplemented);
+@@ -340,6 +544,11 @@ DECLARE_XAM_EXPORT1(XamNuiHudGetVersions, kNone, kImplemented);
  dword_result_t XamShowNuiTroubleshooterUI_entry(dword_t user_index,
                                                  dword_t tracking_id,
                                                  dword_t flags) {
@@ -6369,7 +6484,7 @@ index cb378fc..9b323cb 100644
    /* Notes:
       - calls XamPackageManagerGetExperienceMode(&var) with var = 1
       - If returns less than zero or (var & 1) == 0 then get error message:
-@@ -384,6 +505,11 @@ dword_result_t XamShowNuiTroubleshooterUI_entry(dword_t user_index,
+@@ -384,6 +593,11 @@ dword_result_t XamShowNuiTroubleshooterUI_entry(dword_t user_index,
  DECLARE_XAM_EXPORT1(XamShowNuiTroubleshooterUI, kNone, kStub);
  
  dword_result_t XamShowNuiHardwareRequiredUI_entry(unknown_t unk1) {
@@ -6381,7 +6496,7 @@ index cb378fc..9b323cb 100644
    if (unk1 != 0) {
      return X_ERROR_INVALID_PARAMETER;
    }
-@@ -393,6 +519,11 @@ dword_result_t XamShowNuiHardwareRequiredUI_entry(unknown_t unk1) {
+@@ -393,6 +607,11 @@ dword_result_t XamShowNuiHardwareRequiredUI_entry(unknown_t unk1) {
  DECLARE_XAM_EXPORT1(XamShowNuiHardwareRequiredUI, kNone, kImplemented);
  
  dword_result_t XamShowNuiGuideUI_entry(unknown_t unk1, unknown_t unk2) {
@@ -6393,7 +6508,7 @@ index cb378fc..9b323cb 100644
    /* Notes:
     - calls an unnamed function that checks XamNuiHudIsEnabled and
     XamNuiHudSetEngagedTrackingID
-@@ -421,6 +552,11 @@ DECLARE_XAM_EXPORT1(XamShowNuiGuideUI, kNone, kStub);
+@@ -421,6 +640,11 @@ DECLARE_XAM_EXPORT1(XamShowNuiGuideUI, kNone, kStub);
  uint64_t NUI_Session_Id = 0;
  
  qword_result_t XamNuiIdentityGetSessionId_entry() {
@@ -6405,7 +6520,7 @@ index cb378fc..9b323cb 100644
    if (NUI_Session_Id == 0) {
      // xboxkrnl::XeCryptRandom_entry(NUI_Session_Id, 8);
      NUI_Session_Id = 0xDEADF00DDEADF00D;
-@@ -431,6 +567,11 @@ DECLARE_XAM_EXPORT1(XamNuiIdentityGetSessionId, kNone, kImplemented);
+@@ -431,6 +655,11 @@ DECLARE_XAM_EXPORT1(XamNuiIdentityGetSessionId, kNone, kImplemented);
  
  dword_result_t XamNuiIdentityEnrollForSignIn_entry(dword_t unk1, qword_t unk2,
                                                     qword_t unk3, dword_t unk4) {
@@ -6417,7 +6532,7 @@ index cb378fc..9b323cb 100644
    /* Notes:
       - Decompiler issues so double check
    */
-@@ -446,6 +587,11 @@ dword_result_t XamNuiIdentityEnrollForSignIn_entry(dword_t unk1, qword_t unk2,
+@@ -446,6 +675,11 @@ dword_result_t XamNuiIdentityEnrollForSignIn_entry(dword_t unk1, qword_t unk2,
  DECLARE_XAM_EXPORT1(XamNuiIdentityEnrollForSignIn, kNone, kStub);
  
  dword_result_t XamNuiIdentityAbort_entry(dword_t unk) {
@@ -6429,7 +6544,7 @@ index cb378fc..9b323cb 100644
    if (XamNuiHudIsEnabled_entry() == false) {
      return X_E_FAIL;
    }
-@@ -459,12 +605,22 @@ DECLARE_XAM_EXPORT1(XamNuiIdentityAbort, kNone, kStub);
+@@ -459,12 +693,22 @@ DECLARE_XAM_EXPORT1(XamNuiIdentityAbort, kNone, kStub);
  // Other
  dword_result_t XamUserNuiEnableBiometric_entry(dword_t user_index,
                                                 int_t enable) {
@@ -6945,10 +7060,10 @@ index 3795771..683655e 100644
  }  // namespace xe
 diff --git a/src/xenia/kernel/xboxkrnl/xboxkrnl_pscam.cc b/src/xenia/kernel/xboxkrnl/xboxkrnl_pscam.cc
 new file mode 100644
-index 0000000..d5bef04
+index 0000000..6aed974
 --- /dev/null
 +++ b/src/xenia/kernel/xboxkrnl/xboxkrnl_pscam.cc
-@@ -0,0 +1,913 @@
+@@ -0,0 +1,1141 @@
 +/**
 + ******************************************************************************
 + * Xenia : Xbox 360 Emulator Research Project                                 *
@@ -6983,11 +7098,11 @@ index 0000000..d5bef04
 +#include "xenia/cpu/function.h"
 +#include "xenia/cpu/processor.h"
 +#include "xenia/cpu/xex_module.h"
-+#if !XE_PLATFORM_PS5
 +#include "xenia/cpu/raw_module.h"
-+#endif
 +#include "xbox360ps5/virtual_depth_camera.hpp"
 +#include "xbox360ps5/virtual_skeleton.hpp"
++#include "xbox360ps5/virtual_nui.hpp"
++#include "xbox360ps5/virtual_hands.hpp"
 +#include "xenia/kernel/kernel_state.h"
 +#include "xenia/kernel/user_module.h"
 +#include "xenia/kernel/util/shim_utils.h"
@@ -7208,6 +7323,7 @@ index 0000000..d5bef04
 +  }
 +
 +  X_STATUS Request(uint32_t request_ptr) {
++    if (!xbox360ps5::motion::enabled.load()) return X_STATUS_UNSUCCESSFUL;
 +    if (!IsGuestRange(request_ptr, 8)) return X_STATUS_INVALID_PARAMETER;
 +    const auto first_code = static_cast<CameraRequestCode>(uint32_t(*Guest<xe::be<uint32_t>>(request_ptr)));
 +    xbox360ps5::motion::guest_last_request=uint32_t(first_code);
@@ -7478,6 +7594,12 @@ index 0000000..d5bef04
 +  }
 +
 +  bool CompleteFrame(const PendingRequest& read, bool depth) {
++    if (!xbox360ps5::motion::enabled.load()) {
++      PendingRequest done = read;
++      done.status = X_STATUS_UNSUCCESSFUL;
++      Complete(done);
++      return true;
++    }
 +    const uint32_t frame_bytes = depth ? kDepthFrameBytes : kColorFrameBytes;
 +    uint32_t& last_sequence = depth ? depth_sequence_ : color_sequence_;
 +    const uint32_t sequence =
@@ -7630,6 +7752,7 @@ index 0000000..d5bef04
 +constexpr X_HRESULT kSkeletonInvalidArgument = 0x80070057;
 +// What the library returns when its wait for a frame ends without one.
 +constexpr X_HRESULT kSkeletonNoFrameYet = 0x8000000A;
++constexpr X_HRESULT kSkeletonNotConnected = 0x8007048F;
 +
 +struct SkeletonSource {
 +  std::mutex mutex;
@@ -7638,14 +7761,125 @@ index 0000000..d5bef04
 +  uint32_t delivered_period = 0;
 +  // Names the body in the frames. A body that comes back after being lost is
 +  // a new one for the title, as with the sensor.
-+  uint32_t tracking_id = 0;
-+  bool tracked = false;
++  xbox360ps5::motion::SkeletonIdentity identity;
++  uint32_t notified_callback = 0, notified_tracking_id = 0;
++  uint32_t notified_user = xbox360ps5::motion::kUserIndexNone;
 +};
 +SkeletonSource g_skeleton_source;
++std::atomic<bool> g_skeleton_binding_tried{false};
++
++// Targeted estimated hand reach fallback. Keep the title's own direction
++// thresholds, 15-update debounce, edge creation and menu consumers intact.
++// This substitutes missing image-derived hand reach, not controller buttons.
++void EstimatedHandsHandler(cpu::ppc::PPCContext* context, KernelState* kernel) {
++  context->r[11] = 0xFFFFFFFF820E0000ull;  // replaced lis r11,0x820E
++  const uint32_t object = uint32_t(context->r[30]);
++  Memory* memory = kernel->memory();
++  if (kernel->title_id() != xbox360ps5::motion::kVirtualNuiTitle ||
++      !object || uint64_t(object) + 0x2740 > 0x100000000ull ||
++      !IsGuestRangeMapped(memory, object + 0x1D80 + 0x5F8, 4, false) ||
++      !IsGuestRangeMapped(memory, object + 0x2710, 0x78, true)) return;
++  const auto* unavailable = memory->TranslateVirtual(object + 0x1D80 + 0x5F8);
++  if (xe::load_and_swap<uint32_t>(unavailable) == 0) return;
++  auto pose = xbox360ps5::motion::Snapshot();
++  uint32_t signed_in_mask = 0;
++  for (uint32_t slot = 0; slot < 4; ++slot) {
++    if (kernel->xam_state()->IsUserSignedIn(slot) &&
++        kernel->xam_state()->GetUserProfile(slot)) signed_in_mask |= 1u << slot;
++  }
++  const auto binding = xbox360ps5::motion::LiveNuiBinding(kernel->title_id(), signed_in_mask);
++  if (!binding.tracking_id || binding.session != pose.session ||
++      !IsGuestRangeMapped(memory, object + 0xB4, 4, false) ||
++      xe::load_and_swap<uint32_t>(memory->TranslateVirtual(object + 0xB4)) != binding.tracking_id) pose = {};
++  const auto hands = xbox360ps5::motion::EstimateHands(pose);
++  const xbox360ps5::motion::EstimatedHand values[] = {hands.right, hands.left};
++  auto* output = memory->TranslateVirtual(object);
++  // Observe the PREVIOUS original title update, not synthetic direction bits.
++  // A bounded count keeps these diagnostics cheap during a long play session.
++  static thread_local unsigned edge_reports = 0;
++  const uint32_t right_edge = xe::load_and_swap<uint32_t>(output + 0x2780);
++  const uint32_t left_edge = xe::load_and_swap<uint32_t>(output + 0x2784);
++  if ((right_edge || left_edge) && edge_reports < 32) {
++    ++edge_reports;
++    XELOGW("Virtual Kinect menu: original direction edges {:08X}/{:08X}, held {:08X}/{:08X}",
++           right_edge, left_edge,
++           xe::load_and_swap<uint32_t>(output + 0x2778),
++           xe::load_and_swap<uint32_t>(output + 0x277C));
++  }
++  for (size_t n = 0; n < 2; ++n) {
++    const auto& hand = values[n];
++    xe::store_and_swap<float>(output + 0x2710 + n * 4, hand.magnitude);
++    xbox360ps5::motion::StoreVector(output + 0x2720 + n * 16,
++                                   hand.vector.x, hand.vector.y, hand.vector.z, 0);
++    xe::store_and_swap<float>(output + 0x2740 + n * 8, hand.cursor_x);
++    xe::store_and_swap<float>(output + 0x2744 + n * 8, hand.cursor_y);
++  }
++}
++
++void BindEstimatedHands(KernelState* kernel, cpu::XexModule* xex) {
++  constexpr uint32_t site = 0x821B4E24;
++  constexpr std::string_view name = "ps5x360-estimated-hands";
++  Memory* memory = kernel->memory();
++  auto* processor = kernel->processor();
++  if (processor->GetModule(name)) return;
++  if (!IsGuestRangeMapped(memory, site, 4, false) ||
++      xe::load_and_swap<uint32_t>(memory->TranslateVirtual(site)) != 0x3D60820E ||
++      !processor->FindFunctionsWithAddress(site).empty()) {
++    XELOGW("Virtual Kinect: hand reach seam is unavailable or already compiled");
++    return;
++  }
++  // A new owned guest page, within the PPC relative branch reach. Never borrow
++  // padding from the executable or overwrite an existing guest allocation.
++  auto* heap = memory->LookupHeap(0x83C00000);
++  uint32_t shim = 0;
++  if (!heap || !heap->AllocRange(0x83C00000, 0x83FFFFFF, 4096, 4096,
++          kMemoryAllocationReserve | kMemoryAllocationCommit,
++          kMemoryProtectRead | kMemoryProtectWrite, false, &shim)) return;
++  const int64_t delta = int64_t(shim) - site;
++  if (delta < -0x2000000 || delta > 0x1FFFFFC || (delta & 3)) {
++    heap->Release(shim);
++    return;
++  }
++  auto raw = std::make_unique<cpu::RawModule>(processor);
++  raw->set_name(name);
++  raw->SetAddressRange(shim, 4096);
++  cpu::Function* function = nullptr;
++  const auto status = raw->DeclareFunction(shim, &function);
++  auto* code_heap = memory->LookupHeap(site);
++  uint32_t protection = 0;
++  if (!function || status != cpu::Symbol::Status::kNew || !code_heap ||
++      !code_heap->QueryProtect(site, &protection) ||
++      !code_heap->Protect(site, 4, kMemoryProtectRead | kMemoryProtectWrite)) {
++    heap->Release(shim);
++    return;
++  }
++  static_cast<cpu::GuestFunction*>(function)->SetupExtern(EstimatedHandsHandler);
++  function->set_end_address(shim + 4);
++  function->set_status(cpu::Symbol::Status::kDeclared);
++  xe::store_and_swap<uint32_t>(memory->TranslateVirtual(shim), 0x44000042);
++  xe::store_and_swap<uint32_t>(memory->TranslateVirtual(shim + 4), 0x4E800020);
++  if (!processor->AddModule(std::move(raw))) {
++    code_heap->Protect(site, 4, protection);
++    heap->Release(shim);
++    return;
++  }
++  xe::store_and_swap<uint32_t>(memory->TranslateVirtual(site),
++                             0x48000001 | (uint32_t(delta) & 0x03FFFFFC));
++  if (!code_heap->Protect(site, 4, protection)) {
++    XELOGE("Virtual Kinect: hand seam installed but code protection restore failed");
++    return;
++  }
++  // The raw module lives with the processor, including after camera stop.
++  // Its disabled handler clears reach and still emulates the original lis.
++  XELOGW("Virtual Kinect: estimated hand reach fallback bound at {:08X} via {:08X}; native menu debounce retained",
++         site, shim);
++  (void)xex;
++}
 +
 +X_HRESULT SkeletonGetNextFrame(KernelState* kernel_state, uint32_t wait_ms,
 +                               uint32_t frame_ptr) {
 +  using clock = std::chrono::steady_clock;
++  if (!xbox360ps5::motion::enabled.load()) return kSkeletonNotConnected;
 +  Memory* memory = kernel_state->memory();
 +  if (!IsGuestRangeMapped(memory, frame_ptr,
 +                          xbox360ps5::motion::kSkeletonFrameBytes, true)) {
@@ -7666,6 +7900,7 @@ index 0000000..d5bef04
 +  uint32_t period = period_now();
 +  // A second request within one period waits for the next frame.
 +  while (period == source.delivered_period) {
++    if (!xbox360ps5::motion::enabled.load()) return kSkeletonNotConnected;
 +    if (clock::now() >= deadline) {
 +      return kSkeletonNoFrameYet;
 +    }
@@ -7674,27 +7909,104 @@ index 0000000..d5bef04
 +    lock.lock();
 +    period = period_now();
 +  }
++  if (!xbox360ps5::motion::enabled.load()) return kSkeletonNotConnected;
 +  source.delivered_period = period;
 +  const xbox360ps5::motion::Frame pose = xbox360ps5::motion::Snapshot();
-+  if (pose.tracked && !source.tracked && !++source.tracking_id) {
-+    source.tracking_id = 1;
++  const uint32_t tracking_id = source.identity.Update(pose);
++  uint32_t signed_in_mask = 0;
++  for (uint32_t slot = 0; slot < 4; ++slot) {
++    if (kernel_state->xam_state()->IsUserSignedIn(slot) &&
++        kernel_state->xam_state()->GetUserProfile(slot))
++      signed_in_mask |= 1u << slot;
 +  }
-+  source.tracked = pose.tracked;
++  const auto binding = xbox360ps5::motion::PublishNuiFrame(
++      pose, tracking_id, signed_in_mask);
 +  xbox360ps5::motion::WriteSkeletonFrame(
 +      memory->TranslateVirtual(frame_ptr), pose, period,
 +      uint64_t(period) * kSkeletonPeriodMs,
-+      pose.tracked ? source.tracking_id : 0);
++      tracking_id, binding.enrollment, binding.user_index);
 +  ++xbox360ps5::motion::guest_skeleton_frames;
 +  if (pose.tracked) {
 +    ++xbox360ps5::motion::guest_skeleton_bodies;
++  }
++  const uint32_t callback = xbox360ps5::motion::nui_identity_callback.load();
++  const bool notify = callback &&
++      (callback != source.notified_callback ||
++       binding.tracking_id != source.notified_tracking_id ||
++       binding.user_index != source.notified_user);
++  if (notify) {
++    source.notified_callback = callback;
++    source.notified_tracking_id = binding.tracking_id;
++    source.notified_user = binding.user_index;
++  }
++  // The verified callback case 2C00F at 8249D2C0 calls the SDK user-map
++  // refresh (8249D0E0) without dereferencing r4. Invoke outside our mutex:
++  // that refresh queries XamUserNuiGetUserIndex and may take guest locks.
++  lock.unlock();
++  if (notify && xbox360ps5::motion::enabled.load() &&
++      IsGuestRangeMapped(memory, callback, 4, false)) {
++    auto* thread = cpu::ThreadState::Get();
++    if (thread) {
++      uint64_t args[] = {0x0002C00F, 0};
++      kernel_state->processor()->Execute(thread, callback, args, 2);
++      ++xbox360ps5::motion::nui_identity_notifications;
++    }
 +  }
 +  return X_E_SUCCESS;
 +}
 +
 +void SkeletonGetNextFrameHandler(cpu::ppc::PPCContext* ppc_context,
 +                                 KernelState* kernel_state) {
++  const uint32_t frame = uint32_t(ppc_context->r[4]);
 +  ppc_context->r[3] = uint32_t(SkeletonGetNextFrame(
-+      kernel_state, uint32_t(ppc_context->r[3]), uint32_t(ppc_context->r[4])));
++      kernel_state, uint32_t(ppc_context->r[3]), frame));
++  // Reviewed DBZ caller embeds its frame at object+80. Observe the previous
++  // update without changing guest state. The hand context is separate from
++  // the raised-hand prompt; a delivered skeleton is not proof it is usable.
++  if (ppc_context->r[3] == X_E_SUCCESS &&
++      uint32_t(ppc_context->lr) == 0x821B51D0 && frame >= 0x80 &&
++      xbox360ps5::motion::guest_skeleton_frames.load() % 150 == 0) {
++    const uint32_t object = frame - 0x80;
++    Memory* memory = kernel_state->memory();
++    if (uint64_t(object) + 0x2788 <= 0x100000000ull &&
++        IsGuestRangeMapped(memory, object, 0x2788, false)) {
++      const auto* data = memory->TranslateVirtual(object);
++      auto u32 = [data](size_t at) { return xe::load_and_swap<uint32_t>(data + at); };
++      auto f32 = [data](size_t at) { return xe::load_and_swap<float>(data + at); };
++      XELOGW("Virtual Kinect hands: context unavailable {} magnitude {}/{} "
++             "vectors ({},{},{})/({},{},{}) edges {:08X}/{:08X}",
++             u32(0x1D80 + 0x5F8), f32(0x2710), f32(0x2714),
++             f32(0x2720), f32(0x2724), f32(0x2728),
++             f32(0x2730), f32(0x2734), f32(0x2738),
++             u32(0x2780), u32(0x2784));
++#if !XE_PLATFORM_PS5
++      // Explicit one-shot HOST investigation: replay the reviewed SDK feed
++      // with the current frame to inspect its HRESULT. Never run on PS5.
++      static bool hand_probe_done = false;
++      if (!hand_probe_done && std::getenv("XBOX360PS5_NUI_HAND_PROBE")) {
++        hand_probe_done = true;
++        const uint64_t a = (uint64_t(u32(0x30)) + 6) * 4;
++        const uint64_t b = (uint64_t(u32(0x50)) + 14) * 4;
++        if (a + 4 <= 0x2788 && b + 4 <= 0x2788) {
++          const uint32_t first = u32(size_t(a)), second = u32(size_t(b));
++          XELOGW("Virtual Kinect hand probe: image indices {}/{} slots {}/{} pointers {:08X}/{:08X}",
++                 u32(0x30), u32(0x50), a, b, first, second);
++          auto* thread = cpu::ThreadState::Get();
++          if (thread && first && IsGuestRangeMapped(memory, first, 0x18, false)) {
++            const auto* descriptor = memory->TranslateVirtual(first);
++            XELOGW("Virtual Kinect hand probe: image {:08X} type {} resource {:08X} optional {:08X}",
++                   first, xe::load_and_swap<uint32_t>(descriptor + 0x10),
++                   xe::load_and_swap<uint32_t>(descriptor + 0x14), second);
++            uint64_t args[] = {object + 0x1D80, 0, frame, first, 0, second, 0};
++            const auto result = kernel_state->processor()->Execute(thread, 0x824FFCA8, args, 7);
++            XELOGW("Virtual Kinect hand probe: SDK feed {:08X}, unavailable {} body state {}",
++                   uint32_t(result), u32(0x1D80 + 0x5F8), u32(0x80 + 0x30));
++          }
++        }
++      }
++#endif
++    }
++  }
 +}
 +
 +// Finds the title's NuiSkeletonGetNextFrame and has the guest run the handler
@@ -7702,11 +8014,15 @@ index 0000000..d5bef04
 +// an extern handler on the function. Done once, at the title's first camera
 +// request, which is before it can have asked for a skeleton frame.
 +void BindSkeletonSource(KernelState* kernel_state) {
-+  static std::atomic<bool> tried{false};
-+  if (tried.exchange(true)) {
++  // The frame ABI has only been traced for this title. Optional Kinect games
++  // must retain their own SDK even if motion is enabled globally.
++  if (kernel_state->title_id() != 0x4E4D084E) return;
++  if (g_skeleton_binding_tried.exchange(true)) {
 +    return;
 +  }
 +  auto module = kernel_state->GetExecutableModule();
++  // Enrollment and identity callback contracts were traced in this image.
++  if (!module || module->hash() != 0x8FDD4F4AB147612Aull) return;
 +  cpu::XexModule* xex = module ? module->xex_module() : nullptr;
 +  if (!xex) {
 +    return;
@@ -7763,6 +8079,7 @@ index 0000000..d5bef04
 +    return;
 +  }
 +  xbox360ps5::motion::guest_skeleton_bound = true;
++  BindEstimatedHands(kernel_state, xex);
 +  XELOGW("Virtual Kinect: skeleton frames of the title come from the "
 +         "estimated pose (function at {:08X})",
 +         address);
@@ -7778,6 +8095,20 @@ index 0000000..d5bef04
 +  }
 +  // Destroyed unlocked, as its worker may still be completing a request.
 +  camera_device.reset();
++  {
++    std::lock_guard<std::mutex> lock(g_skeleton_source.mutex);
++    g_skeleton_source.start = std::chrono::steady_clock::now();
++    g_skeleton_source.delivered_period = 0;
++    g_skeleton_source.identity = {};
++    g_skeleton_source.notified_callback = 0;
++    g_skeleton_source.notified_tracking_id = 0;
++    g_skeleton_source.notified_user = xbox360ps5::motion::kUserIndexNone;
++  }
++  g_skeleton_binding_tried = false;
++  xbox360ps5::motion::guest_skeleton_bound = false;
++  xbox360ps5::motion::guest_skeleton_frames = 0;
++  xbox360ps5::motion::guest_skeleton_bodies = 0;
++  xbox360ps5::motion::ResetVirtualNui();
 +}
 +
 +#if !XE_PLATFORM_PS5
@@ -7790,6 +8121,15 @@ index 0000000..d5bef04
 +  auto* words = memory->TranslateVirtual<xe::be<uint32_t>*>(storage);
 +  std::memset(words, 0, 0xB0000);
 +  bool ok = true;
++  // A previously bound skeleton hook must not publish frames while disabled.
++  // Failure also leaves the caller's output unchanged.
++  const bool motion_was_enabled = xbox360ps5::motion::enabled.load();
++  xbox360ps5::motion::SetEnabled(false);
++  words[0] = 0xDEADBEEF;
++  ok &= SkeletonGetNextFrame(kernel, 0, storage) == kSkeletonNotConnected;
++  ok &= words[0] == 0xDEADBEEF;
++  xbox360ps5::motion::SetEnabled(true);
++  ok &= SkeletonGetNextFrame(kernel, 0, 0) == kSkeletonInvalidArgument;
 +  {
 +    CameraDevice device(kernel);
 +    ok &= device.Request(0) == X_STATUS_INVALID_PARAMETER;
@@ -7843,6 +8183,7 @@ index 0000000..d5bef04
 +    ok &= device.Request(storage) == X_STATUS_SUCCESS && words[1] == 4;
 +  }
 +  memory->SystemHeapFree(storage);
++  xbox360ps5::motion::SetEnabled(motion_was_enabled);
 +  return ok;
 +}
 +#endif
@@ -7852,6 +8193,8 @@ index 0000000..d5bef04
 +    return X_STATUS_INVALID_PARAMETER;
 +  }
 +  if (!xbox360ps5::motion::enabled.load()) return X_STATUS_UNSUCCESSFUL;
++  if (kernel_state()->title_id() != 0x4E4D084E)
++    return X_STATUS_UNSUCCESSFUL;
 +  BindSkeletonSource(kernel_state());
 +  return GetCameraDevice()->Request(request_ptr);
 +}

@@ -35,6 +35,7 @@
 #include "xbox360ps5/web_settings.hpp"
 #include "xbox360ps5/save_storage.hpp"
 #include "xbox360ps5/dlc_install.hpp"
+#include "disc_catalog.hpp"
 #include "xenia/kernel/xam/content_manager.h"
 #include "xbox360ps5/game_patches.hpp"
 #include "xbox360ps5/patch_runtime.hpp"
@@ -1623,6 +1624,20 @@ int main(int argc, char** argv) {
                settings.GameLanguage(), settings.console_language);
         try {
           xbox360ps5::motion::SetEnabled(settings.motion_phone != 0);
+          // PS5X360E: the other discs of a multi-disc game (sibling "Disc N"
+          // folders or images, or a discs.m3u, as PS5X360 0.5.9 finds them),
+          // offered by Xenia Edge's own disc swap dialog when the game asks.
+          emulator.set_disc_provider([game](uint32_t) {
+            std::vector<xe::Emulator::TitleDisc> discs;
+            for (uint32_t number = 1; number <= 8; ++number) {
+              std::string error;
+              const auto found = xbox360ps5::multidisc::CandidatesForDisc(game, number, error);
+              if (found.size() == 1)
+                discs.push_back({"Disc " + std::to_string(number), found.front()});
+            }
+            XELOGI("Multi-disc: {} disc(s) found beside {}", discs.size(), game.string());
+            return discs;
+          });
           status = emulator.LaunchPath(game);
         } catch (const std::exception& error) {
           // The core is half way into the game: only a fresh start is safe.

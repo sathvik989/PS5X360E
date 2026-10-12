@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "xbox360ps5/web_settings.hpp"
+#include "phone_camera.hpp"
+#include "phone_camera_console.hpp"
+#include "phone_camera_tls.hpp"
 #include "xbox360ps5/motion_input.hpp"
 #include <algorithm>
 #include <arpa/inet.h>
@@ -79,9 +82,14 @@ function render(){
   const games=state.games||[];if(scope&&!games.some(g=>g.id==scope))scope='';
   $('scope').innerHTML='<option value="">'+t.all+'</option>'+games.map(g=>'<option value="'+g.id+'">'+esc(g.name)+' ['+g.id+']</option>').join('');
   $('scope').value=scope;
-  const names=state.categories.concat([t.logs]);
+  const cameraPT=(navigator.language||'en').toLowerCase().startsWith('pt');
+  const names=state.categories.concat([t.logs,cameraPT?'Câmera':'Camera']);
   $('tabs').innerHTML=names.map((n,i)=>'<button class="'+(i==tab?'on':'')+'" data-tab="'+i+'">'+esc(n)+'</button>').join('');
   if(tab==state.categories.length){logs();return;}
+  if(tab==state.categories.length+1){
+    $('list').innerHTML='<div class="option"><b>'+(cameraPT?'Câmera do celular':'Phone camera')+'</b><p>'+(cameraPT?'Use a câmera deste celular como sensor Kinect, direto pelo PS5. Na primeira vez, o celular instala o certificado do PS5.':'Use this phone\'s camera as the Kinect sensor, straight from the PS5. The first time, the phone installs the PS5 certificate.')+'</p><p><a id="cameraLink" style="color:#35d07f"></a></p></div>';
+    const link=$('cameraLink');link.textContent=cameraPT?'Usar câmera do celular':'Use phone camera';link.href='/camera?k='+encodeURIComponent(key);return;
+  }
   const game=scope?games.find(g=>g.id==scope):null,own=game?(game.own||{}):null,pre=game?(game.preset||{}):{};
   $('list').innerHTML=state.options.filter(o=>o.category==tab&&(!scope||o.perGame)).map(o=>{
     const mine=own&&(o.key in own),value=own?(mine?own[o.key]:-1):o.value;
@@ -367,12 +375,33 @@ void Answer(int client) {
   std::string target = request.substr(space + 1, space2 - space - 1), query;
   if (const size_t mark = target.find('?'); mark != std::string::npos) { query = target.substr(mark + 1); target.resize(mark); }
   if (target == "/" && method == "GET") { Send(client, "200 OK", "text/html; charset=utf-8", kPage); return; }
+  if (target == "/phone-camera-ca.crt" && method == "GET") {
+    // Fixed public-certificate endpoint; never accept a client file path.
+    auto certificate = phone_tls::AuthorityPem();
+    if (certificate.empty()) certificate = phone_camera::ReadPublicCA();
+    if (certificate.empty()) { Send(client, "404 Not Found", "text/plain", "certificate unavailable"); return; }
+    Send(client, "200 OK", "application/x-x509-ca-cert", certificate,
+         "Content-Disposition: attachment; filename=\"ps5x360-camera.crt\"\r\nReferrer-Policy: no-referrer\r\n");
+    return;
+  }
   if (target == "/favicon.ico") { Send(client, "404 Not Found", "text/plain", ""); return; }
   // Everything else needs the key shown on the television.
   std::string given = Header(request, "X-Key");
   if (given.empty()) given = Parameter(query, "k");
   if (given != key) { Send(client, "403 Forbidden", "application/json", "{\"error\":\"key\"}"); return; }
-  if (target == "/api/state" && method == "GET") {
+  if (target == "/camera" && method == "GET") {
+    // Never serve pairing data during the baseline startup's empty-key window.
+    if (key.empty()) { Send(client, "403 Forbidden", "application/json", "{\"error\":\"key\"}"); return; }
+    const std::string secure = phone_tls::Url();
+    std::string page = secure.empty() ? phone_camera::kLanding : phone_camera::kConsoleLanding;
+    const auto marker = page.find("__CAMERA_BOOT__");
+    page.replace(marker, sizeof("__CAMERA_BOOT__") - 1,
+                 secure.empty() ? "{\"key\":" + JsonText(key) + ",\"relay\":" + JsonText(phone_camera::ReadRelay()) +
+                                      ",\"ca\":" + (phone_camera::ReadPublicCA().empty() ? "false" : "true") + "}"
+                                : "{\"key\":" + JsonText(key) + ",\"https\":" + JsonText(secure) + "}");
+    Send(client, "200 OK", "text/html; charset=utf-8", page,
+         "Referrer-Policy: no-referrer\r\nPermissions-Policy: camera=(), microphone=()\r\n");
+  } else if (target == "/api/state" && method == "GET") {
     std::string copy;
     { std::lock_guard<std::mutex> lock(mutex); copy = state; }
     Send(client, "200 OK", "application/json; charset=utf-8", copy);
@@ -509,6 +538,27 @@ bool StartWebSettings(const fs::path& logs) {
     local.sin_port = htons(candidate);
     if (!bind(listener, reinterpret_cast<sockaddr*>(&local), sizeof(local))) { bound = true; port = candidate; }
   }
+  // Publish pairing strings before Serve can read them. pthread_create
+  // synchronizes these initialization writes with the new server thread.
+  // The key is kept beside the logs, so it stays the same across restarts: a phone that
+  // paired once (the camera page included) reconnects by itself after the emulator restarts
+  // into a game. Delete web-settings.key to make a new one.
+  const fs::path key_file = logs.parent_path() / "web-settings.key";
+  {
+    std::ifstream saved(key_file);
+    std::string line;
+    if (saved && std::getline(saved, line) && line.size() == 6 &&
+        std::all_of(line.begin(), line.end(), [](unsigned char c) { return std::isdigit(c) || (c >= 'a' && c <= 'f'); }))
+      key = line;
+  }
+  if (key.empty()) {
+    std::random_device random;
+    char text[8];
+    std::snprintf(text, sizeof(text), "%06x", unsigned(random()) & 0xFFFFFFu);
+    key = text;
+    std::ofstream(key_file, std::ios::trunc) << key << "\n";
+  }
+  address = LocalAddress();
   pthread_t thread;
   if (!bound || listen(listener, 4) || pthread_create(&thread, nullptr, Serve, nullptr)) {
     close(listener);
@@ -516,11 +566,8 @@ bool StartWebSettings(const fs::path& logs) {
     return false;
   }
   pthread_detach(thread);
-  std::random_device random;
-  char text[8];
-  std::snprintf(text, sizeof(text), "%06x", unsigned(random()) & 0xFFFFFFu);
-  key = text;
-  address = LocalAddress();
+  // The phone camera page over HTTPS, served by the console itself.
+  phone_tls::Start((logs.parent_path() / "phone-camera").string(), [] { return LocalAddress(); }, key);
   return true;
 }
 std::string WebSettingsPlainAddress() {

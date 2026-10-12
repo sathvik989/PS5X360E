@@ -56,7 +56,7 @@ cat > "$build/version.h.new" <<EOF
 #endif  // GENERATED_VERSION_H_
 EOF
 cmp -s "$build/version.h.new" "$build/version.h" || mv "$build/version.h.new" "$build/version.h"
-ninja -C "$build" -j"${JOBS:-8}" xbox360ps5-title-objects \
+ninja -C "$build" -j"${JOBS:-8}" xbox360ps5-title-objects xbox360ps5-mbedtls \
   xenia-base xenia-cpu xenia-cpu-backend-x64 xenia-core xenia-kernel xenia-gpu xenia-gpu-vulkan \
   xenia-ui xenia-ui-vulkan xenia-vfs xenia-apu xenia-apu-nop xenia-hid xenia-hid-nop xenia-patcher \
   aes_128 boost_context capstone fmt dxbc imgui libavcodec libavformat libavutil mspack snappy \
