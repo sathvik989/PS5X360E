@@ -3,6 +3,39 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.48+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Xenia Edge updated** from 2e6898afc to 8e44485d9 (65 commits, 12 Oct 2026). Among them:
+  pipelines are no longer waited for before a submission ends, and a draw waiting for one moves
+  it to the front of the queue; occlusion query draws may use a placeholder pipeline; faster
+  shader translation and pipeline creation; the storage flush that never ran (EndSubmission
+  was not called) now runs; MSAA rasterizes at the Xenos sample positions; Edge's crypto is
+  now Mbed TLS (the aes_128 library is gone). Our patch was moved onto it (8 conflicts
+  resolved: the Kinect identity callback and the NUI dialogs keep the motion-research
+  handling, and the dirty-disc dialog still returns to the launcher when headless).
+- **Pipeline storage is written again.** The PS5 never grew the pipeline storage file (a whole
+  NFS session logged 1367 "Failed to write pipeline description"): the file was last read to
+  its final entry, and C requires a seek before writing after that. Each storage file is now
+  positioned at its end before writing, and a failed write or flush is logged once with the
+  reason. Pipelines compiled in one session are created at the start of the next one instead
+  of stuttering again during play.
+- **Even 30 FPS with the display's own frame rate**: when "Frame pacing: Even 30 FPS" is on,
+  the PS5's video output holds each picture for two refreshes (VideoOut flip rate, new in
+  PS5_Mesa 47e9eb6) instead of the emulator presenting it twice: half the presents, the
+  timing is the hardware's. A driver without it falls back to presenting twice, as before.
+- **Driver messages in the game log**: RADV's own output (its queue-submission time breakdown,
+  every 10 s, among others) is logged as "Driver: ..." instead of being lost.
+- **More performance figures** in the 30 s summary: draws per second and the command
+  processor thread's CPU use.
+- **PS5 dependencies updated** to PS5_Vulkan 252bf91: PS5_Mesa 47e9eb6 (the flip rate; 119.88 Hz
+  offered to an app that declares it), PayloadSDK b83202be (the same SDK under its rewritten
+  history), localeconv and strcasestr/mkstemp/readlink bound to working versions at link time.
+  The pins now live in `tools/ps5x360e-deps.sh` in the fork: **download the new
+  `tools/ps5x360e-build.sh` once**; after that, pin changes need no new copy. The first build
+  rebuilds RADV (the slow step).
+- Mbed TLS: one library (Edge's submodule, 3.6.7) built with the phone camera's configuration
+  serves both Edge's crypto and the camera's HTTPS server; the separate download is gone.
+
 ## 0.2-alpha.47+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Frame generation target 40 FPS (120 Hz)**: locked to 39.96 FPS on the PS5's 119.88 Hz output,

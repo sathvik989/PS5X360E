@@ -40,7 +40,7 @@ done
 # PS5X360E: Mbed TLS now comes from Xenia Edge (third_party/mbedtls), built
 # once with the phone camera's configuration (canary/CMakeLists.txt). Archives
 # of targets that no longer exist would otherwise join the link below.
-rm -f "$build/libxbox360ps5-mbedtls.a" "$build/core/third_party/libaes_128.a"
+rm -f "$build/libxbox360ps5-mbedtls.a" "$build/obj/Linux/libaes_128.a"
 
 # Explicit defaults keep an experimental configure from leaking into the next
 # normal build. Separate output directories preserve release executables.
