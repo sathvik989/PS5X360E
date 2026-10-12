@@ -462,7 +462,7 @@ void Settings::Save() const {
   for (const auto& option : Options()) output << option.key << "=" << this->*option.field << "\n";
 }
 bool FramegenOnAtStart();  // below, with the frame generation choice
-bool FramegenTarget30AtStart();
+int FramegenTargetAtStart();
 void Settings::Apply() const {
   cvars::gpu_allow_invalid_fetch_constants = true;
   ui_language.store(SupportedUiLanguage(interface_language ? interface_language : console_language));
@@ -525,9 +525,9 @@ void Settings::Apply() const {
   // Frame generation paces its own presents (adaptive pacing): the even pacing
   // stays off while it is on, so the two never hold the same picture twice.
   const bool paced_30 = frame_pacing == 1 && !video_clock && !FramegenOnAtStart();
-  // Frame generation held at 30 FPS: the guest vblank at the display's 59.94 Hz as well, so a
-  // game at 30 gives exactly one frame per output and never drifts against them.
-  const bool framegen_30 = !video_clock && FramegenOnAtStart() && FramegenTarget30AtStart();
+  // Frame generation held at 30 or 40 FPS: the guest vblank at the display's 59.94 Hz as well
+  // (half of 119.88), so a game at 30 never drifts against the outputs.
+  const bool framegen_30 = !video_clock && FramegenOnAtStart() && FramegenTargetAtStart() != 0;
   cvars::framerate_limit = video_clock ? 120 : (paced_30 || framegen_30 ? 0 : 60);
   // PS5X360E: the 120 Hz video clock again (Edge's own vblanks are 50/60 only).
   cvars::guest_vblank_rate_override = video_clock ? 120 : 0;
@@ -1229,12 +1229,15 @@ const FramegenChoiceState& FramegenAtStart() {
   return at_start;
 }
 bool FramegenOnAtStart() { return FramegenAtStart().mode != 0; }
-bool FramegenTarget30(const FramegenChoiceState& choice) { return choice.target == "30"; }
-bool FramegenTarget30() { return FramegenTarget30(FramegenChoice()); }
-bool FramegenTarget30AtStart() { return FramegenTarget30(FramegenAtStart()); }
+// PS5X360E: the frame generation target, 0 (the display's rate), 30 or 40.
+int FramegenTarget(const FramegenChoiceState& choice) {
+  return choice.target == "30" ? 30 : choice.target == "40" ? 40 : 0;
+}
+int FramegenTarget() { return FramegenTarget(FramegenChoice()); }
+int FramegenTargetAtStart() { return FramegenTarget(FramegenAtStart()); }
 bool FramegenChanged() {
   return FramegenMode() != FramegenAtStart().mode ||
-         FramegenTarget30() != FramegenTarget30(FramegenAtStart()) ||
+         FramegenTarget() != FramegenTarget(FramegenAtStart()) ||
          FramegenHighOutput() != FramegenHighOutput(FramegenAtStart());
 }
 const char* FramegenModeName(int mode) {
@@ -1273,11 +1276,13 @@ bool WriteFramegen(int mode, const std::string& output) {
 }
 bool SetFramegenMode(int mode) { return WriteFramegen(mode, FramegenChoice().output); }
 bool SetFramegenHighOutput(bool high) { return WriteFramegen(FramegenMode(), high ? "120" : "60"); }
-bool SetFramegenTarget30(bool on) {
+// Display rate, 30, 40 and round. 40 asks for the 120 Hz output (three refreshes a picture).
+bool SetFramegenTarget(int target) {
   auto& choice = FramegenChoice();
   const std::string previous = choice.target;
-  choice.target = on ? "30" : "display";
-  if (WriteFramegen(FramegenMode(), choice.output)) return true;
+  choice.target = target == 30 ? "30" : target == 40 ? "40" : "display";
+  const std::string output = target == 40 ? "120" : choice.output;
+  if (WriteFramegen(FramegenMode(), output)) return true;
   choice.target = previous;
   return false;
 }
@@ -1523,7 +1528,10 @@ void Launcher::Press(Key key) {
             SetMessage(FramegenText("Não foi possível gravar a configuração.", "Could not save the setting.",
                                     "No se pudo guardar la configuración."));
         } else if (category_rows_[size_t(option_row_)] == kFramegenTargetRow) {
-          if (!SetFramegenTarget30(!FramegenTarget30()))
+          const int target = FramegenTarget();
+          const int next = key == Key::left ? (target == 0 ? 40 : target == 40 ? 30 : 0)
+                                            : (target == 0 ? 30 : target == 30 ? 40 : 0);
+          if (!SetFramegenTarget(next))
             SetMessage(FramegenText("Não foi possível gravar a configuração.", "Could not save the setting.",
                                     "No se pudo guardar la configuración."));
         } else if (category_rows_[size_t(option_row_)] == kFramegenOutputRow) {
@@ -2620,9 +2628,10 @@ void Launcher::DrawOptionsSheet(Canvas& c) {
       if (focused) c.Edge(x + 40, y, 780, 44, kAccent, 0.9f, 10, 2.0f);
       c.Text(FramegenText("Alvo da geração de frames", "Frame generation target", "Objetivo de la generación"),
              x + 64, y + 10, 22, focused ? kText : kBody, 1.0f, 0, 440);
-      const bool target30 = FramegenTarget30();
-      c.Text(target30 ? "30 FPS" : FramegenText("Taxa da tela", "Display rate", "Frecuencia de la pantalla"),
-             x + 796, y + 10, 22, focused ? kAccent : target30 ? kWarning : kMuted, 1.0f, 2, 320);
+      const int target = FramegenTarget();
+      c.Text(target == 40 ? FramegenText("40 FPS (120 Hz)", "40 FPS (120 Hz)", "40 FPS (120 Hz)")
+             : target == 30 ? "30 FPS" : FramegenText("Taxa da tela", "Display rate", "Frecuencia de la pantalla"),
+             x + 796, y + 10, 22, focused ? kAccent : target ? kWarning : kMuted, 1.0f, 2, 320);
       continue;
     }
     if (category_rows_[size_t(n)] == kFramegenOutputRow) {
@@ -2675,9 +2684,9 @@ void Launcher::DrawOptionsSheet(Canvas& c) {
   if (category_rows_[size_t(option_row_)] == kFramegenTargetRow) {
     c.Fill(x + 40, 612, 780, 1, kWhite, 0.10f);
     c.Wrapped(FramegenText(
-        "Até onde a geração de frames completa o jogo. Taxa da tela: até 60 FPS (um jogo a 30 aparece a 60). 30 FPS: a saída fica travada em 30 FPS uniformes (29,97), cada quadro mostrado por exatamente duas atualizações da tela, com o jogo entre 10 e 34 FPS. Quando o jogo cai (por exemplo para 20 a 25), os quadros que faltam são gerados; a 30 aparecem os quadros do próprio jogo. Vale com a geração ligada (Automática recomendada).",
-        "How far frame generation fills the game. Display rate: up to 60 FPS (a 30 FPS game is shown at 60). 30 FPS: the output is locked to an even 30 FPS (29.97), each picture shown for exactly two refreshes, with the game anywhere from 10 to 34 FPS. When the game dips (to 20-25, say) the missing frames are generated; at 30 the game's own frames are shown. Applies with frame generation on (Automatic recommended).",
-        "Hasta dónde la generación completa el juego. Frecuencia de la pantalla: hasta 60 FPS (un juego a 30 se muestra a 60). 30 FPS: la salida queda fija en 30 FPS uniformes (29,97), cada imagen mostrada exactamente dos actualizaciones, con el juego entre 10 y 34 FPS. Cuando el juego baja (a 20-25, por ejemplo) se generan las imágenes que faltan; a 30 se muestran los fotogramas del propio juego. Vale con la generación activada (Automática recomendada)."),
+        "Até onde a geração de frames completa o jogo. Taxa da tela: até 60 FPS (um jogo a 30 aparece a 60). 30 FPS: a saída fica travada em 30 FPS uniformes (29,97), cada quadro mostrado por exatamente duas atualizações da tela, com o jogo entre 10 e 34 FPS. Quando o jogo cai (por exemplo para 20 a 25), os quadros que faltam são gerados; a 30 aparecem os quadros do próprio jogo. 40 FPS (120 Hz): travado em 40 FPS, cada quadro por exatamente três atualizações de uma saída de 120 Hz; precisa de uma TV de 120 Hz (sem ela fica em 30). Vale com a geração ligada (Automática recomendada).",
+        "How far frame generation fills the game. Display rate: up to 60 FPS (a 30 FPS game is shown at 60). 30 FPS: the output is locked to an even 30 FPS (29.97), each picture shown for exactly two refreshes, with the game anywhere from 10 to 34 FPS. When the game dips (to 20-25, say) the missing frames are generated; at 30 the game's own frames are shown. 40 FPS (120 Hz): locked to 40 FPS, each picture shown for exactly three refreshes of a 120 Hz output; needs a 120 Hz TV (without one it holds 30). Applies with frame generation on (Automatic recommended).",
+        "Hasta dónde la generación completa el juego. Frecuencia de la pantalla: hasta 60 FPS (un juego a 30 se muestra a 60). 30 FPS: la salida queda fija en 30 FPS uniformes (29,97), cada imagen mostrada exactamente dos actualizaciones, con el juego entre 10 y 34 FPS. Cuando el juego baja (a 20-25, por ejemplo) se generan las imágenes que faltan; a 30 se muestran los fotogramas del propio juego. 40 FPS (120 Hz): fijo en 40 FPS, cada imagen exactamente tres actualizaciones de una salida de 120 Hz; necesita una TV de 120 Hz (sin ella se queda en 30). Vale con la generación activada (Automática recomendada)."),
         x + 56, 632, 20, kBody, 750);
     c.Text(std::string(Tr("Recomendado: ")) + FramegenText("Taxa da tela", "Display rate", "Frecuencia de la pantalla"), x + 56, 860, 20, kAccent, 1.0f, 0, 750);
     c.Text(Tr("O emulador reinicia para aplicar, ao fechar as configurações."), x + 56, 892, 20, kMuted, 1.0f, 0, 750);

@@ -39,12 +39,15 @@ cp "$eboot" "$app.new/eboot.bin"
 cp "$libc" "$app.new/sce_module/libc.prx"
 for name in icon0.png pic0.png pic1.png; do cp "assets/branding/$name" "$app.new/sce_sys/$name"; done
 version=$(head -n1 VERSION)
+# attribute3 0x80040 declares high-frame-rate output, without which the PS5 refuses its
+# 119.88 Hz mode (PS5_Vulkan R92). It only makes 120 Hz available: the app asks for it only
+# with frame generation's 120 Hz output or 40 FPS target, and stays at 59.94 Hz otherwise.
 python3 - "$app.new/sce_sys/param.json" "$version" <<'PY'
 import json, sys
 path, version = sys.argv[1], sys.argv[2]
 param = {
   "ageLevel": {"default": 0}, "applicationCategoryType": 0, "applicationDrmType": "free",
-  "attribute": 0, "attribute2": 0, "attribute3": 0,
+  "attribute": 0, "attribute2": 0, "attribute3": 524352,
   "conceptId": "50360", "contentBadgeType": 1,
   "contentId": "UP9000-PPSA50360_00-PS5X360EDGE00001",
   "contentVersion": "00.001.000", "downloadDataSize": 256,

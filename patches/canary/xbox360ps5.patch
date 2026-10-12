@@ -11809,10 +11809,10 @@ index 0000000..f99deb7
 \ No newline at end of file
 diff --git a/src/xenia/ui/vulkan/framegen/adaptive_pacing.hpp b/src/xenia/ui/vulkan/framegen/adaptive_pacing.hpp
 new file mode 100644
-index 0000000..dc2e430
+index 0000000..fb2b12e
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/adaptive_pacing.hpp
-@@ -0,0 +1,372 @@
+@@ -0,0 +1,373 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Adaptive frame generation pacing: generated pictures for a game whose frame rate is not an
 +// exact divisor of the display rate (40 FPS on 60 Hz, a rate that moves between 31 and 47).
@@ -11946,7 +11946,8 @@ index 0000000..dc2e430
 +    if (count_ < kMinSamples) return Off(plan, AdaptiveReason::Warming);
 +    // The output rate: the display's, or the target's (whole refreshes per output).
 +    const uint32_t slot =
-+        target_fps ? std::max<uint32_t>(1, uint32_t(std::lround(display_hz / target_fps))) : 1;
++        target_fps ? std::max<uint32_t>(1, uint32_t(std::ceil(display_hz / target_fps - 0.05)))
++                   : 1;  // never above the target: 40 on a 60 Hz display is held at 30
 +    const double output_hz = display_hz / slot;
 +    const double rate = 1e9 / interval_ns_;
 +    const double slack = active_ ? kHysteresisFps : 0.0;
@@ -12187,10 +12188,10 @@ index 0000000..dc2e430
 +}  // namespace ps5x360::framegen
 diff --git a/src/xenia/ui/vulkan/framegen/framegen_config.hpp b/src/xenia/ui/vulkan/framegen/framegen_config.hpp
 new file mode 100644
-index 0000000..c7cf5ae
+index 0000000..60a7b26
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/framegen_config.hpp
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,167 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// The frame generation settings file (/app0/framegen.conf), shared by the launcher (which
 +// writes it), the presenter (which reads it once, before the swapchain) and the host test.
@@ -12199,10 +12200,12 @@ index 0000000..c7cf5ae
 +//                                    before modes, which read nothing else
 +//   ps5_frame_multiplier=auto        optional: auto, 2, 3 or 4. Missing or unknown: 2
 +//   ps5_frame_output_hz=60           optional: auto, 60 or 120. Missing or unknown: 60
-+//   ps5_frame_target=display         optional (PS5X360E): display or 30. 30: the generated
++//   ps5_frame_target=display         optional (PS5X360E): display, 30 or 40. 30: the generated
 +//                                    pictures fill a slower game up to an even 30 FPS (each
 +//                                    output held two 60 Hz refreshes) instead of the display's
-+//                                    rate; the steady-rate path is not used then.
++//                                    rate; the steady-rate path is not used then. 40: the
++//                                    same at 119.88 Hz, three refreshes an output (with a
++//                                    display that has no 120 Hz mode it falls back to 30).
 +//   ps5_frame_pacing=auto            optional: auto or strict. Missing or unknown: auto.
 +//                                    auto: in the Automatic mode, pictures are also generated
 +//                                    when the game's frames are not of one length (adaptive
@@ -12289,8 +12292,8 @@ index 0000000..c7cf5ae
 +    } else if (line.rfind(kTargetKey, 0) == 0) {
 +      const std::string value = line.substr(std::strlen(kTargetKey));
 +      config.target_text = value;
-+      if (value == "display" || value == "30") {
-+        config.target_fps = value == "30" ? 30 : 0;
++      if (value == "display" || value == "30" || value == "40") {
++        config.target_fps = value == "30" ? 30 : value == "40" ? 40 : 0;
 +      } else {
 +        config.unknown_value = true;
 +      }
@@ -12339,6 +12342,7 @@ index 0000000..c7cf5ae
 +// file asks for more. Automatic and 120 ask for 120000; the mode nearest to it that the driver
 +// lists is taken, so a console or a display without 120 Hz stays at 59.94 Hz by itself.
 +inline uint32_t RequestedRefreshMillihertz(const Config& config, uint32_t surface_request) {
++  if (config.enabled && config.target_fps == 40) return 120000u;  // PS5X360E: 40 needs 120 Hz
 +  return config.output_hz == 60 ? surface_request : 120000u;
 +}
 +
@@ -12619,10 +12623,10 @@ index 0000000..b789360
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp b/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp
 new file mode 100644
-index 0000000..260da37
+index 0000000..45de8c9
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp
-@@ -0,0 +1,459 @@
+@@ -0,0 +1,460 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Included in exactly one presenter translation unit. No frozen class members.
 +#pragma once
@@ -12694,7 +12698,8 @@ index 0000000..260da37
 +  XELOGW("Framegen private config: {} enabled={} valid={} (restart required)",
 +         path, bool(cvars::ps5_frame_interpolation), valid);
 +  if (config.target_fps)
-+    XELOGW("Framegen private config: target {} FPS (adaptive pacing only)", config.target_fps);
++    XELOGW("Framegen private config: target {} FPS (adaptive pacing only{})", config.target_fps,
++           config.target_fps == 40 ? "; 120 Hz output asked, 30 FPS if the display has none" : "");
 +  if (config.has_multiplier || config.has_output || config.has_pacing || config.unknown_value)
 +    XELOGW("Framegen private config: multiplier={}{} output_hz={}{} pacing={}{}{}",
 +           ps5x360::framegen::MultiplierText(config.multiplier),

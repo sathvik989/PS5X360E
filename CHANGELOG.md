@@ -3,6 +3,18 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.47+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Frame generation target 40 FPS (120 Hz)**: locked to 39.96 FPS on the PS5's 119.88 Hz output,
+  each picture shown for exactly three refreshes (25 ms), the game anywhere from 10 to 44 FPS.
+  Choosing it asks for the 120 Hz output by itself. Needs a 120 Hz TV; without one the output
+  stays at 59.94 Hz and the lock holds 30 instead (never an uneven 40).
+- The app's param.json declares high-frame-rate output (attribute3 0x80040), without which the
+  PS5 refuses its 119.88 Hz mode (PS5_Vulkan's R92 finding). It only makes 120 Hz available:
+  the app stays at 59.94 Hz unless frame generation asks for 120 Hz.
+- Simulated at 119.88 Hz: game at 30, 24 and 20 FPS (2 and 3 vblank frames) gives 39.97
+  pictures a second, three refreshes each.
+
 ## 0.2-alpha.46+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Frame generation target 30 FPS is now a lock**: the output is a fixed 29.97 FPS grid, each
