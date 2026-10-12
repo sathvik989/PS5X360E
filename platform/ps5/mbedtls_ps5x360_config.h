@@ -24,3 +24,11 @@
 #undef MBEDTLS_SSL_TICKET_C
 #undef MBEDTLS_SELF_TEST
 #undef MBEDTLS_DEBUG_C
+
+// PS5X360E: this configuration also builds Xenia Edge's Mbed TLS (one library
+// for both, canary/CMakeLists.txt). Edge's XeCrypt AES reads and writes the
+// round keys at the start of the AES context, which the accelerated AES paths
+// move (kernel/xboxkrnl/xecrypt_aes.h refuses to build with them).
+#undef MBEDTLS_AESNI_C
+#undef MBEDTLS_AESCE_C
+#undef MBEDTLS_PADLOCK_C
