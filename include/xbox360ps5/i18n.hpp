@@ -289,6 +289,8 @@ inline const char* Tr(const char* key) {
     {"3x (2160p, muito pesado)", "3x (2160p, very demanding)", "3x (2160p, muy exigente)"},
     {"2x (1440p, pesado)", "2x (1440p, demanding)", "2x (1440p, exigente)"},
     {"3x (2160p, teste)", "3x (2160p, test)", "3x (2160p, prueba)"},
+    {"Saída de vídeo do jogo", "Game video output", "Salida de vídeo del juego"},
+    {"Tamanho da imagem enviada à TV durante o jogo. 4K: a imagem do jogo chega à tela em 3840x2160, e o 2x e o 3x mostram todo o detalhe. 1080p: como antes, a TV amplia. Os menus continuam em 1080p.", "Size of the picture sent to the TV while a game runs. 4K: the game's picture reaches the screen at 3840x2160, so 2x and 3x show all their detail. 1080p: as before, the TV enlarges it. The menus stay at 1080p.", "Tamaño de la imagen enviada a la TV durante el juego. 4K: la imagen del juego llega a la pantalla en 3840x2160, y el 2x y el 3x muestran todo el detalle. 1080p: como antes, la TV la amplía. Los menús siguen en 1080p."},
     {"1x (720p, original)", "1x (720p, native)", "1x (720p, original)"},
     {"Ritmo dos quadros", "Frame pacing", "Ritmo de fotogramas"},
     {"Para jogos que rodam a 30 quadros: mostra cada quadro por exatamente duas atualizações da tela, para um movimento uniforme sem trancos. Jogos a 60 quadros ficam limitados a 30; deixe em Automático para eles.",

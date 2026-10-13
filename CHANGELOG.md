@@ -3,6 +3,14 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha69nice+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Games go to the TV in 4K**: Video > Game video output, 4K (new, on) or 1080p (as before).
+  The game's picture is now scaled to a 3840x2160 screen instead of 1920x1080, so 2x (1440p) and
+  3x (2160p) show all their detail rather than being shrunk to 1080p and enlarged again by the
+  TV. A 120 Hz output takes 3840x2160 at 119.88 Hz when the PS5 offers it (VRR off). The
+  emulator's menus and the in-game guide keep their 1080p layout, scaled up.
+
 ## 0.2-alpha.68+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **3x render resolution, for testing**: Video > Render resolution has a third choice,

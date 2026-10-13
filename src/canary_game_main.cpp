@@ -819,7 +819,10 @@ class NativeContext final : public xe::ui::WindowedAppContext {
 };
 class NativeWindow final : public xe::ui::Window {
  public:
-  explicit NativeWindow(NativeContext& context) : Window(context, "PS5X360E", 1920, 1080) {}
+  // The window (and the guide drawn in it) stays 1920x1080; the display
+  // surface, which the game's picture is scaled to, may be 4K (alpha69nice).
+  NativeWindow(NativeContext& context, bool output_4k)
+      : Window(context, "PS5X360E", 1920, 1080), output_4k_(output_4k) {}
   ~NativeWindow() override { EnterDestructor(); }
   void Paint() { OnPaint(); }
   std::vector<uint8_t> TakeIcon() { return std::move(icon_); }
@@ -854,7 +857,8 @@ class NativeWindow final : public xe::ui::Window {
   }
   std::unique_ptr<xe::ui::Surface> CreateSurfaceImpl(xe::ui::Surface::TypeFlags allowed) override {
     if (!(allowed & xe::ui::Surface::kTypeFlag_KhrDisplay)) return nullptr;
-    return std::make_unique<xbox360ps5::DisplaySurface>(1920, 1080);
+    return output_4k_ ? std::make_unique<xbox360ps5::DisplaySurface>(3840, 2160)
+                      : std::make_unique<xbox360ps5::DisplaySurface>(1920, 1080);
   }
   void RequestPaintImpl() override {}  // The native event loop calls Paint.
   void LoadAndApplyIcon(const void* buffer, size_t size, bool) override {
@@ -864,6 +868,7 @@ class NativeWindow final : public xe::ui::Window {
  private:
   uint32_t ui_buttons_ = 0;
   std::vector<uint8_t> icon_;
+  bool output_4k_ = false;
 };
 class NativePad {
  public:
@@ -1152,7 +1157,7 @@ int main(int argc, char** argv) {
   XELOGI("GAME FILE {}", game.empty() ? "(library)" : game.string());
   Stage("BOOT window");
   NativeContext context;
-  NativeWindow window(context);
+  NativeWindow window(context, settings.output_4k != 0);
   if (!window.Open()) return 3;
   Stage("BOOT imgui");
   xe::ui::ImGuiDrawer drawer(&window, 1);
