@@ -3,6 +3,14 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.64+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **A 120 Hz output request takes a 120 Hz mode at any size**: frame generation asked for 120 Hz
+  and got 59.94 Hz ("no 120 Hz mode offered") on a display the PS5 drives at up to 120 Hz. The
+  mode nearest to 1920x1080 was taken first and the rate only after, so a 120 Hz mode at another
+  size lost to 1080p at 60. With a 120 Hz request the rate now comes first.
+- The display modes the driver offers are logged once ("Display modes offered: ...").
+
 ## 0.2-alpha.63+0.6.0 (PS5X360E, on Xenia Edge)
 
 Frame generation in NFS The Run: alpha.59's Automatic mode with the 120 Hz video clock is the

@@ -6,7 +6,10 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <vector>
+
+#include "xenia/base/logging.h"
 
 namespace xbox360ps5 {
 namespace {
@@ -128,6 +131,23 @@ bool CreateDisplaySurface(PFN_vkGetInstanceProcAddr driver, VkInstance instance_
           return vkGetDisplayModePropertiesKHR(physical, display.display, n, p);
         }))
       continue;
+    {
+      // PS5X360E (alpha.64): the modes the driver offers, once per process, to
+      // see why a 120 Hz request ends up at 59.94 Hz.
+      static bool listed = false;
+      if (!listed) {
+        listed = true;
+        std::string text;
+        for (const auto& mode : modes) {
+          text += " " + std::to_string(mode.parameters.visibleRegion.width) + "x" +
+                  std::to_string(mode.parameters.visibleRegion.height) + "@" +
+                  std::to_string(mode.parameters.refreshRate / 1000) + "." +
+                  std::to_string(mode.parameters.refreshRate % 1000 / 10);
+        }
+        XELOGW("Display modes offered:{} (asked {}x{} at {}.{} Hz)", text, width, height,
+               refresh / 1000, refresh % 1000 / 10);
+      }
+    }
     for (uint32_t plane = 0; plane < planes.size(); ++plane) {
       // Never take a plane currently assigned to another display.
       if (planes[plane].currentDisplay &&
@@ -163,10 +183,16 @@ bool CreateDisplaySurface(PFN_vkGetInstanceProcAddr driver, VkInstance instance_
             caps.minDstPosition.x > 0 || caps.maxDstPosition.x < 0 ||
             caps.minDstPosition.y > 0 || caps.maxDstPosition.y < 0)
           continue;
+        // PS5X360E (alpha.64): a 120 Hz request takes a 120 Hz mode at any
+        // size over the nearest size at 60 Hz (the 120 Hz modes need not be
+        // at the size asked for; the picture is scaled to the mode anyway).
+        const uint64_t size_distance =
+            Distance(size.width, width) + Distance(size.height, height);
+        const uint64_t refresh_distance = Distance(mode.parameters.refreshRate, refresh);
         const uint64_t score =
-            (Distance(size.width, width) + Distance(size.height, height)) *
-                1000000000ull +
-            Distance(mode.parameters.refreshRate, refresh);
+            refresh >= 100000
+                ? refresh_distance * 1000000000ull + size_distance
+                : size_distance * 1000000000ull + refresh_distance;
         if (score >= best)
           continue;
         best = score;
