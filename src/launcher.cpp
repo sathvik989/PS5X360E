@@ -38,6 +38,7 @@ DECLARE_int32(draw_resolution_scale_x);
 DECLARE_int32(draw_resolution_scale_y);
 DECLARE_bool(draw_resolution_scaled_texture_offsets);
 DECLARE_bool(resolve_resolution_scale_fill_half_pixel_offset);
+DECLARE_bool(texture_load_scaled_direct_copy);
 DECLARE_bool(gpu_allow_invalid_fetch_constants);
 DECLARE_int32(anisotropic_override);
 DECLARE_string(occlusion_query);
@@ -252,6 +253,9 @@ const std::vector<Option>& Options() {
       {"scaled_offsets", &S::scaled_offsets, 0, W::start, 0, true, "Deslocamentos de textura ampliados (teste)",
        "Ajusta os deslocamentos de textura dos efeitos à resolução ampliada (sombras, brilho). Teste para defeitos que só aparecem em 3x.",
        {"Ligado", "Desligado"}},
+      {"rendered_texture_copy", &S::rendered_texture_copy, 1, W::start, 0, true, "Cópia direta de texturas renderizadas (teste)",
+       "Texturas que o jogo desenhou (reflexos, brilho) passam para o vídeo em uma cópia em vez de duas. Em 2x e 3x é o maior custo do emulador depois do desenho. Teste: compare a mesma corrida ligado e desligado.",
+       off_on},
       {"resolve_half_pixel", &S::resolve_half_pixel, 0, W::start, 0, true, "Meio pixel nas cópias ampliadas (teste)",
        "Corrige meio pixel ao limpar cópias ampliadas da imagem. Teste para defeitos que só aparecem em 3x.",
        {"Ligado", "Desligado"}},
@@ -509,6 +513,7 @@ void Settings::Apply() const {
   xbox360ps5::small_effects_choice = small_effects;
   cvars::draw_resolution_scaled_texture_offsets = scaled_offsets == 0;
   cvars::resolve_resolution_scale_fill_half_pixel_offset = resolve_half_pixel == 0;
+  cvars::texture_load_scaled_direct_copy = rendered_texture_copy != 0;
   // Normal gameplay records warnings/errors plus explicit session metadata.
   // Do not duplicate every line into the platform stdout transport, and do
   // not let stale debug files silently override the user's visible setting.

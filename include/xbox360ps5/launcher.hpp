@@ -49,6 +49,7 @@ struct Settings {
   int small_effects = 0;      // 0 the game's own threshold (NFS 320), 1 none, 2 640 (alpha.71 test).
   int scaled_offsets = 0;     // 0 on (Xenia's default), 1 off: draw_resolution_scaled_texture_offsets (alpha.71 test).
   int resolve_half_pixel = 0; // 0 on (default), 1 off: resolve_resolution_scale_fill_half_pixel_offset (alpha.71 test).
+  int rendered_texture_copy = 0;  // 1: rendered textures in one copy (texture_load_scaled_direct_copy; alpha.75 test).
   int output_4k = 1;          // A game's picture to the screen at 3840x2160 (1) or 1920x1080 (0); menus stay 1080p (alpha69nice).
   int frame_pacing = 0;       // 0 shows the newest frame at each refresh, 1 paces a 30 FPS game to exactly 2 refreshes a frame.
   int image_filter = 0;       // How a game's picture is stretched to the screen: 0 plain, 1 CAS, 2 FSR.

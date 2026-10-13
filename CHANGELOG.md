@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.75+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Test: Performance > Direct copy of rendered textures** (off by default). Textures the game
+  drew itself (upscaled resolves: reflections, glow, the scene for post effects) are converted
+  into a scratch buffer, written into an integer staging image and then copied into the texture:
+  three passes over a 2x/3x picture. On, the scratch buffer goes into the texture with one copy.
+  At 3x these loads were the largest emulator cost after drawing (about 165 ms of GPU time a
+  second in the Sin City race, about 10 a frame); compare "textures the game rendered" in the
+  log on and off.
+
 ## 0.2-alpha.74+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **NFS The Run at 3x keeps effect images up to 640 pixels wide at native resolution** (320 at

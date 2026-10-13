@@ -7844,7 +7844,7 @@ index 00f89352d..334eaa706 100644
   private:
    void GetUsageMasks(Usage usage, VkPipelineStageFlags& stage_mask,
 diff --git a/src/xenia/gpu/vulkan/vulkan_texture_cache.cc b/src/xenia/gpu/vulkan/vulkan_texture_cache.cc
-index 108718adf..8d0658ff0 100644
+index 108718adf..70b71ea9a 100644
 --- a/src/xenia/gpu/vulkan/vulkan_texture_cache.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_texture_cache.cc
 @@ -8,7 +8,11 @@
@@ -7859,7 +7859,21 @@ index 108718adf..8d0658ff0 100644
  #include <algorithm>
  #include <array>
  #include <cstddef>
-@@ -1123,6 +1127,9 @@ uint32_t VulkanTextureCache::GetMaxHostTextureDepthOrArraySize(
+@@ -29,6 +33,13 @@
+ #include "xenia/ui/vulkan/vulkan_util.h"
+ 
+ DECLARE_bool(tiled_shared_memory);
++DEFINE_bool(
++    texture_load_scaled_direct_copy, false,
++    "PS5X360E (alpha.75): load textures the game rendered itself (upscaled "
++    "resolves) with one buffer-to-image copy instead of the integer staging "
++    "image and image-to-image copy (two passes over the picture instead of "
++    "three).",
++    "GPU");
+ 
+ namespace xe {
+ namespace gpu {
+@@ -1123,6 +1134,9 @@ uint32_t VulkanTextureCache::GetMaxHostTextureDepthOrArraySize(
  std::unique_ptr<TextureCache::Texture> VulkanTextureCache::CreateTexture(
      TextureKey key) {
    SCOPE_profile_cpu_f("gpu");
@@ -7869,7 +7883,7 @@ index 108718adf..8d0658ff0 100644
    VkFormat formats[] = {VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED};
    const HostFormatPair& host_format = GetHostFormatPair(key);
    if (host_format.format_signed.format == VK_FORMAT_UNDEFINED) {
-@@ -1228,6 +1235,11 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1228,6 +1242,11 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
    SCOPE_profile_cpu_f("gpu");
    VulkanTexture& vulkan_texture = static_cast<VulkanTexture&>(texture);
    TextureKey texture_key = vulkan_texture.key();
@@ -7881,7 +7895,19 @@ index 108718adf..8d0658ff0 100644
  
    // Get the pipeline.
    const HostFormatPair& host_format_pair = GetHostFormatPair(texture_key);
-@@ -3765,6 +3777,9 @@ xenos::ClampMode VulkanTextureCache::NormalizeClampMode(
+@@ -1773,7 +1792,10 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+   uint32_t blit_level_count = 0;
+   uint32_t blit_staging_columns = 0;
+   uint32_t blit_staging_rows = 0;
+-  VkFormat blit_staging_format = GetScratchBlitStagingFormat(texture_key);
++  VkFormat blit_staging_format =
++      texture_key.scaled_resolve && cvars::texture_load_scaled_direct_copy
++          ? VK_FORMAT_UNDEFINED
++          : GetScratchBlitStagingFormat(texture_key);
+   if (blit_staging_format != VK_FORMAT_UNDEFINED) {
+     for (uint32_t level = level_first; level <= level_last; ++level) {
+       const HostLayout& level_host_layout =
+@@ -3765,6 +3787,9 @@ xenos::ClampMode VulkanTextureCache::NormalizeClampMode(
  bool VulkanTextureCache::EnsureScaledResolveMemoryCommitted(
      uint32_t start_unscaled, uint32_t length_unscaled,
      uint32_t length_scaled_alignment_log2) {
