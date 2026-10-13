@@ -64,7 +64,7 @@ struct Settings {
   // Performance.
   int fast_locks = 0;           // The core's mutexes spin before they block (new in v0.5.6).
   int gpu_core = 0;             // PS5X360E: the GPU command thread on a core of its own.
-  int audio_reserve = 1;        // PS5X360E: sound held in reserve before playing (alpha.58).
+  int audio_reserve = 0;        // PS5X360E: sound held in reserve before playing (alpha.58; off since alpha.62).
   int zero_copy = 0;            // PS5X360E: the GPU reads guest RAM in place (Edge's shared_memory_zero_copy).
   int submit_thread = 1;        // PS5X360E: Vulkan submissions recorded and submitted on their own thread.
   int memory_boost = 0;         // v0.5.6's shared-memory, protection and cache changes.

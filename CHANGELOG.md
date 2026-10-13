@@ -3,6 +3,13 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.62+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **"Audio reserve" off by default**: in NFS The Run's races the police siren started over and
+  the music stuttered with it on, and both were right with it off (alpha.61, frame generation
+  Automatic with the 120 Hz video clock). The game's sound engine evidently times itself by the
+  output queue, so 43 ms held back upset it. The setting stays, off.
+
 ## 0.2-alpha.61+0.6.0 (PS5X360E, on Xenia Edge)
 
 From alpha.60 (NFS The Run, frame generation with the 120 Hz video clock): the game held 30.0

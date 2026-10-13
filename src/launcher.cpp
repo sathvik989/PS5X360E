@@ -311,7 +311,7 @@ const std::vector<Option>& Options() {
       {"xma_decoder", &S::xma_decoder, 2, W::start, 0, true, "Decodificador de áudio",
        "Qual versão do decodificador de som do Xbox 360 (XMA) é usada. Troque se um jogo ficar sem som, com som picotado ou travar em vídeos.",
        {"Novo", "Antigo", "Original do Xenia"}},
-      {"audio_reserve", &S::audio_reserve, 2, W::start, 1, true, "Reserva de áudio",
+      {"audio_reserve", &S::audio_reserve, 2, W::start, 0, true, "Reserva de áudio",
        "Guarda 43 ms de som antes de tocar, para o som não falhar quando o jogo atrasa um instante (novidade da 0.2-alpha.58). Desligado: o som toca como chega, como antes. Para comparar se o som de um jogo picotar.", off_on},
       {"xma_inline", &S::xma_inline, 2, W::start, 0, true, "Áudio sem thread própria",
        "O som é decodificado no ritmo do próprio jogo, sem uma thread separada. Pode corrigir som fora de sincronia; pesa um pouco mais.", off_on},

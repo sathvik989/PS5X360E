@@ -13,7 +13,7 @@ namespace xbox360ps5 {
 inline std::atomic<float> audio_volume{1.0f};
 // PS5X360E (alpha.61): sound held in reserve before playing (alpha.58), for
 // comparing on and off. Off: played as it comes, as before alpha.58.
-inline std::atomic<bool> audio_reserve{true};
+inline std::atomic<bool> audio_reserve{false};
 class CanaryAudioSystem final : public xe::apu::AudioSystem {
  public:
   explicit CanaryAudioSystem(xe::cpu::Processor* processor) : AudioSystem(processor) {}
