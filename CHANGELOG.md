@@ -3,6 +3,21 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.61+0.6.0 (PS5X360E, on Xenia Edge)
+
+From alpha.60 (NFS The Run, frame generation with the 120 Hz video clock): the game held 30.0
+FPS and strict pacing took every frame, but the picture showed 45-50 FPS, less even than
+alpha.59's adaptive pacing with the game at 31 FPS, the best this game has run. Sound still
+breaks up in races (a police siren starting over, music stuttering) with the decoding on the
+game's threads as well, while the output reports no gaps; the menu music is fine.
+
+- **Frame generation pacing as in alpha.59** (alpha.60's change undone).
+- **What the game's sound code does, every 30 s** ("Audio callbacks: ..."): the game's audio
+  callbacks a second (187.5 expected), those skipped with the output queue full, those over
+  5 ms late, how long the game's callback takes, and the XMA decoder commands a second (kicks,
+  locks, and clears, which start a sound over), to find where race sound goes wrong.
+- **"Audio reserve" setting** (on): alpha.58's 43 ms reserve can be turned off to compare.
+
 ## 0.2-alpha.60+0.6.0 (PS5X360E, on Xenia Edge)
 
 From alpha.59's frame generation runs (NFS The Run with the 120 Hz video clock): the game ran at

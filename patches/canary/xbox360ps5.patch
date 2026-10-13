@@ -32,6 +32,169 @@ index 1050d2f52..4d15091f3 100644
    endif()
  
    list(APPEND _sources ${_plat_sources})
+diff --git a/src/xenia/apu/audio_system.cc b/src/xenia/apu/audio_system.cc
+index 386d0d4f7..c78d7ce0f 100644
+--- a/src/xenia/apu/audio_system.cc
++++ b/src/xenia/apu/audio_system.cc
+@@ -9,6 +9,8 @@
+ 
+ #include "xenia/apu/audio_system.h"
+ 
++#include <algorithm>
++#include <chrono>
+ #include <limits>
+ 
+ #include "xenia/apu/apu_flags.h"
+@@ -140,6 +142,7 @@ void AudioSystem::WorkerThreadMain() {
+         uint64_t next_pump_us = earliest_pump_us + min_us;
+         if (now > earliest_pump_us + min_us * queued_frames_) {
+           next_pump_us = now + min_us;
++          ++pump_stats_.resets;
+         }
+         clients_[client_index].next_pump_us = next_pump_us;
+       }
+@@ -185,8 +188,22 @@ void AudioSystem::WorkerThreadMain() {
+     if (xe::threading::Wait(client_semaphores_[client_index].get(), false,
+                             std::chrono::milliseconds(0)) !=
+         xe::threading::WaitResult::kSuccess) {
++      ++pump_stats_.skipped;
++      ReportPumpStats();
+       continue;
+     }
++    {
++      // PS5X360E (alpha.61): how late this pump runs against its deadline.
++      const uint64_t at_us = static_cast<uint64_t>(
++          std::chrono::duration_cast<std::chrono::microseconds>(
++              std::chrono::steady_clock::now().time_since_epoch())
++              .count());
++      if (at_us > earliest_pump_us + 5000) {
++        ++pump_stats_.late;
++        pump_stats_.worst_late_us =
++            std::max(pump_stats_.worst_late_us, at_us - earliest_pump_us);
++      }
++    }
+ 
+     // UnregisterClient waits on this after clearing in_use.
+     std::lock_guard<std::mutex> cb_lk(clients_[client_index].callback_mutex);
+@@ -204,15 +221,55 @@ void AudioSystem::WorkerThreadMain() {
+     if (client_callback) {
+       SCOPE_profile_cpu_i("apu", "xe::apu::AudioSystem->client_callback");
+       uint64_t args[] = {client_callback_arg};
++      const uint64_t callback_started = Clock::QueryHostTickCount();
+       processor_->Execute(worker_thread_->thread_state(), client_callback, args,
+                           xe::countof(args));
++      const uint64_t callback_ns = Clock::QueryHostTickCount() - callback_started;
++      ++pump_stats_.callbacks;
++      pump_stats_.callback_ns += callback_ns;
++      pump_stats_.worst_callback_ns =
++          std::max(pump_stats_.worst_callback_ns, callback_ns);
+     }
++    ReportPumpStats();
+   }
+   worker_running_ = false;
+ 
+   // TODO(benvanik): call module API to kill?
+ }
+ 
++// PS5X360E (alpha.61): the game's audio callbacks over 30 s, with the XMA
++// commands, to tell a game whose sound code runs late or erratically from
++// decoding trouble. Host tick count: nanoseconds.
++void AudioSystem::ReportPumpStats() {
++  const uint64_t now = Clock::QueryHostTickCount();
++  if (!pump_stats_.window_start) {
++    pump_stats_.window_start = now;
++    return;
++  }
++  if (now - pump_stats_.window_start < 30000000000ull) {
++    return;
++  }
++  const double seconds = double(now - pump_stats_.window_start) / 1e9;
++  const uint64_t kicks = xma_kicks.exchange(0, std::memory_order_relaxed);
++  const uint64_t locks = xma_locks.exchange(0, std::memory_order_relaxed);
++  const uint64_t clears = xma_clears.exchange(0, std::memory_order_relaxed);
++  XELOGW(
++      "Audio callbacks: {:.1f}/s (one per 5.33 ms is 187.5), {:.1f}/s skipped "
++      "with the output queue full, {} more than 5 ms late (worst {:.1f} ms), "
++      "{} schedule resets; the game's callback {:.0f} us on average, worst "
++      "{:.1f} ms | XMA: {:.0f} kicks/s, {:.1f} locks/s, {:.1f} clears/s",
++      double(pump_stats_.callbacks) / seconds,
++      double(pump_stats_.skipped) / seconds, pump_stats_.late,
++      double(pump_stats_.worst_late_us) / 1000.0, pump_stats_.resets,
++      pump_stats_.callbacks
++          ? double(pump_stats_.callback_ns) / 1000.0 / pump_stats_.callbacks
++          : 0.0,
++      double(pump_stats_.worst_callback_ns) / 1e6, double(kicks) / seconds,
++      double(locks) / seconds, double(clears) / seconds);
++  pump_stats_ = {};
++  pump_stats_.window_start = now;
++}
++
+ int AudioSystem::FindFreeClient() {
+   for (int i = 0; i < kMaximumClientCount; i++) {
+     auto& client = clients_[i];
+diff --git a/src/xenia/apu/audio_system.h b/src/xenia/apu/audio_system.h
+index ef40c4d08..ada7b3edd 100644
+--- a/src/xenia/apu/audio_system.h
++++ b/src/xenia/apu/audio_system.h
+@@ -92,6 +92,14 @@ class AudioSystem {
+   cpu::Processor* processor_ = nullptr;
+   std::unique_ptr<XmaDecoder> xma_decoder_;
+   uint32_t queued_frames_;
++  // PS5X360E (alpha.61): audio callback statistics (worker thread only).
++  struct PumpStats {
++    uint64_t window_start = 0, callbacks = 0, skipped = 0, late = 0,
++             worst_late_us = 0, resets = 0, callback_ns = 0,
++             worst_callback_ns = 0;
++  };
++  PumpStats pump_stats_;
++  void ReportPumpStats();
+ 
+   std::atomic<bool> worker_running_ = {false};
+   kernel::object_ref<kernel::XHostThread> worker_thread_;
+diff --git a/src/xenia/apu/xma_decoder.cc b/src/xenia/apu/xma_decoder.cc
+index 0efdcd7c6..b66e6dd60 100644
+--- a/src/xenia/apu/xma_decoder.cc
++++ b/src/xenia/apu/xma_decoder.cc
+@@ -345,6 +345,7 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
+     while (value) {
+       const uint32_t context_id = base_context_id + std::countr_zero(value);
+       auto& context = *contexts_[context_id];
++      xma_kicks.fetch_add(1, std::memory_order_relaxed);
+       context.Enable();
+       if (!cvars::use_dedicated_xma_thread) {
+         context.Work();
+@@ -361,6 +362,7 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
+     while (value) {
+       const uint32_t context_id = base_context_id + std::countr_zero(value);
+       auto& context = *contexts_[context_id];
++      xma_locks.fetch_add(1, std::memory_order_relaxed);
+       context.Disable();
+       // Ensure the worker isn't mid-processing this context.
+       context.Block(false);
+@@ -374,6 +376,7 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
+     while (value) {
+       const uint32_t context_id = base_context_id + std::countr_zero(value);
+       auto& context = *contexts_[context_id];
++      xma_clears.fetch_add(1, std::memory_order_relaxed);
+       context.Clear();
+       value &= value - 1;
+     }
+diff --git a/src/xenia/apu/xma_decoder.h b/src/xenia/apu/xma_decoder.h
+index 7f3237a6f..543746130 100644
+--- a/src/xenia/apu/xma_decoder.h
++++ b/src/xenia/apu/xma_decoder.h
+@@ -23,6 +23,11 @@
+ namespace xe {
+ namespace apu {
+ 
++// PS5X360E (alpha.61): XMA context commands from the game since the last audio
++// report (AudioSystem logs them every 30 s): kicks start decoding, locks stop
++// a context, clears reset one (a sound starting over).
++inline std::atomic<uint64_t> xma_kicks{0}, xma_locks{0}, xma_clears{0};
++
+ struct XMA_CONTEXT_DATA;
+ 
+ class XmaDecoder {
 diff --git a/src/xenia/base/clock.cc b/src/xenia/base/clock.cc
 index 20d406f44..58232a880 100644
 --- a/src/xenia/base/clock.cc

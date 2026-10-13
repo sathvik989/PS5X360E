@@ -115,6 +115,7 @@ class PacedDriver final : public xe::apu::AudioDriver {
   // start of a race) was a gap in the sound. Half the queue the emulator may
   // fill (apu_max_queued_frames), so it can still catch up after a stall.
   uint32_t PrefillFrames() const {
+    if (!audio_reserve.load(std::memory_order_relaxed)) return 1;
     return std::clamp<uint32_t>(cvars::apu_max_queued_frames / 2, 1, 16);
   }
 

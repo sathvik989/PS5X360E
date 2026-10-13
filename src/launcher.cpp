@@ -311,6 +311,8 @@ const std::vector<Option>& Options() {
       {"xma_decoder", &S::xma_decoder, 2, W::start, 0, true, "Decodificador de áudio",
        "Qual versão do decodificador de som do Xbox 360 (XMA) é usada. Troque se um jogo ficar sem som, com som picotado ou travar em vídeos.",
        {"Novo", "Antigo", "Original do Xenia"}},
+      {"audio_reserve", &S::audio_reserve, 2, W::start, 1, true, "Reserva de áudio",
+       "Guarda 43 ms de som antes de tocar, para o som não falhar quando o jogo atrasa um instante (novidade da 0.2-alpha.58). Desligado: o som toca como chega, como antes. Para comparar se o som de um jogo picotar.", off_on},
       {"xma_inline", &S::xma_inline, 2, W::start, 0, true, "Áudio sem thread própria",
        "O som é decodificado no ritmo do próprio jogo, sem uma thread separada. Pode corrigir som fora de sincronia; pesa um pouco mais.", off_on},
       {"touchpad_menu", &S::touchpad_menu, 3, W::live, 1, false, "Clique do touchpad",
@@ -524,7 +526,8 @@ void Settings::Apply() const {
   // PS5X360E (alpha.58): 16 frames of sound may wait for the port (85 ms), so
   // the audio thread can hold half of them in reserve (platform/ps5/
   // canary_audio.cpp) and still catch up after the game's sound comes late.
-  cvars::apu_max_queued_frames = 16;
+  cvars::apu_max_queued_frames = audio_reserve ? 16 : 8;
+  xbox360ps5::audio_reserve = audio_reserve != 0;
   // Read when a game starts.
   cvars::delay_via_maybeyield = guest_yield != 0;
   cvars::license_mask = arcade_full ? 1 : 0;
@@ -549,16 +552,12 @@ void Settings::Apply() const {
   const bool paced_30 = frame_pacing == 1 && !video_clock && !FramegenOnAtStart();
   // Frame generation held at 30 or 40 FPS: the guest vblank at the display's 59.94 Hz as well
   // (half of 119.88), so a game at 30 never drifts against the outputs.
-  // PS5X360E (alpha.60): with any target. At the display rate a game at 30
-  // FPS has to come exactly once per two 59.94 Hz refreshes for the generated
-  // frame to sit halfway, or strict pacing keeps losing the cadence (NFS The
-  // Run at 30.0 or 31 FPS: 30-50 FPS shown, not an even 60).
-  const bool framegen_30 = !video_clock && FramegenOnAtStart();
-  // The 120 Hz video clock with frame generation: the game ran at 31 FPS on its
-  // own, over half the 59.94 Hz output, so a generated frame fit only some of
-  // the time. Held to 29.97 FPS, each game frame and its generated one take
-  // exactly two refreshes.
-  const bool framegen_fast_clock = video_clock && FramegenOnAtStart();
+  // PS5X360E (alpha.61): back to alpha.59. alpha.60 held the game at exactly
+  // half the output for frame generation, and strict pacing then took every
+  // frame but shown less evenly (45-50 FPS seen) than adaptive pacing with
+  // the game at its own 31 FPS on the 120 Hz video clock.
+  const bool framegen_30 = !video_clock && FramegenOnAtStart() && FramegenTargetAtStart() != 0;
+  const bool framegen_fast_clock = false;
   // PS5X360E (alpha.59): the 120 Hz video clock with even 30 pacing. The game
   // waits on vblanks a quarter of a 30 FPS frame apart instead of half, which
   // feels quicker to the controls, but alone it ran NFS The Run at 25-42 ms
