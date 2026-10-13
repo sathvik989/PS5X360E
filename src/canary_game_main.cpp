@@ -619,8 +619,9 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
     uint32_t total = 0, guest = 0, title = 0, system = 0;
     uint64_t cpus_seen = 0;
     // Guest functions, title code, callers into system libraries, the import
-    // slots those calls went through, and title code by megabyte.
-    std::vector<Place> places[5];
+    // slots those calls went through, title code by megabyte, and (PS5X360E)
+    // guest instruction addresses.
+    std::vector<Place> places[6];
     void Add(int kind, uint64_t key) {
       for (auto& place : places[kind]) if (place.key == key) { ++place.count; return; }
       places[kind].push_back({key, 1});
@@ -653,6 +654,8 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
         ++tally.guest;
         auto* function = code_cache->LookupFunction(sample.rip);
         tally.Add(0, function ? function->address() : 0);
+        // The guest instruction too, where the function's source map knows it.
+        if (function) tally.Add(5, function->MapMachineCodeToGuestAddress(uintptr_t(sample.rip)));
       } else { ++tally.system; tally.Add(2, sample.caller | (sample.caller2 << 32)); tally.Add(3, sample.slot); }
     }
     ++rounds;
@@ -682,12 +685,13 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
                                    100 * tally.system / tally.total);
     line += fmt::format(" | seen on cpus {:X} of {:X} priority {}", tally.cpus_seen,
                         xbox360ps5::ThreadCpus(tally.native), xbox360ps5::ThreadPriority(tally.native));
-    const char* const kinds[] = {" | guest", " | title", " | system-from", " | imports", " | title-MiB"};
-    for (int kind = 0; kind < 5; ++kind) {
+    const char* const kinds[] = {" | guest", " | title", " | system-from", " | imports", " | title-MiB", " | guest-pc"};
+    for (int kind = 0; kind < 6; ++kind) {
       auto& places = tally.places[kind];
       std::sort(places.begin(), places.end(), [](const Place& a, const Place& b) { return a.count > b.count; });
       line += kinds[kind];
       for (size_t n = 0; n < places.size() && n < (kind >= 2 ? 12u : 6u); ++n) {
+        if (kind == 5 && !places[n].count) break;
         // A system-library sample names its caller and the caller above it.
         if (kind == 2 && (places[n].key >> 32))
           line += fmt::format(" {:X}<{:X}:{}%", places[n].key & 0xFFFFFFFFu, places[n].key >> 32,
@@ -697,6 +701,46 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
       }
     }
     XELOGW("{}", line);
+  }
+  // PS5X360E: the code of the guest functions a guest CPU spends most of its
+  // time in, to tell a busy-wait from work (alpha.52: one function was 55-59 %
+  // of guest CPU 3 in NFS The Run's heavy scenes). Up to 1 KiB from the start,
+  // and the words around the hottest instructions.
+  {
+    std::vector<uint32_t> dumped;
+    for (auto& tally : tallies) {
+      if (tally.name.rfind("Guest CPU", 0) != 0 || !tally.total || 100 * tally.guest / tally.total < 30) continue;
+      for (size_t n = 0; n < tally.places[0].size() && n < 2; ++n) {
+        const uint32_t function_address = uint32_t(tally.places[0][n].key);
+        if (!function_address || 100 * tally.places[0][n].count / tally.total < 5) continue;
+        if (std::find(dumped.begin(), dumped.end(), function_address) != dumped.end()) continue;
+        dumped.push_back(function_address);
+        auto* function = emulator.processor()->LookupFunction(function_address);
+        uint32_t end = function && function->has_end_address() ? function->end_address() : function_address + 0x100;
+        end = std::min(end, function_address + 0x400);
+        XELOGW("MEASURE code {:08X} ({}% of '{}'), {} bytes shown{}", function_address,
+               100 * tally.places[0][n].count / tally.total, tally.name, end - function_address,
+               function && function->has_end_address() && function->end_address() > end ? " of more" : "");
+        const auto dump = [&](uint32_t first, uint32_t last) {
+          std::string line;
+          for (uint32_t at = first & ~3u; at < last; at += 4) {
+            if (((at - first) & 31) == 0) {
+              if (!line.empty()) XELOGW("{}", line);
+              line = fmt::format("MEASURE code {:08X}:", at);
+            }
+            line += fmt::format(" {:08X}", xe::load_and_swap<uint32_t>(emulator.memory()->TranslateVirtual(at)));
+          }
+          if (!line.empty()) XELOGW("{}", line);
+        };
+        dump(function_address, end);
+        // Hot instructions beyond what was shown.
+        for (size_t m = 0; m < tally.places[5].size() && m < 3; ++m) {
+          const uint32_t pc = uint32_t(tally.places[5][m].key);
+          if (pc >= end && function && function->has_end_address() && pc < function->end_address())
+            dump(pc >= 0x40 ? pc - 0x40 : 0, pc + 0x40);
+        }
+      }
+    }
   }
   // The GPU command thread once more, by itself, with the sampler seated on its
   // CPU (xbox360ps5::SeatSampler): the shares above lean towards system calls.

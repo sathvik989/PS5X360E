@@ -3,6 +3,15 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.53+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **"Measure performance (5 s)" shows the hot guest code**: alpha.52's measurement in NFS The
+  Run's heavy scenes found guest CPU 3 84 % in the game's own code, 55-59 % of it in one
+  function (82DDC4F8), at 28 and at 30 FPS alike. The measurement now also counts guest
+  instruction addresses ("guest-pc") and writes the code of the two hottest functions of each
+  busy guest CPU ("MEASURE code"), to tell a busy-wait (the game polling something the GPU or
+  another thread sets) from real work, which need different fixes.
+
 ## 0.2-alpha.52+0.6.0 (PS5X360E, on Xenia Edge)
 
 From alpha.51's four NFS The Run sessions (120 Hz and Even 30, graphics core shared and own):
