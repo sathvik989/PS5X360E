@@ -3,6 +3,29 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.55+0.6.0 (PS5X360E, on Xenia Edge)
+
+From alpha.54's measurement (named from the build's symbols): the graphics thread still sets the
+frame rate when NFS The Run has several cars and road objects on screen.
+
+- **The submit thread gets a core of its own**: it inherited the graphics thread's placement
+  ("Graphics thread on its own core", on for NFS), so the two shared one CPU, and every wait of
+  the graphics thread for a submission (fence waits 119-135 ms a second, waits for data the GPU
+  writes for the game 94-108 ms a second) was a wait for its own core. It now runs on the
+  other cores.
+- **"Background submission" setting** (on): turns the submit thread off, for an A/B comparison
+  at the same spot. The log says which is used.
+- **Shader constants written in bulk**: register writes were the graphics thread's largest cost
+  (about 15 % with related code; alpha.54's "shader lookup" was this code, misnamed). Ranges of
+  float constants, most of what a draw sets, are now copied in one pass instead of one call per
+  register.
+- **Memory waits looked at every 0.1 ms** (`wait_reg_mem_memory_poll_us`, 100): a GPU wait for
+  memory a game CPU writes slept the 1 ms the game asks for (8.4 % of the graphics thread),
+  so the work behind it started up to a millisecond late. Vertical blank waits keep their
+  duration.
+- `docs/RADV_PS5_CLOCK_REPORT.md`: for PS5_Mesa, the driver's clock reads (a 1 µs system
+  call on the PS5, about 5 % of the graphics thread) and its 1 ms sleeps while waiting.
+
 ## 0.2-alpha.54+0.6.0 (PS5X360E, on Xenia Edge)
 
 From alpha.53's measurement in NFS The Run's heaviest scene (25-28 FPS):

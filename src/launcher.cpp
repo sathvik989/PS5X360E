@@ -41,6 +41,7 @@ DECLARE_string(occlusion_query);
 DECLARE_bool(readback_resolve);  // PS5X360E: a bool in Xenia Edge (Canary: none/fast/full).
 DECLARE_string(render_target_path);  // PS5X360E: Edge's "performance"/"accuracy" (Canary: render_target_path_vulkan).
 DECLARE_bool(async_shader_compilation);
+DECLARE_bool(vulkan_async_submission);
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(delay_via_maybeyield);
 DECLARE_int32(license_mask);
@@ -253,6 +254,9 @@ const std::vector<Option>& Options() {
        off_on},
       {"gpu_core", &S::gpu_core, 1, W::start, 0, true, "Núcleo só para o vídeo",
        "Dá ao processamento de vídeo do emulador um núcleo do PS5 só para ele: nenhuma outra tarefa do emulador usa esse núcleo. Esse processamento é o que limita o jogo nas cenas pesadas. Experimental: compare uma mesma corrida ligado e desligado; o registro mostra o uso de cada um.",
+       off_on},
+      {"submit_thread", &S::submit_thread, 1, W::start, 1, true, "Envio em segundo plano",
+       "Um segundo núcleo grava os comandos de vídeo de cada lote e os entrega ao driver, enquanto o processamento de vídeo segue com os próximos desenhos. Desligue para comparar: tudo volta a ser feito num só núcleo, como até a 0.2-alpha.51.",
        off_on},
       {"memory_boost", &S::memory_boost, 1, W::start, 0, true, "Memória de vídeo otimizada",
        "Menos cópias e menos avisos de escrita entre o processador e o vídeo (novidade da 0.5.6). Ajuda jogos pesados. Se um jogo que funcionava parou de abrir ou mostra defeitos, deixe desligado: é o comportamento da 0.5.5. As duas opções seguintes só valem com esta ligada.",
@@ -495,6 +499,7 @@ void Settings::Apply() const {
   // PS5X360E: Xenia Edge always reads memexport results back; the setting is kept but unused.
   (void)memexport;
   cvars::async_shader_compilation = async_shaders != 0;
+  cvars::vulkan_async_submission = submit_thread != 0;
   cvars::clear_memory_page_state = clear_pages != 0;
   // The core falls back to host render targets by itself when the device lacks
   // fragment shader interlock; the pipeline storage then keeps its .fbo name.
