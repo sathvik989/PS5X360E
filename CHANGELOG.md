@@ -3,6 +3,20 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.63+0.6.0 (PS5X360E, on Xenia Edge)
+
+Frame generation in NFS The Run: alpha.59's Automatic mode with the 120 Hz video clock is the
+best so far, but not a locked 60: the game runs at 31 FPS, so one frame a second gets no
+generated picture. alpha.60 held the game at 29.97 FPS, and the strict path that then took over
+showed 2-7 % of frames late.
+
+- **"Even 60 with frame generation"** (off): the game held to 29.97 FPS (both video clocks) and
+  every frame paced by the adaptive path, never the strict one: a generated picture at the
+  middle, then the game's frame, one refresh each, for an even 59.94.
+- **Why an output was late**, every 600 game frames: adaptive spans by the outputs they showed
+  (2 each is an even 60), and outputs whose time had passed by over half a refresh when the
+  presenting thread got to them (with the worst).
+
 ## 0.2-alpha.62+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **"Audio reserve" off by default**: in NFS The Run's races the police siren started over and
