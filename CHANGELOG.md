@@ -3,6 +3,15 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.76+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Frame generation size** (Video, and the in-game guide's settings page; changes at once):
+  Game picture (as before), 1440p or 1080p. At 3x frame generation worked on the whole 3840x2160
+  picture and cost about 10 ms of GPU time per generated frame, which pulled the game down to
+  21-25 FPS. With a size chosen, the generated frames are made from a smaller copy and enlarged;
+  the game's own frames are still shown whole. The log names the size in use ("Sword FSR3 ready
+  for 2560x1440, from the game's 3840x2160").
+
 ## 0.2-alpha.75+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Test: Performance > Direct copy of rendered textures** (off by default). Textures the game

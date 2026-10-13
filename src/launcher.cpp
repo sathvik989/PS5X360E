@@ -245,6 +245,9 @@ const std::vector<Option>& Options() {
       {"output_4k", &S::output_4k, 0, W::start, 1, true, "Saída de vídeo do jogo",
        "Tamanho da imagem enviada à TV durante o jogo. 4K: a imagem do jogo chega à tela em 3840x2160, e o 2x e o 3x mostram todo o detalhe. 1080p: como antes, a TV amplia. Os menus continuam em 1080p.",
        {"1080p", "4K"}},
+      {"framegen_size", &S::framegen_size, 0, W::live, 0, true, "Tamanho da geração de quadros",
+       "Os quadros gerados são feitos numa cópia menor da imagem do jogo e ampliados; os quadros do próprio jogo continuam no tamanho cheio. Em 3x, 1440p custa ao vídeo cerca de um quarto do tamanho cheio. Muda na hora.",
+       {"Imagem do jogo", "1440p", "1080p"}},
       // PS5X360E (alpha.71): tests for the 3x-only picture faults (NFS The Run:
       // shapes across the menus, blank panels, HUD flicker; 2x is clean).
       {"small_effects", &S::small_effects, 0, W::start, 0, true, "Efeitos pequenos em resolução nativa (teste)",
@@ -514,6 +517,10 @@ void Settings::Apply() const {
   cvars::draw_resolution_scaled_texture_offsets = scaled_offsets == 0;
   cvars::resolve_resolution_scale_fill_half_pixel_offset = resolve_half_pixel == 0;
   cvars::texture_load_scaled_direct_copy = rendered_texture_copy != 0;
+  {
+    static constexpr uint32_t kFramegenHeights[] = {0, 1440, 1080};
+    ps5x360::framegen::reduced_height.store(kFramegenHeights[std::clamp(framegen_size, 0, 2)]);
+  }
   // Normal gameplay records warnings/errors plus explicit session metadata.
   // Do not duplicate every line into the platform stdout transport, and do
   // not let stale debug files silently override the user's visible setting.
