@@ -64,6 +64,7 @@ struct Settings {
   // Performance.
   int fast_locks = 0;           // The core's mutexes spin before they block (new in v0.5.6).
   int gpu_core = 0;             // PS5X360E: the GPU command thread on a core of its own.
+  int submit_thread = 1;        // PS5X360E: Vulkan submissions recorded and submitted on their own thread.
   int memory_boost = 0;         // v0.5.6's shared-memory, protection and cache changes.
   int dynamic_buffers = 1;      // Rewritten vertex data compared by content instead of watched.
   int memory_window = 0;        // What a guest write invalidates: 0 16 KiB, 1 64 KiB, 2 256 KiB.
