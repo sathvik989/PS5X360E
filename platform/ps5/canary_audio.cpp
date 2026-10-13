@@ -163,11 +163,28 @@ class PacedDriver final : public xe::apu::AudioDriver {
       int peak = 0;
       bool played = false;
       for (uint32_t at = 0; at + kGrain <= channel_samples_; at += kGrain) {
-        for (uint32_t n = 0; n < kGrain * 2; ++n) {
-          const float sample = stereo[size_t(at) * 2 + n] * volume;
-          const float clamped = std::isfinite(sample) ? std::clamp(sample, -1.0f, 1.0f) : 0.0f;
-          grain[n] = int16_t(std::lround(clamped * 32767.0f));
-          peak = std::max(peak, std::abs(int(grain[n])));
+        for (uint32_t n = 0; n < kGrain * 2; n += 2) {
+          float left = stereo[size_t(at) * 2 + n] * volume;
+          float right = stereo[size_t(at) * 2 + n + 1] * volume;
+          if (!std::isfinite(left)) left = 0.0f;
+          if (!std::isfinite(right)) right = 0.0f;
+          // PS5X360E (alpha.59): a limiter instead of clipping. The game mixes
+          // 5.1 and the front pair gets the centre, a surround and the LFE on
+          // top (up to 2.9 times full scale), so loud music went past what
+          // the 16-bit port takes and was cut flat: crackles on the beat. The
+          // gain drops at once to keep a sample in range and recovers over
+          // about 100 ms.
+          const float level = std::max(std::fabs(left), std::fabs(right)) * limiter_gain_;
+          if (level > 0.98f) {
+            limiter_gain_ *= 0.98f / level;
+            ++limited_;
+          } else {
+            limiter_gain_ += (1.0f - limiter_gain_) * 0.0002f;
+          }
+          min_gain_ = std::min(min_gain_, limiter_gain_);
+          grain[n] = int16_t(std::lround(std::clamp(left * limiter_gain_, -1.0f, 1.0f) * 32767.0f));
+          grain[n + 1] = int16_t(std::lround(std::clamp(right * limiter_gain_, -1.0f, 1.0f) * 32767.0f));
+          peak = std::max(peak, std::max(std::abs(int(grain[n])), std::abs(int(grain[n + 1]))));
         }
 #if XE_PLATFORM_PS5
         // The port blocks until it has taken the grain: that is the clock.
@@ -197,6 +214,13 @@ class PacedDriver final : public xe::apu::AudioDriver {
         XELOGW("Audio: {} gaps in the last 30 s (the game's sound came late), {:.0f} ms of silence, longest {:.0f} ms; {} frames held in reserve",
                gaps_, double(gap_us_) / 1000.0, double(longest_gap_us_) / 1000.0, PrefillFrames());
       }
+      if (limited_) {
+        XELOGW("Audio: limiter acted on {} of {} samples in the last 30 s (sound over full scale), deepest {:.1f} dB",
+               limited_, uint64_t(since_report_) * channel_samples_,
+               20.0 * std::log10(std::max(min_gain_, 1e-6f)));
+      }
+      limited_ = 0;
+      min_gain_ = 1.0f;
       gaps_ = 0;
       gap_us_ = longest_gap_us_ = 0;
       since_report_ = 0;
@@ -220,6 +244,8 @@ class PacedDriver final : public xe::apu::AudioDriver {
   int port_ = -1, peak_ = 0;
   unsigned metered_ = 0, total_ = 0;
   unsigned gaps_ = 0, since_report_ = 0;
+  float limiter_gain_ = 1.0f, min_gain_ = 1.0f;
+  uint64_t limited_ = 0;
   uint64_t gap_us_ = 0, longest_gap_us_ = 0;
   std::chrono::steady_clock::time_point gap_started_{};
 };

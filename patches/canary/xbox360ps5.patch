@@ -1645,7 +1645,7 @@ index 3984cd9d6..3ee0b21a7 100644
    for (int i = 0; i < 32; i++) {
      crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
 diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
-index c9bac1689..dab7801fe 100644
+index c9bac1689..bc5a9a222 100644
 --- a/src/xenia/gpu/command_processor.cc
 +++ b/src/xenia/gpu/command_processor.cc
 @@ -8,6 +8,7 @@
@@ -1760,7 +1760,29 @@ index c9bac1689..dab7801fe 100644
      default:
        break;
    }
-@@ -498,6 +566,12 @@ void CommandProcessor::SetTitleStateSuffix(std::string suffix) {
+@@ -432,14 +500,19 @@ void CommandProcessor::SetDesiredSwapPostEffect(
+ void CommandProcessor::ThrottlePresentation() {
+   // Host frame rate limiting based on framerate_limit cvar.
+   const uint32_t framerate_limit = cvars::framerate_limit;
++  // PS5X360E (alpha.59): a fractional limit (29.97 FPS with the 120 Hz video
++  // clock and even 30 pacing, to match the display).
++  const uint32_t framerate_limit_millihz = cvars::framerate_limit_millihz;
+ 
+-  if (framerate_limit == 0) {
++  if (framerate_limit == 0 && framerate_limit_millihz == 0) {
+     // No host frame limiting
+     return;
+   }
+ 
+   const double target_duration_ms =
+-      1000.0 / static_cast<double>(framerate_limit);
++      framerate_limit_millihz
++          ? 1000000.0 / static_cast<double>(framerate_limit_millihz)
++          : 1000.0 / static_cast<double>(framerate_limit);
+   const uint64_t tick_freq = Clock::guest_tick_frequency();
+ 
+   const uint64_t target_duration_ticks = static_cast<uint64_t>(
+@@ -498,6 +571,12 @@ void CommandProcessor::SetTitleStateSuffix(std::string suffix) {
  }
  
  void CommandProcessor::WorkerThreadMain() {
@@ -1773,7 +1795,7 @@ index c9bac1689..dab7801fe 100644
    if (!SetupContext()) {
      xe::FatalError("Unable to setup command processor internal state");
      return;
-@@ -517,18 +591,47 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -517,18 +596,47 @@ void CommandProcessor::WorkerThreadMain() {
        // We've run out of commands to execute.
        // We spin here waiting for new ones, as the overhead of waiting on our
        // event is too high.
@@ -1822,7 +1844,7 @@ index c9bac1689..dab7801fe 100644
            }
          } else {
            xe::threading::MaybeYield();
-@@ -539,6 +642,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -539,6 +647,7 @@ void CommandProcessor::WorkerThreadMain() {
                 (write_ptr_index == 0xBAADF00D ||
                  read_ptr_index_ == write_ptr_index));
        ReturnFromWait();
@@ -1830,7 +1852,7 @@ index c9bac1689..dab7801fe 100644
        if (!worker_running_ || !pending_fns_.empty()) {
          continue;
        }
-@@ -546,6 +650,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -546,6 +655,7 @@ void CommandProcessor::WorkerThreadMain() {
      assert_true(read_ptr_index_ != write_ptr_index);
  
      // Execute. Note that we handle wraparound transparently.
@@ -1838,7 +1860,7 @@ index c9bac1689..dab7801fe 100644
      read_ptr_index_ = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
  
      // ExecutePrimaryBuffer republishes this every read_ptr_update_freq_ dwords
-@@ -565,6 +670,184 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -565,6 +675,184 @@ void CommandProcessor::WorkerThreadMain() {
    ShutdownContext();
  }
  
@@ -2023,7 +2045,7 @@ index c9bac1689..dab7801fe 100644
  void CommandProcessor::Pause() {
    if (paused_) {
      return;
-@@ -754,6 +1037,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
+@@ -754,6 +1042,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
        uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
        uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
        xe::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
@@ -2033,7 +2055,7 @@ index c9bac1689..dab7801fe 100644
      }
    } else {
      switch (index) {
-@@ -1046,6 +1332,12 @@ void CommandProcessor::PrepareForWait() {
+@@ -1046,6 +1337,12 @@ void CommandProcessor::PrepareForWait() {
    trace_writer_.Flush();
    if (zpd_mode_ == ZPDMode::kStrict && zpd_awaited_report_count_) {
      PrepareZPDForWait();
@@ -2046,7 +2068,7 @@ index c9bac1689..dab7801fe 100644
    }
    if (viz_pending_resolves_) {
      PollCompletedSubmission();
-@@ -1263,7 +1555,7 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1263,7 +1560,7 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
  
    ZPDReport& report = zpd_current_report_;
    report.address = report_address;
@@ -2055,7 +2077,7 @@ index c9bac1689..dab7801fe 100644
      // See EVENT_WRITE_ZPD for additional information on the pending sentinel.
      const uint32_t kPendingSentinel = xe::byte_swap(0xFFFFFEEDu);
      const auto* guest =
-@@ -1291,8 +1583,19 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1291,8 +1588,19 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
      WriteZPDReport(report_address, report.speculative_value);
    }
    zpd_awaited_report_count_ += report.awaited;
@@ -2075,7 +2097,7 @@ index c9bac1689..dab7801fe 100644
  
    // The next report's segment opens at its first draw.
    // Report runs without draws between them never use any pool slots.
-@@ -1340,8 +1643,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
+@@ -1340,8 +1648,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
    if (result == QueryOpenResult::kPoolExhausted) {
      zpd_stats_.pool_exhausted++;
    }
@@ -2085,7 +2107,7 @@ index c9bac1689..dab7801fe 100644
      // Fast modes favor forward progress over accuracy. Report at least one
      // passing sample instead of waiting for a slot to become available.
      if (report) {
-@@ -1488,10 +1790,30 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
+@@ -1488,10 +1795,30 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
    return nullptr;
  }
  
@@ -2118,7 +2140,7 @@ index c9bac1689..dab7801fe 100644
        awaited_handle = report.handle;
        break;
      }
-@@ -1512,6 +1834,10 @@ void CommandProcessor::PrepareZPDForWait() {
+@@ -1512,6 +1839,10 @@ void CommandProcessor::PrepareZPDForWait() {
    if (!wait_report || !wait_report->pending_segments) {
      return;
    }
@@ -2129,7 +2151,7 @@ index c9bac1689..dab7801fe 100644
    if (AwaitQueryResolve(wait_report->handle,
                          wait_report->last_segment_end_submission)) {
      PumpPendingRetire();
-@@ -1543,13 +1869,22 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1543,13 +1874,22 @@ void CommandProcessor::PumpPendingRetire() {
        if (zpd_mode_ == ZPDMode::kStrict) {
          break;
        }
@@ -2153,7 +2175,7 @@ index c9bac1689..dab7801fe 100644
          break;
        }
        front.delta.z_pass = std::max<uint64_t>(front.delta.z_pass, 1);
-@@ -1559,6 +1894,21 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1559,6 +1899,21 @@ void CommandProcessor::PumpPendingRetire() {
      zpd_pending_retire_start_ms_ = 0;
  
      zpd_sample_counter_ += front.delta;
@@ -2705,7 +2727,7 @@ index 9c93ee3b1..ed3f36d4f 100644
      return false;
    }
 diff --git a/src/xenia/gpu/gpu_flags.cc b/src/xenia/gpu/gpu_flags.cc
-index bada58008..bdb29a6c3 100644
+index bada58008..2ace3791a 100644
 --- a/src/xenia/gpu/gpu_flags.cc
 +++ b/src/xenia/gpu/gpu_flags.cc
 @@ -9,6 +9,8 @@
@@ -2733,7 +2755,20 @@ index bada58008..bdb29a6c3 100644
  DEFINE_bool(
      enable_host_buffer, true,
      "Import guest RAM as a second GPU buffer, so memexport output and resolve "
-@@ -126,7 +137,40 @@ DEFINE_int32(occlusion_query_fake_upper_threshold, 100,
+@@ -68,6 +79,12 @@ DEFINE_uint32(
+     "Guest vblanks are controlled by use_50Hz_mode (50Hz PAL, 60Hz NTSC).",
+     "GPU");
+ 
++// PS5X360E
++DEFINE_uint32(framerate_limit_millihz, 0,
++              "Host frame rate limit in millihertz (29970: 29.97 FPS); "
++              "overrides framerate_limit when set. 0: framerate_limit.",
++              "GPU");
++
+ void SetGuestDisplayRefreshCap(bool value) {
+   OVERRIDE_bool(guest_display_refresh_cap, value);
+ }
+@@ -126,7 +143,40 @@ DEFINE_int32(occlusion_query_fake_upper_threshold, 100,
  DEFINE_bool(occlusion_query_log, false,
              "Log occlusion query lifetime and summary stats.", "GPU");
  
@@ -2776,7 +2811,7 @@ index bada58008..bdb29a6c3 100644
  DEFINE_bool(
      gpu_debug_markers, false,
 diff --git a/src/xenia/gpu/gpu_flags.h b/src/xenia/gpu/gpu_flags.h
-index d20f38f1f..de50f3e32 100644
+index d20f38f1f..97df2afe0 100644
 --- a/src/xenia/gpu/gpu_flags.h
 +++ b/src/xenia/gpu/gpu_flags.h
 @@ -11,6 +11,67 @@
@@ -2847,7 +2882,7 @@ index d20f38f1f..de50f3e32 100644
  DECLARE_path(trace_gpu_prefix);
  DECLARE_bool(trace_gpu_stream);
  
-@@ -28,6 +89,15 @@ DECLARE_bool(gpu_allow_invalid_fetch_constants);
+@@ -28,6 +89,16 @@ DECLARE_bool(gpu_allow_invalid_fetch_constants);
  DECLARE_bool(shared_memory_zero_copy);
  
  DECLARE_bool(enable_host_buffer);
@@ -2860,10 +2895,11 @@ index d20f38f1f..de50f3e32 100644
 +DECLARE_bool(readback_resolve_async);
 +DECLARE_uint32(readback_async_submit_spacing_ms);
 +DECLARE_uint32(wait_reg_mem_memory_poll_us);
++DECLARE_uint32(framerate_limit_millihz);
  
  DECLARE_bool(memexport_enable);
  DECLARE_bool(memexport_await_pixel_exports);
-@@ -49,9 +119,13 @@ DECLARE_bool(occlusion_query_full_counters);
+@@ -49,9 +120,13 @@ DECLARE_bool(occlusion_query_full_counters);
  
  DECLARE_bool(occlusion_query_viz);
  
@@ -11287,10 +11323,10 @@ index 23fa67211..16153831b 100644
    FcConfig* config = FcInitLoadConfigAndFonts();
    if (!config) {
 diff --git a/src/xenia/ui/presenter.cc b/src/xenia/ui/presenter.cc
-index 3fd166235..6073a475d 100644
+index 3fd166235..4fd4bade8 100644
 --- a/src/xenia/ui/presenter.cc
 +++ b/src/xenia/ui/presenter.cc
-@@ -14,11 +14,36 @@
+@@ -14,11 +14,44 @@
  #include "xenia/base/logging.h"
  #include "xenia/base/platform.h"
  #include "xenia/ui/window.h"
@@ -11324,10 +11360,18 @@ index 3fd166235..6073a475d 100644
 +    "frame at every refresh.",
 +    "Display");
 +
++DEFINE_uint32(
++    present_pace_millihz, 0,
++    "PS5X360E: like present_frame_repeat, with the refreshes per guest frame "
++    "worked out from the display's measured refresh rate, for a game paced at "
++    "this rate in millihertz (29970: each frame shown for 2 refreshes at "
++    "59.94 Hz, 4 at 119.88 Hz). 0: off.",
++    "Display");
++
  // On Windows, InvalidateRect causes WM_PAINT to be sent quite quickly, so
  // presenting from the thread refreshing the guest output is not absolutely
  // necessary, but still may be nice for bypassing the scheduling and the
-@@ -246,6 +271,49 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+@@ -246,6 +279,59 @@ void Presenter::PaintFromUIThread(bool force_paint) {
    if (ui_thread_paint_requested_.exchange(false, std::memory_order_relaxed)) {
      do_paint = true;
    }
@@ -11339,6 +11383,12 @@ index 3fd166235..6073a475d 100644
 +  // near a refresh gets 1 and its neighbour 3 (16.7 / 50 ms).
 +  hold_guest_output_.store(false, std::memory_order_relaxed);
 +  uint32_t frame_repeat = cvars::present_frame_repeat;
++  // PS5X360E (alpha.59): refreshes per frame from the measured display rate
++  // (the 120 Hz video clock with even 30 FPS pacing, at 60 or 120 Hz output).
++  const bool pace_by_rate = cvars::present_pace_millihz != 0;
++  if (pace_by_rate) {
++    frame_repeat = PresentsPerPacedFrame();
++  }
 +  bool paced = false;
 +  if (frame_repeat && !force_paint &&
 +      surface_paint_connection_has_implicit_vsync_ &&
@@ -11355,7 +11405,11 @@ index 3fd166235..6073a475d 100644
 +      // The display holds each present for the frame's refreshes when it can:
 +      // one present per frame, half (or a third) of the presents' GPU and CPU
 +      // work, and the timing is the display's own.
-+      if (SetHardwareRefreshesPerPresent(frame_repeat)) {
++      // Presented at every refresh when paced by rate, so the refresh rate
++      // stays measured.
++      if (pace_by_rate) {
++        SetHardwareRefreshesPerPresent(1);
++      } else if (SetHardwareRefreshesPerPresent(frame_repeat)) {
 +        frame_repeat = 1;
 +      }
 +      const uint64_t published =
@@ -11377,7 +11431,7 @@ index 3fd166235..6073a475d 100644
    PaintResult paint_result = PaintResult::kNotPresented;
    bool request_repaint_at_tick = false;
    bool request_repaint_immediately = false;
-@@ -292,6 +360,36 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+@@ -292,6 +378,37 @@ void Presenter::PaintFromUIThread(bool force_paint) {
        WaitForUITickFromUIThread();
  
        paint_result = PaintAndPresent(draw_ui);
@@ -11397,6 +11451,7 @@ index 3fd166235..6073a475d 100644
 +        }
 +        // Pacing statistics: present intervals, and refreshes per frame.
 +        xbox360ps5::gpu_diag::host_presents.Mark();
++        NotePresentInterval();
 +        if (sequence == stats_sequence_) {
 +          stats_presents_ += hardware_refreshes_per_present_;
 +        } else {
@@ -11414,7 +11469,7 @@ index 3fd166235..6073a475d 100644
        if (surface_paint_connection_state_ ==
            SurfacePaintConnectionState::kConnectedOutdated) {
          // Request another PaintFromUIThread which will try to recover from the
-@@ -369,6 +467,7 @@ bool Presenter::RefreshGuestOutput(
+@@ -369,6 +486,7 @@ bool Presenter::RefreshGuestOutput(
    writable_properties.display_aspect_ratio_x = display_aspect_ratio_x;
    writable_properties.display_aspect_ratio_y = display_aspect_ratio_y;
    writable_properties.is_8bpc = false;
@@ -11422,7 +11477,7 @@ index 3fd166235..6073a475d 100644
    bool is_active = writable_properties.IsActive();
    if (is_active) {
      if (!RefreshGuestOutputImpl(guest_output_mailbox_writable_,
-@@ -431,6 +530,8 @@ bool Presenter::RefreshGuestOutput(
+@@ -431,6 +549,8 @@ bool Presenter::RefreshGuestOutput(
    // Count this frame so the UI thread can tell the guest output is driving the
    // paint cadence and UI drawers don't request extra repaints on top of it.
    guest_output_refresh_count_.fetch_add(1, std::memory_order_relaxed);
@@ -11431,7 +11486,7 @@ index 3fd166235..6073a475d 100644
    guest_output_last_refresh_ticks_.store(
        std::chrono::steady_clock::now().time_since_epoch().count(),
        std::memory_order_relaxed);
-@@ -503,6 +604,15 @@ void Presenter::SetGuestOutputPaintConfigFromUIThread(
+@@ -503,6 +623,15 @@ void Presenter::SetGuestOutputPaintConfigFromUIThread(
      modified = true;
      request_repaint = true;
    }
@@ -11447,7 +11502,7 @@ index 3fd166235..6073a475d 100644
    if (modified) {
      {
        std::unique_lock<std::mutex> config_lock(
-@@ -646,8 +756,13 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
+@@ -646,8 +775,13 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
        guest_output_mailbox_acquired_and_ready_.load(std::memory_order_relaxed);
    // Desired acquired = current ready.
    // Desired ready = current ready (changed only by the producer).
@@ -11462,7 +11517,7 @@ index 3fd166235..6073a475d 100644
    // Either the same image as during the last consumption, or a new one, is
    // satisfying. However, if it's new, using memory_order_acq_rel to acquire the
    // new ready image (to make it acquired) and to release the old acquired image
-@@ -657,7 +772,9 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
+@@ -657,7 +791,9 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
               old_acquired_and_ready, desired_acquired_and_ready,
               std::memory_order_acq_rel, std::memory_order_relaxed)) {
      desired_acquired_and_ready =
@@ -11473,7 +11528,7 @@ index 3fd166235..6073a475d 100644
    }
    uint32_t mailbox_index = desired_acquired_and_ready & 3;
    // Give the current acquired image to the caller, or UINT32_MAX if it's
-@@ -669,9 +786,46 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
+@@ -669,9 +805,93 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
    if (properties_out) {
      *properties_out = properties;
    }
@@ -11482,6 +11537,53 @@ index 3fd166235..6073a475d 100644
    return std::move(consumer_lock);
  }
  
++// PS5X360E (alpha.59): intervals between presents, whose median is the
++// display's refresh period while presents go out at every refresh.
++void Presenter::NotePresentInterval() {
++  const uint64_t now = uint64_t(
++      std::chrono::duration_cast<std::chrono::nanoseconds>(
++          std::chrono::steady_clock::now().time_since_epoch())
++          .count());
++  const uint64_t last = last_present_ns_;
++  last_present_ns_ = now;
++  if (!last || hardware_refreshes_per_present_ != 1) {
++    return;
++  }
++  const uint64_t interval = now - last;
++  if (interval < 3000000ull || interval > 60000000ull) {
++    return;
++  }
++  present_intervals_[present_interval_next_++ % present_intervals_.size()] =
++      uint32_t(interval);
++  if (present_interval_count_ < present_intervals_.size()) {
++    ++present_interval_count_;
++  }
++}
++
++uint32_t Presenter::PresentsPerPacedFrame() {
++  // Until measured, a 59.94 Hz display.
++  uint64_t period_ns = 16683333;
++  if (present_interval_count_ >= 16) {
++    std::array<uint32_t, 64> sorted;
++    std::copy_n(present_intervals_.begin(), present_interval_count_,
++                sorted.begin());
++    std::nth_element(sorted.begin(),
++                     sorted.begin() + present_interval_count_ / 2,
++                     sorted.begin() + present_interval_count_);
++    period_ns = sorted[present_interval_count_ / 2];
++  }
++  const double frame_ns = 1e12 / double(cvars::present_pace_millihz);
++  const uint32_t repeats =
++      uint32_t(std::clamp<long>(std::lround(frame_ns / double(period_ns)), 1, 8));
++  if (repeats != paced_repeats_logged_) {
++    paced_repeats_logged_ = repeats;
++    XELOGW("Display: refresh {:.2f} ms measured; each frame shown for {} "
++           "refresh(es)",
++           double(period_ns) / 1e6, repeats);
++  }
++  return repeats;
++}
++
 +bool Presenter::SetHardwareRefreshesPerPresent(uint32_t refreshes) {
 +#if XE_PLATFORM_PS5
 +  if (!cvars::present_frame_repeat_hardware || refreshes > 3 ||
@@ -11521,7 +11623,7 @@ index 3fd166235..6073a475d 100644
      const GuestOutputProperties& properties, uint32_t host_rt_width,
      uint32_t host_rt_height, uint32_t max_rt_width, uint32_t max_rt_height,
 diff --git a/src/xenia/ui/presenter.h b/src/xenia/ui/presenter.h
-index 93f9250e6..08ffd26ce 100644
+index 93f9250e6..dd73dbb40 100644
 --- a/src/xenia/ui/presenter.h
 +++ b/src/xenia/ui/presenter.h
 @@ -47,6 +47,7 @@
@@ -11563,7 +11665,7 @@ index 93f9250e6..08ffd26ce 100644
  
      GuestOutputProperties() { SetToInactive(); }
  
-@@ -978,6 +995,29 @@ class Presenter {
+@@ -978,6 +995,37 @@ class Presenter {
    // presentation, so the UI thread can tell whether the guest output is driving
    // the paint cadence.
    std::atomic<uint64_t> guest_output_refresh_count_{0};
@@ -11577,6 +11679,14 @@ index 93f9250e6..08ffd26ce 100644
 +  std::atomic<uint64_t> last_consumed_guest_sequence_{0};
 +  uint64_t paced_sequence_ = 0;
 +  uint32_t paced_presents_ = 0;
++  // PS5X360E (alpha.59): present_pace_millihz - recent present intervals
++  // (nanoseconds) and the refreshes per frame they give (painting thread).
++  void NotePresentInterval();
++  uint32_t PresentsPerPacedFrame();
++  uint64_t last_present_ns_ = 0;
++  std::array<uint32_t, 64> present_intervals_{};
++  uint32_t present_interval_next_ = 0, present_interval_count_ = 0;
++  uint32_t paced_repeats_logged_ = 0;
 +  // PS5X360E: the display's own frame rate (VideoOut flip rate, PS5_Mesa
 +  // wsi_videoout_set_flip_rate) set for present_frame_repeat: refreshes each
 +  // present is shown for (1: every refresh), and whether the driver refused.

@@ -3,6 +3,25 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.59+0.6.0 (PS5X360E, on Xenia Edge)
+
+From alpha.58 (NFS The Run, Challenge Series race): with "Memory shared with the GPU" every racing
+window 30.0 FPS, minimum 30, at 181,000 draws a second, the graphics thread 59 % busy and 2.5 µs
+of IssueDraw per draw (3.1 in alpha.57); no unwatched page went back to being watched. One sound
+gap in the race start's 30 s (33 ms), but crackling in the music.
+
+- **Sound is limited, not clipped**: the game mixes 5.1, and the stereo mix adds the centre, a
+  surround and the LFE to each front channel, up to 2.9 times full scale; the 16-bit port cut
+  everything over full scale flat, which crackles on loud music. A limiter now lowers the volume
+  at once when a sample would go over and recovers over about 100 ms. The log says how often it
+  acted ("Audio: limiter acted on ...").
+- **The 120 Hz video clock with even 30 pacing** ("Video clock" 120 Hz (test) with "Frame
+  pacing" on, frame generation off): the game gets vblanks at 119.88 Hz, which made the controls
+  feel quicker, but alone it ran at 25 to 42 ms frames (31 FPS on average, each shown for 3 or 4
+  refreshes of a 120 Hz output). The graphics thread now holds it to 29.97 FPS, and each frame
+  is shown for exactly 4 refreshes at 119.88 Hz (2 at 59.94 Hz), from the display's measured
+  refresh rate ("Display: refresh ... measured" in the log).
+
 ## 0.2-alpha.58+0.6.0 (PS5X360E, on Xenia Edge)
 
 From alpha.57's five sessions (NFS The Run, the usual race and a Challenge Series race, with
