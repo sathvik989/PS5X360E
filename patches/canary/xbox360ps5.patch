@@ -4779,10 +4779,10 @@ index 17200bed6..bfeb19965 100644
          assert_unhandled_case(header.command);
          break;
 diff --git a/src/xenia/gpu/vulkan/deferred_command_buffer.h b/src/xenia/gpu/vulkan/deferred_command_buffer.h
-index e1feb3fd4..6cd267268 100644
+index e1feb3fd4..aff58b41a 100644
 --- a/src/xenia/gpu/vulkan/deferred_command_buffer.h
 +++ b/src/xenia/gpu/vulkan/deferred_command_buffer.h
-@@ -32,6 +32,25 @@ class DeferredCommandBuffer {
+@@ -32,6 +32,31 @@ class DeferredCommandBuffer {
  
    void Reset();
    void Execute(VkCommandBuffer command_buffer);
@@ -4800,6 +4800,12 @@ index e1feb3fd4..6cd267268 100644
 +        WriteCommand(Command::kXeTimestampMark, sizeof(uint32_t))) = ordinal;
 +  }
 +  size_t stream_size() const { return command_stream_.size(); }
++  // Drops what was written after `size` (a mark with nothing after it).
++  void TruncateStream(size_t size) {
++    if (size < command_stream_.size()) {
++      command_stream_.resize(size);
++    }
++  }
 +  void SetTimestampQueries(VkQueryPool pool, uint32_t base, uint32_t count) {
 +    timestamp_pool_ = pool;
 +    timestamp_base_ = base;
@@ -4808,7 +4814,7 @@ index e1feb3fd4..6cd267268 100644
  
    // render_pass_begin->pNext must be null.
    void CmdVkBeginRenderPass(
-@@ -568,6 +587,7 @@ class DeferredCommandBuffer {
+@@ -568,6 +593,7 @@ class DeferredCommandBuffer {
      kVkBeginDebugUtilsLabelEXT,
      kVkEndDebugUtilsLabelEXT,
      kVkInsertDebugUtilsLabelEXT,
@@ -4816,7 +4822,7 @@ index e1feb3fd4..6cd267268 100644
    };
  
    struct CommandHeader {
-@@ -822,6 +842,8 @@ class DeferredCommandBuffer {
+@@ -822,6 +848,8 @@ class DeferredCommandBuffer {
    void* WriteCommand(Command command, size_t arguments_size_bytes);
  
    const VulkanCommandProcessor& command_processor_;
@@ -4826,7 +4832,7 @@ index e1feb3fd4..6cd267268 100644
    // uintmax_t to ensure uint64_t and pointer alignment of all structures.
    std::vector<uintmax_t> command_stream_;
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index b61995956..81bb3097f 100644
+index b61995956..907aed07a 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,16 +8,21 @@
@@ -6059,7 +6065,7 @@ index b61995956..81bb3097f 100644
  
      // Reset cached state of the command buffer.
      dynamic_viewport_update_needed_ = true;
-@@ -5665,6 +6512,158 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5665,6 +6512,168 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
    return true;
  }
  
@@ -6095,6 +6101,7 @@ index b61995956..81bb3097f 100644
 +    perf_gpu_untimed_.store(0);
 +    perf_async_readbacks_.store(0);
 +    for (auto& counter : perf_gpu_section_ns_) counter.store(0);
++    for (auto& counter : perf_gpu_section_spans_) counter.store(0);
 +    perf_gpu_section_changes_.store(0);
 +    perf_gpu_section_overflow_.store(0);
 +    perf_draws_previous_ = perf_draws_.load(std::memory_order_relaxed);
@@ -6162,22 +6169,31 @@ index b61995956..81bb3097f 100644
 +  std::string gpu_sections;
 +  if (gpu_section_pool_ != VK_NULL_HANDLE) {
 +    uint64_t section_ns[size_t(GpuSection::kCount)];
++    uint64_t spans[size_t(GpuSection::kCount)];
 +    for (size_t i = 0; i < size_t(GpuSection::kCount); ++i) {
 +      section_ns[i] = perf_gpu_section_ns_[i].exchange(0);
++      spans[i] = perf_gpu_section_spans_[i].exchange(0);
 +    }
 +    const uint64_t changes = perf_gpu_section_changes_.exchange(0);
 +    const uint64_t overflow = perf_gpu_section_overflow_.exchange(0);
 +    gpu_sections = fmt::format(
-+        "; GPU work ms/s: draws {:.1f}, render target copies {:.1f}, resolves "
-+        "{:.1f}, readbacks {:.1f}, texture loads {:.1f}, uploads {:.1f} "
-+        "({:.0f} switches/s, {} past the limit)",
++        "; GPU work ms/s (spans/s): draws {:.1f} ({:.0f}), render target "
++        "copies {:.1f} ({:.0f}), resolves {:.1f} ({:.0f}), readbacks {:.1f} "
++        "({:.0f}), texture loads {:.1f} ({:.0f}), uploads {:.1f} ({:.0f}); "
++        "{:.0f} switches/s, {:.0f}/s past the limit",
 +        ms_per_s(section_ns[size_t(GpuSection::kDraw)]),
++        per_s(spans[size_t(GpuSection::kDraw)]),
 +        ms_per_s(section_ns[size_t(GpuSection::kTransfer)]),
++        per_s(spans[size_t(GpuSection::kTransfer)]),
 +        ms_per_s(section_ns[size_t(GpuSection::kResolve)]),
++        per_s(spans[size_t(GpuSection::kResolve)]),
 +        ms_per_s(section_ns[size_t(GpuSection::kReadback)]),
++        per_s(spans[size_t(GpuSection::kReadback)]),
 +        ms_per_s(section_ns[size_t(GpuSection::kTexture)]),
-+        ms_per_s(section_ns[size_t(GpuSection::kUpload)]), per_s(changes),
-+        overflow);
++        per_s(spans[size_t(GpuSection::kTexture)]),
++        ms_per_s(section_ns[size_t(GpuSection::kUpload)]),
++        per_s(spans[size_t(GpuSection::kUpload)]), per_s(changes),
++        per_s(overflow));
 +  }
 +  std::string thread_cpu =
 +      thread_cpu_ns ? fmt::format("{:.0f}%", 100.0 *
@@ -6218,7 +6234,7 @@ index b61995956..81bb3097f 100644
  void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    if (!vulkan_device->properties().timestampPeriod) {
-@@ -5679,9 +6678,42 @@ void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
+@@ -5679,9 +6688,57 @@ void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
                              &gpu_time_query_pool_) != VK_SUCCESS) {
      XELOGE("Vulkan: failed to create the GPU time query pool");
      gpu_time_query_pool_ = VK_NULL_HANDLE;
@@ -6236,6 +6252,7 @@ index b61995956..81bb3097f 100644
 +  if (section == gpu_section_) {
 +    return;
 +  }
++  const GpuSection previous = gpu_section_;
 +  gpu_section_ = section;
 +  if (!submission_open_ || gpu_section_pool_ == VK_NULL_HANDLE ||
 +      !gpu_section_mark_count_) {
@@ -6243,16 +6260,30 @@ index b61995956..81bb3097f 100644
 +  }
 +  const size_t stream_size = deferred_command_buffer_.stream_size();
 +  if (stream_size == gpu_section_mark_stream_size_) {
-+    // Nothing recorded since the last mark: it starts this section instead.
-+    gpu_section_marks_[gpu_section_mark_count_ - 1] = section;
++    // Nothing recorded since the last mark. Back to the section before it:
++    // take the mark back; otherwise it starts this section instead.
++    const uint32_t last = gpu_section_mark_count_ - 1;
++    if (last && gpu_section_marks_[last - 1] == section) {
++      deferred_command_buffer_.TruncateStream(gpu_section_mark_pre_size_);
++      gpu_section_mark_count_ = last;
++      // Work of the resumed section precedes; never treat it as empty.
++      gpu_section_mark_stream_size_ = SIZE_MAX;
++    } else {
++      gpu_section_marks_[last] = section;
++    }
 +    return;
 +  }
++  // The section being left recorded work.
++  perf_gpu_section_spans_[size_t(previous)].fetch_add(
++      1, std::memory_order_relaxed);
 +  perf_gpu_section_changes_.fetch_add(1, std::memory_order_relaxed);
 +  if (gpu_section_mark_count_ >= kGpuSectionMarks) {
 +    // Counted for the last marked section from here to the submission's end.
 +    perf_gpu_section_overflow_.fetch_add(1, std::memory_order_relaxed);
++    gpu_section_mark_stream_size_ = SIZE_MAX;
 +    return;
 +  }
++  gpu_section_mark_pre_size_ = stream_size;
 +  gpu_section_marks_[gpu_section_mark_count_] = section;
 +  deferred_command_buffer_.CmdXeTimestampMark(gpu_section_mark_count_++);
 +  gpu_section_mark_stream_size_ = deferred_command_buffer_.stream_size();
@@ -6261,7 +6292,7 @@ index b61995956..81bb3097f 100644
  void VulkanCommandProcessor::DestroyGpuTimeQueryPool() {
    if (gpu_time_query_pool_ == VK_NULL_HANDLE) {
      return;
-@@ -5690,6 +6722,11 @@ void VulkanCommandProcessor::DestroyGpuTimeQueryPool() {
+@@ -5690,6 +6747,11 @@ void VulkanCommandProcessor::DestroyGpuTimeQueryPool() {
    vulkan_device->functions().vkDestroyQueryPool(vulkan_device->device(),
                                                  gpu_time_query_pool_, nullptr);
    gpu_time_query_pool_ = VK_NULL_HANDLE;
@@ -6273,7 +6304,7 @@ index b61995956..81bb3097f 100644
  }
  
  void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
-@@ -5711,13 +6748,236 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
+@@ -5711,13 +6773,236 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
                                    sizeof(uint64_t),
                                    VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
          timestamps[1] > timestamps[0]) {
@@ -6511,7 +6542,7 @@ index b61995956..81bb3097f 100644
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5757,13 +7017,17 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5757,13 +7042,17 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        command_buffer_allocate_info.pNext = nullptr;
        command_buffer_allocate_info.commandPool = command_buffer.pool;
        command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -6531,7 +6562,7 @@ index b61995956..81bb3097f 100644
        command_buffers_writable_.push_back(command_buffer);
      }
    }
-@@ -5822,6 +7086,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5822,6 +7111,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        bind_sparse_info.signalSemaphoreCount = 1;
        bind_sparse_info.pSignalSemaphores = &bind_sparse_semaphore;
        VkResult bind_sparse_result;
@@ -6540,7 +6571,7 @@ index b61995956..81bb3097f 100644
        {
          ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
              vulkan_device->AcquireQueue(
-@@ -5860,11 +7126,6 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5860,11 +7151,6 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
      command_buffer_begin_info.flags =
          VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
      command_buffer_begin_info.pInheritanceInfo = nullptr;
@@ -6552,7 +6583,7 @@ index b61995956..81bb3097f 100644
      // Bracket the whole submission. Recycle finished slots first, or a frame
      // with more submissions than slots leaves the later ones untimed.
      CollectCompletedGpuTimeQueries();
-@@ -5874,68 +7135,84 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5874,68 +7160,84 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
          gpu_time_pool_available && !gpu_time_query_submissions_[gpu_time_slot];
      if (gpu_time_pool_available && !gpu_time_recorded) {
        ++gpu_time_untimed_submissions_;
@@ -6681,7 +6712,7 @@ index b61995956..81bb3097f 100644
        LogRecentSubmissions("submit-failure");
        if (vulkan_device->IsLost() && !device_lost_) {
          device_lost_ = true;
-@@ -5943,6 +7220,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5943,6 +7245,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        }
        return false;
      }
@@ -6690,7 +6721,7 @@ index b61995956..81bb3097f 100644
      current_submission_wait_stage_masks_.clear();
      for (VkSemaphore semaphore : current_submission_wait_semaphores_) {
        submissions_in_flight_semaphores_.emplace_back(submission_index,
-@@ -5966,6 +7245,13 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5966,6 +7270,13 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
  
      submission_open_ = false;
  
@@ -6704,7 +6735,7 @@ index b61995956..81bb3097f 100644
      // Process any query resolves that completed with this submission.
      PumpQueryResolves();
      PumpPendingRetire();
-@@ -6882,20 +8168,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6882,20 +8193,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
          std::memcpy(mapping, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X],
                      sizeof(float) * 4 * 256);
        } else {
@@ -6728,7 +6759,7 @@ index b61995956..81bb3097f 100644
        }
      }
      // Pixel shader float constants.
-@@ -6909,20 +8184,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6909,20 +8209,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
        if (!mapping) {
          return false;
        }
@@ -6753,7 +6784,7 @@ index b61995956..81bb3097f 100644
      // Bool and loop constants.
      if (!(current_constant_buffers_up_to_date_ &
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.h b/src/xenia/gpu/vulkan/vulkan_command_processor.h
-index 34c45db8a..9555031df 100644
+index 34c45db8a..c05481ae6 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.h
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.h
 @@ -14,13 +14,16 @@
@@ -6947,13 +6978,13 @@ index 34c45db8a..9555031df 100644
    VkQueryPool gpu_time_query_pool_ = VK_NULL_HANDLE;
    uint64_t gpu_time_query_submissions_[kGpuTimeQuerySubmissions] = {};
    uint32_t gpu_time_query_slot_ = 0;
-@@ -713,6 +798,72 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -713,6 +798,78 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // which sums per-submission intervals and misleads without it.
    uint64_t gpu_time_submissions_window_start_ = 0;
    uint64_t gpu_time_window_start_ns_ = 0;
 +  // GPU time by section (alpha.66): per timed submission slot, up to
 +  // kGpuSectionMarks marks plus the end, in a pool of its own.
-+  static constexpr uint32_t kGpuSectionMarks = 255;
++  static constexpr uint32_t kGpuSectionMarks = 1023;
 +  static constexpr uint32_t kGpuSectionQueries = kGpuSectionMarks + 1;
 +  VkQueryPool gpu_section_pool_ = VK_NULL_HANDLE;
 +  GpuSection gpu_section_ = GpuSection::kDraw;
@@ -6962,11 +6993,17 @@ index 34c45db8a..9555031df 100644
 +  // Stream size just after the last mark: a change with nothing recorded since
 +  // retags that mark instead of spending another.
 +  size_t gpu_section_mark_stream_size_ = 0;
++  // Stream size just before the last mark, to take it back when its section
++  // ends with nothing recorded and the one before it resumes.
++  size_t gpu_section_mark_pre_size_ = 0;
 +  GpuSection gpu_section_slot_marks_[kGpuTimeQuerySubmissions]
 +                                    [kGpuSectionMarks] = {};
 +  uint32_t gpu_section_slot_count_[kGpuTimeQuerySubmissions] = {};
 +  std::atomic<uint64_t> perf_gpu_section_ns_[size_t(GpuSection::kCount)] = {};
 +  std::atomic<uint64_t> perf_gpu_section_changes_{0};
++  // Spans with work recorded, by section (alpha.67).
++  std::atomic<uint64_t> perf_gpu_section_spans_[size_t(GpuSection::kCount)] =
++      {};
 +  std::atomic<uint64_t> perf_gpu_section_overflow_{0};
 +  // PS5X360E: performance figures, read by TakePerformanceSummary from another
 +  // thread. Why each submission ended (set just before EndSubmission, which
@@ -7020,7 +7057,7 @@ index 34c45db8a..9555031df 100644
    void CreateGpuTimeQueryPool();
    void DestroyGpuTimeQueryPool();
    void CollectCompletedGpuTimeQueries();
-@@ -734,6 +885,48 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -734,6 +891,48 @@ class VulkanCommandProcessor final : public CommandProcessor {
    std::deque<std::pair<uint64_t, CommandBuffer>> command_buffers_submitted_;
    DeferredCommandBuffer deferred_command_buffer_;
  
@@ -7069,7 +7106,7 @@ index 34c45db8a..9555031df 100644
    std::vector<VkSparseMemoryBind> sparse_memory_binds_;
    std::vector<SparseBufferBind> sparse_buffer_binds_;
    // SparseBufferBind converted to VkSparseBufferMemoryBindInfo to this buffer
-@@ -1092,6 +1285,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -1092,6 +1291,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // .inc for ScaledResolveReadbackInfo.
    bool DownscaleScaledResolve(uint32_t written_address,
                                const ScaledResolveReadbackInfo& scaled_info);

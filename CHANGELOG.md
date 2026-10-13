@@ -3,6 +3,13 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.67+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **The GPU breakdown counts racing correctly** (measurement only). In alpha.66 most of a race's
+  section changes ran past the 255 marks a submission had, and that time was counted as drawing.
+  A section left with nothing recorded no longer spends a mark, up to 1023 fit, and each kind of
+  work now also shows how many separate spans of it there were per second.
+
 ## 0.2-alpha.66+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Where the GPU's time goes** (measurement only, nothing else changes): with Measure
