@@ -3,6 +3,23 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.54+0.6.0 (PS5X360E, on Xenia Edge)
+
+From alpha.53's measurement in NFS The Run's heaviest scene (25-28 FPS):
+
+- **GPU waits are short again**: alpha.52's submit thread made each wait of the graphics thread
+  for data the GPU writes for the game ten times longer (57 a second, 94 ms a second against
+  9 before): the thread handed the work over, then waited for the submit thread to wake up and
+  replay everything queued before it. A thread waiting for a submission now records and submits
+  the queued ones itself when the submit thread isn't in the middle of one.
+- **Shader lookups cached**: the graphics thread's biggest single cost (9.6 % of its time, named
+  from the build's symbols) was finding the shader for each draw in a hash map of over 3000,
+  every lookup a chain of cache misses. A 1024-entry table indexed by the shader's hash now
+  answers repeated lookups at once.
+- What the game waits on: guest CPU 3's hot function (82DDC4F8, 55-63 % of that CPU) is a spin
+  helper: 32 `db16cyc` delays (the code's own back-off), then a check of the D3D device's
+  state. The game is waiting, not working: on the graphics side, which these changes speed up.
+
 ## 0.2-alpha.53+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **"Measure performance (5 s)" shows the hot guest code**: alpha.52's measurement in NFS The
