@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.74+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **NFS The Run at 3x keeps effect images up to 640 pixels wide at native resolution** (320 at
+  2x, as before). With 320 at 3x, a 640-wide effect image upscaled next to native ones drew
+  shapes across the menus, blanked panels and made the HUD flicker, and races ran at 22-25 FPS
+  with the GPU 81-95% busy. With 640 the picture is clean, night lighting is right, and the Sin
+  City race runs at 29-30 FPS with the GPU about 70% busy (user, alpha.71-73). Small effects at
+  native resolution (test) still overrides it, and now also offers 720 and 800 for the HUD
+  flicker that remains once or twice a race.
+
 ## 0.2-alpha.73+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Where a freeze goes** (measurement only): each "Hitch:" line is followed by a "Hitch detail:"

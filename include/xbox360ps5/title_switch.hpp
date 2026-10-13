@@ -12,7 +12,8 @@
 #include <vector>
 namespace xbox360ps5 {
 // "Small effects at native resolution" (alpha.71 test): 0 the game's own
-// threshold, 1 none, 2 up to 640 pixels, 3/4/5 up to 400/480/560 (alpha.72).
+// threshold, 1 none, 2 up to 640 pixels, 3/4/5 up to 400/480/560 (alpha.72),
+// 6/7 up to 720/800 (alpha.74).
 // Set by Settings::Apply.
 inline int small_effects_choice = 0;
 struct PendingLaunch {
