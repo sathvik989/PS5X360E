@@ -3,6 +3,33 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.57+0.6.0 (PS5X360E, on Xenia Edge)
+
+alpha.56 holds 30 FPS in NFS The Run's heaviest section (graphics thread 55-61 % busy). This
+starts on what is left: the cost of watching guest memory, the loading stalls, and the profile
+the next steps of the graphics thread work need.
+
+- **Memory the game keeps rewriting is compared, not watched** ("Optimize dynamic buffers",
+  on; it did nothing since the move to Xenia Edge): watching a page means protecting it, and a
+  game write to it faults and unprotects it; on the console each protection change takes about
+  40 µs (NFS: 900-1300 faults and 2200-3200 protection changes a second while racing, 90-140 ms
+  a second). Pages that fault again and again are left unprotected; a draw that reads vertex
+  data from them compares a hash of the bytes with the last upload (once per batch of commands)
+  and uploads only what changed. Textures, index buffers and GPU output stay watched. Brought
+  over from PS5X360's Canary build.
+- **"Memory update" works again** (16 KiB): a game write makes the GPU copy re-read 16 KiB
+  around it instead of up to 256 KiB, so less is uploaded and protected again.
+- **No global lock for every draw**: the graphics thread took the emulator's global lock around
+  each draw's vertex data, which the game's write faults hold through their 40 µs protection
+  changes, so each waited on the other. Data that is already current needs no lock.
+- **"Hitch:" lines**: a frame of the graphics thread over 50 ms is logged with what the thread
+  did in it (shader translation, pipelines, texture loads, uploads, waits, page protections,
+  write faults), to tell loading stalls apart (at most one a second).
+- **"Memory shared with the GPU"** (off, experimental): the GPU reads the game's memory in
+  place (Xenia Edge's zero-copy mode, made for Apple's shared-memory chips; the PS5 has one
+  memory too), with no uploads. For comparing the same race on and off.
+- The log now sums the unwatched pages every 900 frames ("Performance unwatched pages").
+
 ## 0.2-alpha.56+0.6.0 (PS5X360E, on Xenia Edge)
 
 From alpha.55's measurement at NFS The Run's heaviest spot (139,000 draws a second): 29.8-29.9

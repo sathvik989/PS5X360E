@@ -1645,7 +1645,7 @@ index 3984cd9d6..3ee0b21a7 100644
    for (int i = 0; i < 32; i++) {
      crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
 diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
-index c9bac1689..9144eff12 100644
+index c9bac1689..dab7801fe 100644
 --- a/src/xenia/gpu/command_processor.cc
 +++ b/src/xenia/gpu/command_processor.cc
 @@ -8,6 +8,7 @@
@@ -1760,7 +1760,7 @@ index c9bac1689..9144eff12 100644
      default:
        break;
    }
-@@ -498,6 +566,11 @@ void CommandProcessor::SetTitleStateSuffix(std::string suffix) {
+@@ -498,6 +566,12 @@ void CommandProcessor::SetTitleStateSuffix(std::string suffix) {
  }
  
  void CommandProcessor::WorkerThreadMain() {
@@ -1768,11 +1768,12 @@ index c9bac1689..9144eff12 100644
 +  // Xbox360PS5: the guest waits for this thread; it takes the core the title
 +  // keeps free for it (platform/ps5/thread_place.cpp).
 +  xbox360ps5::PlaceCallingThread(true);
++  xbox360ps5::gpu_diag::on_gpu_thread = true;
 +#endif
    if (!SetupContext()) {
      xe::FatalError("Unable to setup command processor internal state");
      return;
-@@ -517,18 +590,47 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -517,18 +591,47 @@ void CommandProcessor::WorkerThreadMain() {
        // We've run out of commands to execute.
        // We spin here waiting for new ones, as the overhead of waiting on our
        // event is too high.
@@ -1821,7 +1822,7 @@ index c9bac1689..9144eff12 100644
            }
          } else {
            xe::threading::MaybeYield();
-@@ -539,6 +641,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -539,6 +642,7 @@ void CommandProcessor::WorkerThreadMain() {
                 (write_ptr_index == 0xBAADF00D ||
                  read_ptr_index_ == write_ptr_index));
        ReturnFromWait();
@@ -1829,7 +1830,15 @@ index c9bac1689..9144eff12 100644
        if (!worker_running_ || !pending_fns_.empty()) {
          continue;
        }
-@@ -565,6 +668,184 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -546,6 +650,7 @@ void CommandProcessor::WorkerThreadMain() {
+     assert_true(read_ptr_index_ != write_ptr_index);
+ 
+     // Execute. Note that we handle wraparound transparently.
++    OnGuestBatch();
+     read_ptr_index_ = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
+ 
+     // ExecutePrimaryBuffer republishes this every read_ptr_update_freq_ dwords
+@@ -565,6 +670,184 @@ void CommandProcessor::WorkerThreadMain() {
    ShutdownContext();
  }
  
@@ -2014,7 +2023,7 @@ index c9bac1689..9144eff12 100644
  void CommandProcessor::Pause() {
    if (paused_) {
      return;
-@@ -754,6 +1035,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
+@@ -754,6 +1037,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
        uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
        uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
        xe::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
@@ -2024,7 +2033,7 @@ index c9bac1689..9144eff12 100644
      }
    } else {
      switch (index) {
-@@ -1046,6 +1330,12 @@ void CommandProcessor::PrepareForWait() {
+@@ -1046,6 +1332,12 @@ void CommandProcessor::PrepareForWait() {
    trace_writer_.Flush();
    if (zpd_mode_ == ZPDMode::kStrict && zpd_awaited_report_count_) {
      PrepareZPDForWait();
@@ -2037,7 +2046,7 @@ index c9bac1689..9144eff12 100644
    }
    if (viz_pending_resolves_) {
      PollCompletedSubmission();
-@@ -1263,7 +1553,7 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1263,7 +1555,7 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
  
    ZPDReport& report = zpd_current_report_;
    report.address = report_address;
@@ -2046,7 +2055,7 @@ index c9bac1689..9144eff12 100644
      // See EVENT_WRITE_ZPD for additional information on the pending sentinel.
      const uint32_t kPendingSentinel = xe::byte_swap(0xFFFFFEEDu);
      const auto* guest =
-@@ -1291,8 +1581,19 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1291,8 +1583,19 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
      WriteZPDReport(report_address, report.speculative_value);
    }
    zpd_awaited_report_count_ += report.awaited;
@@ -2066,7 +2075,7 @@ index c9bac1689..9144eff12 100644
  
    // The next report's segment opens at its first draw.
    // Report runs without draws between them never use any pool slots.
-@@ -1340,8 +1641,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
+@@ -1340,8 +1643,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
    if (result == QueryOpenResult::kPoolExhausted) {
      zpd_stats_.pool_exhausted++;
    }
@@ -2076,7 +2085,7 @@ index c9bac1689..9144eff12 100644
      // Fast modes favor forward progress over accuracy. Report at least one
      // passing sample instead of waiting for a slot to become available.
      if (report) {
-@@ -1488,10 +1788,30 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
+@@ -1488,10 +1790,30 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
    return nullptr;
  }
  
@@ -2109,7 +2118,7 @@ index c9bac1689..9144eff12 100644
        awaited_handle = report.handle;
        break;
      }
-@@ -1512,6 +1832,10 @@ void CommandProcessor::PrepareZPDForWait() {
+@@ -1512,6 +1834,10 @@ void CommandProcessor::PrepareZPDForWait() {
    if (!wait_report || !wait_report->pending_segments) {
      return;
    }
@@ -2120,7 +2129,7 @@ index c9bac1689..9144eff12 100644
    if (AwaitQueryResolve(wait_report->handle,
                          wait_report->last_segment_end_submission)) {
      PumpPendingRetire();
-@@ -1543,13 +1867,22 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1543,13 +1869,22 @@ void CommandProcessor::PumpPendingRetire() {
        if (zpd_mode_ == ZPDMode::kStrict) {
          break;
        }
@@ -2144,7 +2153,7 @@ index c9bac1689..9144eff12 100644
          break;
        }
        front.delta.z_pass = std::max<uint64_t>(front.delta.z_pass, 1);
-@@ -1559,6 +1892,21 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1559,6 +1894,21 @@ void CommandProcessor::PumpPendingRetire() {
      zpd_pending_retire_start_ms_ = 0;
  
      zpd_sample_counter_ += front.delta;
@@ -2167,7 +2176,7 @@ index c9bac1689..9144eff12 100644
        if (fast_zpd_report_cached_deltas_.size() >= kFastZPDCacheMaxEntries &&
            !fast_zpd_report_cached_deltas_.count(front.address)) {
 diff --git a/src/xenia/gpu/command_processor.h b/src/xenia/gpu/command_processor.h
-index 3057e6bc9..69339aeca 100644
+index 3057e6bc9..e3afce82c 100644
 --- a/src/xenia/gpu/command_processor.h
 +++ b/src/xenia/gpu/command_processor.h
 @@ -21,6 +21,7 @@
@@ -2245,7 +2254,17 @@ index 3057e6bc9..69339aeca 100644
  
    void RestoreRegisters(uint32_t first_register,
                          const uint32_t* register_values,
-@@ -398,6 +430,8 @@ class CommandProcessor {
+@@ -359,6 +391,9 @@ class CommandProcessor {
+ 
+   virtual void MakeCoherent();
+   virtual void PrepareForWait();
++  // PS5X360E: the guest may have written memory for what comes next (new ring
++  // data, or a wait it ended): content checks made before are stale.
++  virtual void OnGuestBatch() {}
+   virtual void ReturnFromWait();
+ 
+   virtual void PollCompletedSubmission() {}
+@@ -398,6 +433,8 @@ class CommandProcessor {
      // For strict, when a report holds the D3D sentinel.
      // Only these are worth blocking a wait for.
      bool awaited = false;
@@ -2254,7 +2273,7 @@ index 3057e6bc9..69339aeca 100644
    };
  
    static constexpr uint64_t kInvalidVIZGeneration = 0;
-@@ -496,7 +530,22 @@ class CommandProcessor {
+@@ -496,7 +533,22 @@ class CommandProcessor {
    // order, so the queue is indexed by the front handle.
    ZPDReport* FindZPDReport(ReportHandle report_handle);
    // Handles a strict report the guest is waiting on while the ring is empty.
@@ -2278,7 +2297,7 @@ index 3057e6bc9..69339aeca 100644
    // Called from PrepareForWait and submission boundaries so retired reports
    // reach the guest before it loops again. Fast modes give up on a stuck front
    // report after kFastZPDRetireDeadlineMs.
-@@ -656,6 +705,10 @@ class CommandProcessor {
+@@ -656,6 +708,10 @@ class CommandProcessor {
    XenosZPDReport zpd_sample_counter_;
    XenosZPDReport zpd_speculative_sample_counter_;
    std::unordered_map<uint32_t, XenosZPDReport> fast_zpd_report_cached_deltas_;
@@ -2289,7 +2308,7 @@ index 3057e6bc9..69339aeca 100644
  
    // Sticky after host pool init failure. Forces EVENT_WRITE_ZPD onto the fake
    // path so guests don't stall waiting on a pending sentinel that will never
-@@ -710,6 +763,8 @@ class CommandProcessor {
+@@ -710,6 +766,8 @@ class CommandProcessor {
    std::vector<uint32_t> me_bin_;
  
    uint32_t counter_ = 0;
@@ -2298,7 +2317,7 @@ index 3057e6bc9..69339aeca 100644
  
    uint32_t primary_buffer_ptr_ = 0;
    uint32_t primary_buffer_size_ = 0;
-@@ -718,6 +773,39 @@ class CommandProcessor {
+@@ -718,6 +776,39 @@ class CommandProcessor {
    uint32_t read_ptr_update_freq_ = 0;
    uint32_t read_ptr_writeback_ptr_ = 0;
  
@@ -2943,7 +2962,7 @@ index f0652b6b5..05f252b70 100644
    command_processor_->increment_counter();
  
 diff --git a/src/xenia/gpu/pm4_command_processor_implement.h b/src/xenia/gpu/pm4_command_processor_implement.h
-index ee3cd5e8a..19ff3ba2b 100644
+index ee3cd5e8a..a596f119f 100644
 --- a/src/xenia/gpu/pm4_command_processor_implement.h
 +++ b/src/xenia/gpu/pm4_command_processor_implement.h
 @@ -86,6 +86,13 @@ void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
@@ -3107,12 +3126,13 @@ index ee3cd5e8a..19ff3ba2b 100644
  #endif
          }
          // Unlimited vblank mode (guest_display_refresh_cap=false) - spin since
-@@ -928,6 +1031,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -928,6 +1031,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
        }
      }
    } while (!matched);
 +  if (wait_started != std::chrono::steady_clock::time_point{}) {
 +    COMMAND_PROCESSOR::DiagSetPhase(DiagPhase::kRing);
++    COMMAND_PROCESSOR::OnGuestBatch();
 +  }
 +  if (is_memory && wait_started != std::chrono::steady_clock::time_point{}) {
 +    DiagRecordWrite(0x104, poll_reg_addr,
@@ -3124,7 +3144,7 @@ index ee3cd5e8a..19ff3ba2b 100644
  
    return true;
  }
-@@ -985,6 +1098,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
+@@ -985,6 +1099,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
  
    auto endianness = static_cast<xenos::Endian>(mem_addr & 0x3);
    mem_addr &= ~0x3;
@@ -3132,7 +3152,7 @@ index ee3cd5e8a..19ff3ba2b 100644
    reg_val = GpuSwap(reg_val, endianness);
    xe::store(memory_->TranslatePhysical(mem_addr), reg_val);
    trace_writer_.WriteMemoryWrite(CpuToGpu(mem_addr), 4);
-@@ -1004,6 +1118,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
+@@ -1004,6 +1119,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
  
    for (uint32_t i = 0; i < count - 1; i++) {
      uint32_t write_data = reader_.ReadAndSwap<uint32_t>();
@@ -3142,7 +3162,7 @@ index ee3cd5e8a..19ff3ba2b 100644
  
      auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
      auto addr = write_addr & ~0x3;
-@@ -1049,6 +1166,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
+@@ -1049,6 +1167,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
      value = register_file_->values[poll_reg_addr];
    }
    bool matched = MatchValueAndRef(value & mask, ref, wait_info);
@@ -3151,7 +3171,7 @@ index ee3cd5e8a..19ff3ba2b 100644
  
    if (matched) {
      // Write.
-@@ -1088,7 +1207,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
+@@ -1088,7 +1208,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
      // Just an event flag? Where does this write?
    } else {
      // Write to an address.
@@ -3170,7 +3190,7 @@ index ee3cd5e8a..19ff3ba2b 100644
      reader_.AdvanceRead((count - 1) * sizeof(uint32_t));
    }
    return true;
-@@ -1123,6 +1252,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
+@@ -1123,6 +1253,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
      // Write value.
      data_value = value;
    }
@@ -3178,7 +3198,7 @@ index ee3cd5e8a..19ff3ba2b 100644
    auto endianness = static_cast<xenos::Endian>(address & 0x3);
    address &= ~0x3;
    data_value = GpuSwap(data_value, endianness);
-@@ -1366,10 +1496,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
+@@ -1366,10 +1497,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
        }
  
        if (!draw_succeeded) {
@@ -3378,14 +3398,17 @@ index f40494f5a..d3acca6b9 100644
        // 64bpp: one texel spans two contiguous output dwords.
        uint src_bytes = XeDownscaleScaledBlockByte(
 diff --git a/src/xenia/gpu/shared_memory.cc b/src/xenia/gpu/shared_memory.cc
-index 6aaeb76bd..496b35c80 100644
+index 6aaeb76bd..148a23abe 100644
 --- a/src/xenia/gpu/shared_memory.cc
 +++ b/src/xenia/gpu/shared_memory.cc
-@@ -8,17 +8,34 @@
+@@ -8,17 +8,40 @@
   */
  
  #include "xenia/gpu/shared_memory.h"
 +#include "xenia/gpu/gpu_flags.h"
++
++#include <algorithm>
++#include <cstring>
  
  #include "xenia/base/assert.h"
  #include "xenia/base/bit_range.h"
@@ -3393,6 +3416,9 @@ index 6aaeb76bd..496b35c80 100644
  #include "xenia/base/profiling.h"
 +#include "xenia/base/cvar.h"
 +#include "xenia/base/xxhash.h"
++#if XE_PLATFORM_PS5
++#include "xbox360ps5/gpu_diagnostics.hpp"
++#endif
 +
 +// PS5X360E
 +DEFINE_bool(
@@ -3416,7 +3442,230 @@ index 6aaeb76bd..496b35c80 100644
  }
  
  SharedMemory::~SharedMemory() { ShutdownCommon(); }
-@@ -113,6 +130,8 @@ void SharedMemory::ShutdownCommon() {
+@@ -46,12 +69,222 @@ bool SharedMemory::InitializeCommon() {
+   memset(system_page_flags_valid_and_gpu_written_, 0,
+          8 * num_system_page_flags_entries);
+ 
++#if XE_PLATFORM_PS5
++  unit_heat_.assign(kBufferSize >> page_size_log2_, 0);
++  unit_hash_.assign(kBufferSize >> page_size_log2_, 0);
++  unit_checked_epoch_.assign(kBufferSize >> page_size_log2_, 0);
++  unwatched_bits_.assign(num_system_page_flags_, 0);
++  unwatched_seen_bits_.assign(num_system_page_flags_, 0);
++  pinned_bits_.assign(num_system_page_flags_, 0);
++#endif
+   memory_invalidation_callback_handle_ =
+       memory_.RegisterPhysicalMemoryInvalidationCallback(
+           MemoryInvalidationCallbackThunk, this);
+   return true;
+ }
+ 
++#if XE_PLATFORM_PS5
++// PS5X360E (alpha.57): unwatched pages, from PS5X360's Canary build.
++//
++// A page the GPU copy holds is write-protected so that a guest write is
++// noticed; the write faults, the page is invalidated and unprotected, and the
++// next draw that needs it uploads it and protects it again. A game that
++// rewrites the same pages every frame (dynamic vertex data, or its own data
++// sharing a page with GPU data) pays a fault and two protection changes per
++// page per frame, each about 40 microseconds on the console, under the global
++// critical region (NFS The Run: 900-1300 faults a second while racing).
++//
++// A unit that keeps faulting is therefore left unwatched: never marked valid,
++// never protected. A draw that asks for it (RequestRange with allow_unwatched)
++// compares a hash of the guest's bytes with the hash taken at the last upload
++// and uploads only when they differ, so the GPU copy still equals the guest's
++// memory at the moment of the request. Anything that keeps state depending on
++// a later invalidation (textures, converted index buffers, resolves, GPU-written
++// data) asks without allow_unwatched or registers a watch, and its units are
++// pinned: watched as before, and never left unwatched again.
++namespace {
++constexpr uint8_t kHeatToUnwatch = 3;
++constexpr uint8_t kHeatWhenUnwatched = 32;
++inline bool UnitBit(const std::vector<uint64_t>& bits, uint32_t unit) {
++  return (__atomic_load_n(&bits[unit >> 6], __ATOMIC_RELAXED) >> (unit & 63)) &
++         1;
++}
++inline void SetUnitBit(std::vector<uint64_t>& bits, uint32_t unit) {
++  __atomic_fetch_or(&bits[unit >> 6], uint64_t(1) << (unit & 63),
++                    __ATOMIC_RELAXED);
++}
++inline void ClearUnitBit(std::vector<uint64_t>& bits, uint32_t unit) {
++  __atomic_fetch_and(&bits[unit >> 6], ~(uint64_t(1) << (unit & 63)),
++                     __ATOMIC_RELAXED);
++}
++}  // namespace
++
++bool SharedMemory::UnwatchedPagesEnabled() const {
++  return xbox360ps5::gpu_diag::enabled.load(std::memory_order_relaxed) &&
++         xbox360ps5::gpu_diag::unwatched_pages.load(std::memory_order_relaxed);
++}
++
++// A write fault on these units (global lock held).
++void SharedMemory::NoteCpuWrite(uint32_t page_first, uint32_t page_last) {
++  for (uint32_t unit = page_first; unit <= page_last; ++unit) {
++    if (UnitBit(pinned_bits_, unit)) {
++      continue;
++    }
++    uint8_t& heat = unit_heat_[unit];
++    if (heat < UINT8_MAX) {
++      ++heat;
++    }
++    if (heat >= kHeatToUnwatch && !UnitBit(unwatched_bits_, unit)) {
++      ClearUnitBit(unwatched_seen_bits_, unit);
++      SetUnitBit(unwatched_bits_, unit);
++      heat = kHeatWhenUnwatched;
++      unwatched_heated_.fetch_add(1, std::memory_order_relaxed);
++    }
++  }
++}
++
++// The guest released or reprotected these units (global lock held).
++void SharedMemory::ForgetUnwatched(uint32_t page_first, uint32_t page_last) {
++  for (uint32_t unit = page_first; unit <= page_last; ++unit) {
++    unit_heat_[unit] = 0;
++    ClearUnitBit(unwatched_bits_, unit);
++    ClearUnitBit(unwatched_seen_bits_, unit);
++  }
++}
++
++// Something will depend on these units' watch (global lock held). A pinned
++// unit is never left unwatched again.
++void SharedMemory::PinWatched(uint32_t page_first, uint32_t page_last) {
++  for (uint32_t unit = page_first; unit <= page_last; ++unit) {
++    if (UnitBit(pinned_bits_, unit)) {
++      continue;
++    }
++    SetUnitBit(pinned_bits_, unit);
++    ClearUnitBit(unwatched_bits_, unit);
++    ClearUnitBit(unwatched_seen_bits_, unit);
++    unit_heat_[unit] = 0;
++  }
++}
++
++// Of the units a request found invalid, drops the unwatched ones whose bytes
++// are what the GPU copy already holds. GPU thread, no lock: a unit that is
++// being left unwatched right now is treated as watched and uploaded.
++unsigned int SharedMemory::FilterUnwatched(
++    std::pair<uint32_t, uint32_t>*& uploads, unsigned int count) {
++  bool any = false;
++  for (unsigned int i = 0; i < count && !any; ++i) {
++    for (uint32_t unit = uploads[i].first;
++         unit < uploads[i].first + uploads[i].second; ++unit) {
++      if (UnitBit(unwatched_bits_, unit)) {
++        any = true;
++        break;
++      }
++    }
++  }
++  if (!any) {
++    return count;
++  }
++  ++unwatched_requests_;
++  unwatched_filtered_.clear();
++  const size_t unit_bytes = size_t(1) << page_size_log2_;
++  for (unsigned int i = 0; i < count; ++i) {
++    uint32_t run_start = UINT32_MAX;
++    const uint32_t end = uploads[i].first + uploads[i].second;
++    for (uint32_t unit = uploads[i].first; unit < end; ++unit) {
++      bool upload = true;
++      if (UnitBit(unwatched_bits_, unit)) {
++        const bool seen = UnitBit(unwatched_seen_bits_, unit);
++        if (seen && unit_checked_epoch_[unit] == unwatched_epoch_) {
++          // Compared (or uploaded) already for this guest batch.
++          upload = false;
++          ++unwatched_skips_;
++          goto next_unit;
++        }
++        unit_checked_epoch_[unit] = unwatched_epoch_;
++        const uint64_t hash = XXH3_64bits(
++            memory().TranslatePhysical(unit << page_size_log2_), unit_bytes);
++        if (seen && unit_hash_[unit] == hash) {
++          upload = false;
++          ++unwatched_skips_;
++        } else {
++          // Taken before the copy: a write in between leaves the guest's
++          // bytes different from this hash, and the next request uploads.
++          unit_hash_[unit] = hash;
++          SetUnitBit(unwatched_seen_bits_, unit);
++          ++unwatched_uploads_;
++        }
++      }
++    next_unit:
++      if (upload) {
++        if (run_start == UINT32_MAX) {
++          run_start = unit;
++        }
++      } else if (run_start != UINT32_MAX) {
++        unwatched_filtered_.emplace_back(run_start, unit - run_start);
++        run_start = UINT32_MAX;
++      }
++    }
++    if (run_start != UINT32_MAX) {
++      unwatched_filtered_.emplace_back(run_start, end - run_start);
++    }
++  }
++  uploads = unwatched_filtered_.data();
++  return static_cast<unsigned int>(unwatched_filtered_.size());
++}
++
++// Heat halves, and an unwatched unit whose heat has run out goes back to being
++// watched at its next upload.
++void SharedMemory::AgeUnwatchedPages() {
++  auto global_lock = global_critical_region_.Acquire();
++  const size_t units = unit_heat_.size();
++  for (size_t base = 0; base < units; base += 8) {
++    uint64_t eight;
++    std::memcpy(&eight, &unit_heat_[base], sizeof(eight));
++    if (!eight) {
++      continue;
++    }
++    for (size_t unit = base; unit < base + 8; ++unit) {
++      uint8_t& heat = unit_heat_[unit];
++      if (!heat) {
++        continue;
++      }
++      heat >>= 1;
++      if (heat < 2 && UnitBit(unwatched_bits_, uint32_t(unit))) {
++        ClearUnitBit(unwatched_bits_, uint32_t(unit));
++        ClearUnitBit(unwatched_seen_bits_, uint32_t(unit));
++        unwatched_cooled_.fetch_add(1, std::memory_order_relaxed);
++      }
++    }
++  }
++}
++
++void SharedMemory::EndFrameUnwatchedPages() {
++  ++unwatched_frames_;
++  // Every 120 guest frames (4 s at 30 FPS), as in PS5X360.
++  if (unwatched_frames_ % 120 == 0) {
++    AgeUnwatchedPages();
++  }
++  if (unwatched_frames_ % 900 != 0) {
++    return;
++  }
++  uint64_t unwatched_units = 0;
++  for (const uint64_t word : unwatched_bits_) {
++    unwatched_units += xe::bit_count(word);
++  }
++  XELOGW(
++      "Performance unwatched pages ({}): {} of 4 KiB left unwatched; {} "
++      "requests met them, {} unchanged, {} uploaded; {} left unwatched, {} "
++      "watched again over 900 frames",
++      UnwatchedPagesEnabled() ? (IsZeroCopy() ? "on, zero-copy" : "on")
++                              : "off",
++      unwatched_units, unwatched_requests_, unwatched_skips_,
++      unwatched_uploads_,
++      unwatched_heated_.exchange(0, std::memory_order_relaxed),
++      unwatched_cooled_.exchange(0, std::memory_order_relaxed));
++  unwatched_requests_ = unwatched_skips_ = unwatched_uploads_ = 0;
++}
++#endif  // XE_PLATFORM_PS5
++
+ void SharedMemory::InitializeSparseHostGpuMemory(uint32_t granularity_log2) {
+   assert_true(granularity_log2 <= kBufferSizeLog2);
+   assert_true(host_gpu_memory_sparse_granularity_log2_ == UINT32_MAX);
+@@ -113,6 +346,8 @@ void SharedMemory::ShutdownCommon() {
  
  void SharedMemory::InvalidateAllPages() {
    auto global_lock = global_critical_region_.Acquire();
@@ -3425,16 +3674,124 @@ index 6aaeb76bd..496b35c80 100644
  
    std::memset(system_page_flags_valid_, 0,
                num_system_page_flags_ * sizeof(uint64_t));
-@@ -367,6 +386,8 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length,
+@@ -125,6 +360,16 @@ void SharedMemory::InvalidateAllPages() {
+ }
  
+ void SharedMemory::ClearCache() {
++#if XE_PLATFORM_PS5
++  {
++    auto global_lock = global_critical_region_.Acquire();
++    std::fill(unit_heat_.begin(), unit_heat_.end(), uint8_t(0));
++    std::fill(unwatched_bits_.begin(), unwatched_bits_.end(), uint64_t(0));
++    std::fill(unwatched_seen_bits_.begin(), unwatched_seen_bits_.end(),
++              uint64_t(0));
++    std::fill(pinned_bits_.begin(), pinned_bits_.end(), uint64_t(0));
++  }
++#endif
+   // Keeping GPU-written data, so "invalidated by GPU".
+   FireWatches(0, (kBufferSize - 1) >> page_size_log2_, true);
+   // No watches now, so no references to the pools accessible by guest threads -
+@@ -219,6 +464,12 @@ SharedMemory::WatchHandle SharedMemory::WatchMemoryRange(
+       watch_page_last << page_size_log2_ >> kWatchBucketSizeLog2;
+   // chrispy: Not required the global lock is always held by the caller
+   // auto global_lock = global_critical_region_.Acquire();
++#if XE_PLATFORM_PS5
++  // PS5X360E: what registers a watch relies on these units' invalidation.
++  if (!unit_heat_.empty()) {
++    PinWatched(watch_page_first, watch_page_last);
++  }
++#endif
+ 
+   // Allocate the range.
+   WatchRange* range = watch_range_first_free_;
+@@ -365,8 +616,21 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length,
+   uint32_t valid_block_first = valid_page_first >> 6;
+   uint32_t valid_block_last = valid_page_last >> 6;
+ 
++#if XE_PLATFORM_PS5
++  bool skipped_unwatched = false;
++  const bool leave_unwatched = UnwatchedPagesEnabled();
++#endif
    {
      auto global_lock = global_critical_region_.Acquire();
 +    // Now current, and watched again below.
 +    DropKeptPages(valid_page_first, valid_page_last);
++#if XE_PLATFORM_PS5
++    // GPU-written data and requests that do not allow unwatched units pin
++    // theirs (watched, as before).
++    if (written_by_gpu || !request_allows_unwatched_) {
++      PinWatched(valid_page_first, valid_page_last);
++    }
++#endif
  
      for (uint32_t i = valid_block_first; i <= valid_block_last; ++i) {
        uint64_t valid_bits = UINT64_MAX;
-@@ -442,6 +463,15 @@ bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
+@@ -376,6 +640,23 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length,
+       if (i == valid_block_last && (valid_page_last & 63) != 63) {
+         valid_bits &= (uint64_t(1) << ((valid_page_last & 63) + 1)) - 1;
+       }
++#if XE_PLATFORM_PS5
++      if (const uint64_t unwatched =
++              __atomic_load_n(&unwatched_bits_[i], __ATOMIC_RELAXED) &
++              valid_bits) {
++        if (leave_unwatched) {
++          valid_bits &= ~unwatched;
++          skipped_unwatched = true;
++        } else {
++          // Switched off: these units were just uploaded whole and become
++          // valid and watched like any other, so they stop being unwatched.
++          __atomic_fetch_and(&unwatched_bits_[i], ~unwatched,
++                             __ATOMIC_RELAXED);
++          __atomic_fetch_and(&unwatched_seen_bits_[i], ~unwatched,
++                             __ATOMIC_RELAXED);
++        }
++      }
++#endif
+       // SystemPageFlagsBlock& block = system_page_flags_[i];
+       system_page_flags_valid_[i] |= valid_bits;
+       if (written_by_gpu) {
+@@ -389,6 +670,30 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length,
+     }
+   }
+ 
++#if XE_PLATFORM_PS5
++  if (skipped_unwatched) {
++    // Watch only the runs of units that are not left unwatched.
++    if (memory_invalidation_callback_handle_) {
++      uint32_t run_start = UINT32_MAX;
++      for (uint32_t unit = valid_page_first; unit <= valid_page_last + 1;
++           ++unit) {
++        const bool watch =
++            unit <= valid_page_last && !UnitBit(unwatched_bits_, unit);
++        if (watch) {
++          if (run_start == UINT32_MAX) {
++            run_start = unit;
++          }
++        } else if (run_start != UINT32_MAX) {
++          memory().EnablePhysicalMemoryAccessCallbacks(
++              run_start << page_size_log2_,
++              (unit - run_start) << page_size_log2_, true, false);
++          run_start = UINT32_MAX;
++        }
++      }
++    }
++    return;
++  }
++#endif
+   if (memory_invalidation_callback_handle_) {
+     // A page that isn't writable here gets no watch. A later guest
+     // protect-to-writable invalidates it unconditionally, so its writes are
+@@ -424,7 +729,8 @@ void SharedMemory::UnlinkWatchRange(WatchRange* range) {
+ }
+ 
+ // todo: optimize, an enormous amount of cpu time (1.34%) is spent here.
+-bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
++bool SharedMemory::RequestRange(uint32_t start, uint32_t length,
++                                bool allow_unwatched) {
+   if (!length) {
+     // Some texture or buffer is empty, for example - safe to draw in this case.
+     return true;
+@@ -442,6 +748,15 @@ bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
    unsigned int current_upload_range = 0;
    uint32_t page_first = start >> page_size_log2_;
    uint32_t page_last = (start + length - 1) >> page_size_log2_;
@@ -3450,7 +3807,40 @@ index 6aaeb76bd..496b35c80 100644
  
    uint32_t block_first = page_first >> 6;
    uint32_t block_last = page_last >> 6;
-@@ -525,6 +555,25 @@ bool SharedMemory::IsRangeValid(uint32_t start, uint32_t length) const {
+@@ -494,7 +809,32 @@ bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
+     return true;
+   }
+ 
++#if XE_PLATFORM_PS5
++  // Unwatched units among those found invalid: only the changed ones go up
++  // (with zero-copy the GPU reads guest RAM, so there is nothing to compare),
++  // and they stay invalid and unprotected (MakeRangeValid).
++  bool has_unwatched = false;
++  request_allows_unwatched_ = allow_unwatched;
++  if (allow_unwatched && !IsZeroCopy() && UnwatchedPagesEnabled()) {
++    const unsigned int found = current_upload_range;
++    current_upload_range = FilterUnwatched(uploads, current_upload_range);
++    has_unwatched =
++        uploads == unwatched_filtered_.data() || found != current_upload_range;
++  }
++  const bool usable =
++      !current_upload_range || UploadRanges(uploads, current_upload_range);
++  request_allows_unwatched_ = false;
++  if (!usable && has_unwatched) {
++    // Nothing is known about what reached the GPU copy.
++    auto global_lock = global_critical_region_.Acquire();
++    for (uint32_t unit = page_first; unit <= page_last; ++unit) {
++      ClearUnitBit(unwatched_seen_bits_, unit);
++    }
++  }
++  return usable;
++#else
+   return UploadRanges(uploads, current_upload_range);
++#endif
+ }
+ 
+ bool SharedMemory::IsRangeValid(uint32_t start, uint32_t length) const {
+@@ -525,6 +865,25 @@ bool SharedMemory::IsRangeValid(uint32_t start, uint32_t length) const {
    return true;
  }
  
@@ -3476,10 +3866,20 @@ index 6aaeb76bd..496b35c80 100644
  template <typename T>
  XE_FORCEINLINE XE_NOALIAS static T mod_shift_left(T value, uint32_t by) {
  #if XE_ARCH_AMD64 == 1
-@@ -635,6 +684,24 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+@@ -634,8 +993,39 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+   uint32_t block_last = page_last >> 6;
  
    auto global_lock = global_critical_region_.Acquire();
- 
++#if XE_PLATFORM_PS5
++  if (UnwatchedPagesEnabled()) {
++    if (exact_range) {
++      ForgetUnwatched(page_first, page_last);
++    } else {
++      NoteCpuWrite(page_first, page_last);
++    }
++  }
++#endif
++
 +  // PS5X360E: the range is whole host pages. Guest pages in it holding GPU
 +  // output the write did not touch stay valid: on a 4 KiB host they would not
 +  // have been invalidated at all, and their guest RAM is older than the GPU
@@ -3497,12 +3897,41 @@ index 6aaeb76bd..496b35c80 100644
 +                      page_size_log2_;
 +  }
 +  const bool keep_untouched = write_page_first <= write_page_last;
-+
+ 
    if (!exact_range) {
++#if XE_PLATFORM_PS5
++    const uint32_t requested_page_first = page_first;
++    const uint32_t requested_page_last = page_last;
++#endif
      // Check if a somewhat wider range (up to 256 KB with 4 KB pages) can be
      // invalidated - if no GPU-written data nearby that was not intended to be
-@@ -660,7 +727,22 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+     // invalidated since it's not in sync with CPU memory and can't be
+@@ -658,9 +1048,46 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+       page_last = (page_last & ~uint32_t(63)) +
+                   (std::max(xe::tzcnt(gpu_written_end), uint8_t(1)) - 1);
      }
++#if XE_PLATFORM_PS5
++    // PS5X360E (alpha.57): speculative invalidation limited to a window
++    // around the write ("Memory update" setting, with "Optimized video memory":
++    // 16 KiB by default, 0 keeps
++    // the whole 256 KiB block). Each extra page invalidated is a page
++    // uploaded and protected again (about 40 us on the console); 16 KiB had
++    // the fewest protection changes in PS5X360's measurements. Every
++    // requested page stays included.
++    const uint32_t window_bytes =
++        xbox360ps5::gpu_diag::enabled.load(std::memory_order_relaxed)
++            ? xbox360ps5::gpu_diag::invalidation_window.load(
++                  std::memory_order_relaxed)
++            : 0;
++    if (window_bytes) {
++      const uint32_t window_pages =
++          std::max(1u, window_bytes >> page_size_log2_);
++      page_first =
++          std::max(page_first, requested_page_first & ~(window_pages - 1));
++      page_last =
++          std::min(page_last, requested_page_last | (window_pages - 1));
++    }
++#endif
    }
  
 +  // Pages range [first, last] within block i, as a mask.
@@ -3524,7 +3953,7 @@ index 6aaeb76bd..496b35c80 100644
    for (uint32_t i = block_first; i <= block_last; ++i) {
      uint64_t invalidate_bits = UINT64_MAX;
      if (i == block_first) {
-@@ -669,6 +751,29 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+@@ -669,6 +1096,29 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
      if (i == block_last && (page_last & 63) != 63) {
        invalidate_bits &= (uint64_t(1) << ((page_last & 63) + 1)) - 1;
      }
@@ -3554,7 +3983,7 @@ index 6aaeb76bd..496b35c80 100644
      system_page_flags_valid_[i] &= ~invalidate_bits;
      system_page_flags_valid_and_gpu_written_[i] &= ~invalidate_bits;
      // Track which chunks changed for partial copying.
-@@ -679,12 +784,103 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+@@ -679,12 +1129,103 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
    gpu_written_data_dirty_ = true;
    dirty_blocks_ |= dirty_blocks_mask;
  
@@ -3660,24 +4089,45 @@ index 6aaeb76bd..496b35c80 100644
    ReleaseTraceDownloadRanges();
    assert_true(trace_download_ranges_.empty());
 diff --git a/src/xenia/gpu/shared_memory.h b/src/xenia/gpu/shared_memory.h
-index 2fd3a0c49..bb01e860e 100644
+index 2fd3a0c49..e0074cb82 100644
 --- a/src/xenia/gpu/shared_memory.h
 +++ b/src/xenia/gpu/shared_memory.h
-@@ -10,6 +10,10 @@
+@@ -10,6 +10,13 @@
  #ifndef XENIA_GPU_SHARED_MEMORY_H_
  #define XENIA_GPU_SHARED_MEMORY_H_
  
++#include <algorithm>
 +#include <atomic>
 +#include <string>
 +#include <unordered_map>
++#include <utility>
++#include <vector>
 +
  #include "xenia/memory.h"
  
  namespace xe {
-@@ -74,10 +78,32 @@ class SharedMemory {
+@@ -73,11 +80,49 @@ class SharedMemory {
+   // Checks if the range has been updated, uploads new data if needed and
    // ensures the host GPU memory backing the range are resident. Returns true if
    // the range has been fully updated and is usable.
-   bool RequestRange(uint32_t start, uint32_t length);
+-  bool RequestRange(uint32_t start, uint32_t length);
++  // PS5X360E: allow_unwatched says that the caller uses the data for this
++  // draw only and keeps nothing that depends on a later invalidation (vertex
++  // data). Only such requests may be answered from pages left unwatched.
++  bool RequestRange(uint32_t start, uint32_t length,
++                    bool allow_unwatched = false);
++#if XE_PLATFORM_PS5
++  // PS5X360E: unwatched pages bookkeeping, once a guest frame (GPU thread);
++  // logs a summary every 900 frames.
++  void EndFrameUnwatchedPages();
++  // New ring data or the end of a wait: unwatched units are compared again.
++  void NewGuestBatch() {
++    if (!++unwatched_epoch_) {
++      std::fill(unit_checked_epoch_.begin(), unit_checked_epoch_.end(), 0u);
++      unwatched_epoch_ = 1;
++    }
++  }
++#endif
 +  // PS5X360E: checks guest pages kept valid when a CPU write elsewhere in
 +  // their host page dropped its watch (see MemoryInvalidationCallback):
 +  // invalidates those the CPU has written since, watches the rest again.
@@ -3707,7 +4157,7 @@ index 2fd3a0c49..bb01e860e 100644
  
    void TryFindUploadRange(const uint32_t& block_first,
                            const uint32_t& block_last,
-@@ -111,6 +137,9 @@ class SharedMemory {
+@@ -111,6 +156,9 @@ class SharedMemory {
    void RangeWrittenByGpu(uint32_t start, uint32_t length,
                           bool written_to_buffer = true);
  
@@ -3717,7 +4167,17 @@ index 2fd3a0c49..bb01e860e 100644
   protected:
    SharedMemory(Memory& memory);
    // Call in implementation-specific initialization.
-@@ -180,6 +209,15 @@ class SharedMemory {
+@@ -156,6 +204,9 @@ class SharedMemory {
+   virtual bool UploadRanges(
+       const std::pair<uint32_t, uint32_t>* upload_page_ranges,
+       uint32_t num_upload_ranges) = 0;
++  // PS5X360E: whether the GPU reads guest RAM itself (nothing is copied by
++  // UploadRanges).
++  virtual bool IsZeroCopy() const { return false; }
+ 
+   const std::vector<std::pair<uint32_t, uint32_t>>& trace_download_ranges() {
+     return trace_download_ranges_;
+@@ -180,6 +231,45 @@ class SharedMemory {
    // on it is not hard - the access callback takes a range as an argument, and
    // touched pages of the buffer of this size will be invalidated).
    uint32_t page_size_log2_;
@@ -3730,6 +4190,36 @@ index 2fd3a0c49..bb01e860e 100644
 +  uint64_t kept_pages_total_ = 0, kept_pages_written_ = 0;
 +  void VerifyKeptGpuWrittenPages(uint32_t page_first, uint32_t page_last);
 +  void DropKeptPages(uint32_t page_first, uint32_t page_last);
++
++#if XE_PLATFORM_PS5
++  // PS5X360E (alpha.57, from PS5X360's Canary build): "unwatched pages", see
++  // shared_memory.cc. Bitmaps have a bit per upload unit, like the validity
++  // ones; written with atomic operations (fault handlers under the global
++  // lock, the GPU thread).
++  bool UnwatchedPagesEnabled() const;
++  void NoteCpuWrite(uint32_t page_first, uint32_t page_last);
++  void ForgetUnwatched(uint32_t page_first, uint32_t page_last);
++  void PinWatched(uint32_t page_first, uint32_t page_last);
++  unsigned int FilterUnwatched(std::pair<uint32_t, uint32_t>*& uploads,
++                               unsigned int count);
++  void AgeUnwatchedPages();
++  std::vector<uint8_t> unit_heat_;        // Recent write faults per unit.
++  std::vector<uint64_t> unwatched_bits_;  // Left unwatched, compared by content.
++  std::vector<uint64_t> unwatched_seen_bits_;  // unit_hash_ is of the GPU copy.
++  std::vector<uint64_t> pinned_bits_;     // Something depends on its watch.
++  std::vector<uint64_t> unit_hash_;
++  // The guest batch (NewGuestBatch) in which a unit was last compared: within
++  // one, the draws' data was written before their commands, so a unit is
++  // compared once.
++  std::vector<uint32_t> unit_checked_epoch_;
++  uint32_t unwatched_epoch_ = 1;
++  std::vector<std::pair<uint32_t, uint32_t>> unwatched_filtered_;
++  bool request_allows_unwatched_ = false;  // GPU thread: the request served.
++  uint64_t unwatched_skips_ = 0, unwatched_uploads_ = 0,
++           unwatched_requests_ = 0;
++  uint32_t unwatched_frames_ = 0;
++  std::atomic<uint64_t> unwatched_heated_{0}, unwatched_cooled_{0};
++#endif
  
    bool EnsureHostGpuMemoryAllocated(uint32_t start, uint32_t length);
    uint32_t host_gpu_memory_sparse_granularity_log2_ = UINT32_MAX;
@@ -3753,7 +4243,7 @@ index f2ddc4f2f..4501a5a96 100644
                    spv::Id register_gradient_x =
                        builder_->createCompositeExtract(register_gradient_3d,
 diff --git a/src/xenia/gpu/texture_cache.cc b/src/xenia/gpu/texture_cache.cc
-index c6a2f0850..302ece527 100644
+index c6a2f0850..806785418 100644
 --- a/src/xenia/gpu/texture_cache.cc
 +++ b/src/xenia/gpu/texture_cache.cc
 @@ -9,6 +9,8 @@
@@ -3902,10 +4392,14 @@ index c6a2f0850..302ece527 100644
      // Implementation may load multiple blocks at once via accesses of up to 128
      // bits (R32G32B32A32_UINT), so aligning the size to this value to make sure
      // if the texture is small (especially if it's linear), the last blocks
-@@ -1062,6 +1173,17 @@ void TextureCache::LoadTexturesData(Texture** textures, uint32_t n_textures) {
+@@ -1062,6 +1173,21 @@ void TextureCache::LoadTexturesData(Texture** textures, uint32_t n_textures) {
  }
  bool TextureCache::LoadTextureData(Texture& texture) {
    SCOPE_profile_cpu_f("gpu");
++#if XE_PLATFORM_PS5
++  xbox360ps5::gpu_diag::HitchScope hitch_scope(
++      xbox360ps5::gpu_diag::hitch_texture);
++#endif
 +  // PS5X360E: textures read around NFS The Run's float target ring.
 +  if (frame_trace_frames_left.load(std::memory_order_relaxed)) {
 +    const TextureKey& key = texture.key();
@@ -3920,7 +4414,7 @@ index c6a2f0850..302ece527 100644
    // Lockless pre-check: if texture appears up-to-date, skip the lock.
    // This is safe because worst case is a false positive (we acquire lock
    // unnecessarily), never a false negative.
-@@ -1140,6 +1262,18 @@ bool TextureCache::LoadTextureData(Texture& texture) {
+@@ -1140,6 +1266,18 @@ bool TextureCache::LoadTextureData(Texture& texture) {
    }
  
    texture.LogAction("Loaded");
@@ -3974,7 +4468,7 @@ index e1feb3fd4..6956e7bfc 100644
    // render_pass_begin->pNext must be null.
    void CmdVkBeginRenderPass(
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index b61995956..1fbc32051 100644
+index b61995956..4a93ea214 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,16 +8,21 @@
@@ -4046,7 +4540,7 @@ index b61995956..1fbc32051 100644
  DECLARE_bool(submit_on_primary_buffer_end);
  
  DEFINE_bool(
-@@ -48,10 +93,51 @@ DEFINE_bool(
+@@ -48,10 +93,55 @@ DEFINE_bool(
      "1.3 or VK_KHR_dynamic_rendering extension support.",
      "Vulkan");
  
@@ -4064,6 +4558,10 @@ index b61995956..1fbc32051 100644
 +// would hide the real one from the rest of this file).
 +namespace xbox360ps5 {
 +void PlaceCallingThread(bool gpu);
++// platform/ps5/memory_ps5.cpp and exception_handler.cpp: page protection
++// changes and the time in them, and write faults.
++extern std::atomic<unsigned long long> protect_syscalls, protect_nanoseconds,
++    fault_count;
 +}
 +#endif
 +
@@ -4098,7 +4596,7 @@ index b61995956..1fbc32051 100644
  // Generated with `xb buildshaders`.
  namespace shaders {
  #include "xenia/gpu/shaders/bytecode/vulkan_spirv/apply_gamma_pwl_cs.h"
-@@ -190,6 +276,24 @@ void VulkanCommandProcessor::InitializeShaderStorage(
+@@ -190,6 +280,24 @@ void VulkanCommandProcessor::InitializeShaderStorage(
                                             std::move(completion_callback));
  }
  
@@ -4123,7 +4621,7 @@ index b61995956..1fbc32051 100644
  void VulkanCommandProcessor::RestoreEdramSnapshot(const void* snapshot) {
    // Starting a new frame because descriptors may be needed.
    if (!BeginSubmission(true)) {
-@@ -1421,10 +1525,15 @@ bool VulkanCommandProcessor::SetupContext() {
+@@ -1421,10 +1529,15 @@ bool VulkanCommandProcessor::SetupContext() {
    system_constants_.zpd_fsi_counter_index = UINT32_MAX;
    zpd_counter_index_force_update_ = true;
  
@@ -4139,7 +4637,7 @@ index b61995956..1fbc32051 100644
    AwaitAllQueueOperationsCompletion();
  
    ResetResolveReadWatch();
-@@ -1641,8 +1750,29 @@ void VulkanCommandProcessor::ShutdownContext() {
+@@ -1641,8 +1754,29 @@ void VulkanCommandProcessor::ShutdownContext() {
  }
  
  void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
@@ -4169,10 +4667,98 @@ index b61995956..1fbc32051 100644
    if (index >= XE_GPU_REG_SHADER_CONSTANT_000_X &&
        index <= XE_GPU_REG_SHADER_CONSTANT_511_W) {
      if (frame_open_) {
-@@ -1693,14 +1823,84 @@ void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+@@ -1693,14 +1827,172 @@ void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
          ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferSystem);
    }
  }
++void VulkanCommandProcessor::OnGuestBatch() {
++#if XE_PLATFORM_PS5
++  if (shared_memory_) {
++    shared_memory_->NewGuestBatch();
++  }
++#endif
++}
++
++#if XE_PLATFORM_PS5
++// PS5X360E (alpha.57): a frame of the GPU command thread (swap to swap) over
++// 50 ms is reported with what the thread did in it, to tell loading stalls
++// (shader translation, pipelines, texture loads, uploads) from waits on the
++// GPU or the game. At most one a second.
++void VulkanCommandProcessor::ReportFrameHitch() {
++  namespace diag = xbox360ps5::gpu_diag;
++  struct Values {
++    uint64_t wall = 0, cpu = 0, draws = 0, translate_ns = 0, translates = 0,
++             pipeline_ns = 0, pipelines = 0, texture_ns = 0, textures = 0,
++             upload = 0, protects = 0, protect_ns = 0, faults = 0,
++             stand_ins = 0, pipeline_waits = 0;
++    uint64_t wait_ns[uint32_t(WaitReason::kCount)] = {};
++  };
++  Values now;
++  now.wall = PerfNowNs();
++  now.cpu = perf_thread_cpu_ns_.load(std::memory_order_relaxed);
++  now.draws = perf_draws_.load(std::memory_order_relaxed);
++  now.translate_ns = diag::hitch_translate.ns.load(std::memory_order_relaxed);
++  now.translates = diag::hitch_translate.count.load(std::memory_order_relaxed);
++  now.pipeline_ns = diag::hitch_pipeline.ns.load(std::memory_order_relaxed);
++  now.pipelines = diag::hitch_pipeline.count.load(std::memory_order_relaxed);
++  now.texture_ns = diag::hitch_texture.ns.load(std::memory_order_relaxed);
++  now.textures = diag::hitch_texture.count.load(std::memory_order_relaxed);
++  now.upload = diag::hitch_upload_bytes.load(std::memory_order_relaxed);
++  now.protects = xbox360ps5::protect_syscalls.load(std::memory_order_relaxed);
++  now.protect_ns =
++      xbox360ps5::protect_nanoseconds.load(std::memory_order_relaxed);
++  now.faults = xbox360ps5::fault_count.load(std::memory_order_relaxed);
++  now.stand_ins = diag::stand_in_draws.load(std::memory_order_relaxed);
++  now.pipeline_waits = diag::pipeline_waits.load(std::memory_order_relaxed);
++  for (uint32_t i = 0; i < uint32_t(WaitReason::kCount); ++i) {
++    now.wait_ns[i] = perf_wait_ns_[i].load(std::memory_order_relaxed);
++  }
++  static Values last;
++  static uint64_t last_report_ns = 0;
++  static uint32_t reports = 0;
++  const Values before = last;
++  last = now;
++  if (!before.wall) {
++    return;
++  }
++  const uint64_t frame_ns = now.wall - before.wall;
++  if (frame_ns < 50000000ull || frame_ns > 5000000000ull ||
++      now.wall - last_report_ns < 1000000000ull || reports >= 300) {
++    return;
++  }
++  last_report_ns = now.wall;
++  ++reports;
++  auto ms = [](uint64_t ns) { return double(ns) / 1e6; };
++  XELOGW(
++      "Hitch: GPU thread frame {:.0f} ms, its CPU {:.0f} ms, {} draws | "
++      "shader translation {:.1f} ms ({}), pipelines on this thread {:.1f} ms "
++      "({}), texture loads {:.1f} ms ({}), uploads {} KiB | waits: queries "
++      "{:.1f}, fault copies {:.1f}, export {:.1f}, frame {:.1f}, other {:.1f} "
++      "ms | page protections {} ({:.1f} ms, all threads), write faults {} | "
++      "stand-in draws {}, pipeline waits {}",
++      ms(frame_ns), ms(now.cpu - before.cpu), now.draws - before.draws,
++      ms(now.translate_ns - before.translate_ns),
++      now.translates - before.translates,
++      ms(now.pipeline_ns - before.pipeline_ns),
++      now.pipelines - before.pipelines,
++      ms(now.texture_ns - before.texture_ns), now.textures - before.textures,
++      (now.upload - before.upload) >> 10,
++      ms(now.wait_ns[uint32_t(WaitReason::kQuery)] -
++         before.wait_ns[uint32_t(WaitReason::kQuery)]),
++      ms(now.wait_ns[uint32_t(WaitReason::kFaultCopy)] -
++         before.wait_ns[uint32_t(WaitReason::kFaultCopy)]),
++      ms(now.wait_ns[uint32_t(WaitReason::kMemexport)] -
++         before.wait_ns[uint32_t(WaitReason::kMemexport)]),
++      ms(now.wait_ns[uint32_t(WaitReason::kFrame)] -
++         before.wait_ns[uint32_t(WaitReason::kFrame)]),
++      ms(now.wait_ns[uint32_t(WaitReason::kOther)] -
++         before.wait_ns[uint32_t(WaitReason::kOther)]),
++      now.protects - before.protects, ms(now.protect_ns - before.protect_ns),
++      now.faults - before.faults, now.stand_ins - before.stand_ins,
++      now.pipeline_waits - before.pipeline_waits);
++}
++#endif
++
 +void VulkanCommandProcessor::WriteFloatConstants(uint32_t start_index,
 +                                                 const uint32_t* source,
 +                                                 uint32_t count) {
@@ -4254,7 +4840,7 @@ index b61995956..1fbc32051 100644
  void VulkanCommandProcessor::SparseBindBuffer(
      VkBuffer buffer, uint32_t bind_count, const VkSparseMemoryBind* binds,
      VkPipelineStageFlags wait_stage_mask) {
-@@ -1904,6 +2104,9 @@ bool VulkanCommandProcessor::FaultCopyResolveToGuestRam(
+@@ -1904,6 +2196,9 @@ bool VulkanCommandProcessor::FaultCopyResolveToGuestRam(
    VkSubmitInfo submit_info = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
    submit_info.commandBufferCount = 1;
    submit_info.pCommandBuffers = &resolve_fault_command_buffer_;
@@ -4264,7 +4850,7 @@ index b61995956..1fbc32051 100644
    VkResult submit_result;
    {
      ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
-@@ -1915,8 +2118,14 @@ bool VulkanCommandProcessor::FaultCopyResolveToGuestRam(
+@@ -1915,8 +2210,14 @@ bool VulkanCommandProcessor::FaultCopyResolveToGuestRam(
    if (submit_result != VK_SUCCESS) {
      return false;
    }
@@ -4279,7 +4865,7 @@ index b61995956..1fbc32051 100644
    dfn.vkResetFences(device, 1, &resolve_fault_fence_);
    if (wait_result != VK_SUCCESS) {
      return false;
-@@ -1968,10 +2177,25 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -1968,10 +2269,29 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                                         uint32_t frontbuffer_height) {
    SCOPE_profile_cpu_f("gpu");
    EndZPDFrame();
@@ -4290,6 +4876,10 @@ index b61995956..1fbc32051 100644
    NoteResolveFrame();
 +  // PS5X360E: GPU output kept through neighbouring CPU writes this frame.
 +  shared_memory_->VerifyKeptGpuWrittenPages();
++#if XE_PLATFORM_PS5
++  shared_memory_->EndFrameUnwatchedPages();
++  ReportFrameHitch();
++#endif
 +  {
 +    const uint32_t left =
 +        frame_trace_frames_left.load(std::memory_order_relaxed);
@@ -4305,7 +4895,7 @@ index b61995956..1fbc32051 100644
  
    CollectCompletedGpuTimeQueries();
    static constexpr uint32_t kRenderPassWindowFrames = 60;
-@@ -2018,7 +2242,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2018,7 +2338,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
  
    auto aspect = graphics_system_->GetScaledAspectRatio();
  
@@ -4314,7 +4904,7 @@ index b61995956..1fbc32051 100644
        frontbuffer_width_scaled, frontbuffer_height_scaled, aspect.first,
        aspect.second,
        [this, frontbuffer_width_scaled, frontbuffer_height_scaled,
-@@ -2199,7 +2423,14 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2199,7 +2519,14 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
          uint32_t& gamma_ramp_frame_index_ref =
              use_pwl_gamma_ramp ? gamma_ramp_pwl_current_frame_
                                 : gamma_ramp_256_entry_table_current_frame_;
@@ -4330,7 +4920,7 @@ index b61995956..1fbc32051 100644
            constexpr uint32_t kGammaRampSize256EntryTable =
                sizeof(uint32_t) * 256;
            constexpr uint32_t kGammaRampSizePWL = sizeof(uint16_t) * 2 * 3 * 128;
-@@ -2570,12 +2801,18 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2570,12 +2897,18 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
          // Need to submit all the commands before giving the image back to the
          // presenter so it can submit its own commands for displaying it to the
          // queue, and also need to submit the release barrier.
@@ -4349,7 +4939,7 @@ index b61995956..1fbc32051 100644
    EndSubmission(true);
  }
  
-@@ -2586,6 +2823,7 @@ void VulkanCommandProcessor::OnPrimaryBufferEnd() {
+@@ -2586,6 +2919,7 @@ void VulkanCommandProcessor::OnPrimaryBufferEnd() {
  
    if (cvars::submit_on_primary_buffer_end && submission_open_ &&
        !scratch_buffer_used_) {
@@ -4357,7 +4947,7 @@ index b61995956..1fbc32051 100644
      EndSubmission(false);
    }
  }
-@@ -3398,6 +3636,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3398,6 +3732,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -4369,7 +4959,7 @@ index b61995956..1fbc32051 100644
  
    const RegisterFile& regs = *register_file_;
  
-@@ -3728,6 +3971,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3728,6 +4067,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
      CheckSubmissionCompletionAndDeviceLoss(sampler_overflow_await_submission);
    }
  
@@ -4377,7 +4967,7 @@ index b61995956..1fbc32051 100644
    // Put the window offset into the EDRAM bases when possible.
    int32_t window_offset_tiles = render_target_cache_->GetWindowOffsetTiles(
        regs, normalized_depth_control, normalized_color_mask, frame_current_);
-@@ -3738,6 +3982,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3738,6 +4078,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
            normalized_color_mask, *vertex_shader, window_offset_tiles)) {
      return false;
    }
@@ -4385,7 +4975,7 @@ index b61995956..1fbc32051 100644
    const char* stand_in_wait_reason =
        render_target_cache_->GetPipelineStandInWaitReason(
            frame_current_, *vertex_shader, pixel_shader, memexport_used_vertex,
-@@ -3783,6 +4028,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3783,6 +4124,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
      OnVIZSurveyDraw(false);
      return true;
    }
@@ -4393,7 +4983,7 @@ index b61995956..1fbc32051 100644
    VkPipeline current_pipeline =
        pipeline->pipeline.load(std::memory_order_acquire);
    // Whether the placeholder pipeline is bound rather than the real one. Derived
-@@ -3839,7 +4085,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3839,7 +4181,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
        (pixel_shader != nullptr && pixel_shader->bindings_ready()
             ? pixel_shader->GetUsedTextureMaskAfterTranslation()
             : 0);
@@ -4408,7 +4998,7 @@ index b61995956..1fbc32051 100644
  
    // Update the graphics pipeline, and if the new graphics pipeline has a
    // different layout, invalidate incompatible descriptor sets before updating
-@@ -3975,6 +4228,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3975,6 +4324,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
        normalized_color_mask,
        apply_host_depth_polygon_offset ? &host_depth_polygon_offset : nullptr,
        window_offset_tiles);
@@ -4416,7 +5006,7 @@ index b61995956..1fbc32051 100644
  
    {
      uint32_t ucode_base_dwords = 0, cf_instr_count = 0;
-@@ -4042,6 +4296,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4042,6 +4392,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
                        placeholder_pixel_shader)) {
      return false;
    }
@@ -4424,7 +5014,39 @@ index b61995956..1fbc32051 100644
  
    // Ensure vertex buffers are resident.
    //
-@@ -4129,6 +4384,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4112,16 +4463,30 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+     }
+ 
+     if (vfetch_current_queued) {
++#if XE_PLATFORM_PS5
++      // PS5X360E (alpha.57): RequestRange answers a range whose pages are
++      // all valid without the lock and takes it itself otherwise; holding it
++      // for every draw made the GPU thread and the guest threads' write
++      // faults (each holding it through a 40 us protection change) wait on
++      // each other. Taken here only for the host-routed copies below.
++      auto shared_memory_request_range_hoisted =
++          global_critical_region::AcquireDeferred();
++      if (route_to_host) {
++        shared_memory_request_range_hoisted.lock();
++      }
++#else
+       // Pre-acquire the critical region so we're not repeatedly re-acquiring
+       // it in RequestRange - SharedMemory tracks dirty pages and only uploads
+       // what actually changed, making redundant calls cheap under a hoisted
+       // lock.
+       auto shared_memory_request_range_hoisted =
+           global_critical_region::Acquire();
++#endif
+ 
+       for (uint32_t i = 0; i < vfetch_current_queued; ++i) {
++        // PS5X360E: vertex data is used for this draw only.
+         if (!shared_memory_->RequestRange(vfetch_addresses[i] << 2,
+-                                          vfetch_sizes[i] << 2)) {
++                                          vfetch_sizes[i] << 2, true)) {
+           XELOGE(
+               "Failed to request vertex buffer at 0x{:08X} (size {}) in the "
+               "shared memory",
+@@ -4129,6 +4494,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
            return false;
          }
        }
@@ -4437,7 +5059,7 @@ index b61995956..1fbc32051 100644
      }
    }
  
-@@ -4173,6 +4434,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4173,6 +4544,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
    // After all commands that may dispatch, copy or insert barriers, submit the
    // barriers (may end the render pass), and (re)enter the render pass before
    // drawing.
@@ -4445,7 +5067,7 @@ index b61995956..1fbc32051 100644
    uint32_t zpd_hybrid_index_before_render_pass =
        active_segment_.hybrid ? active_query_index_ : UINT32_MAX;
    SubmitBarriersAndEnterRenderTargetCacheRenderPass(
-@@ -4265,6 +4527,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4265,6 +4637,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
    }
  
    if (!memexport_ranges_.empty()) {
@@ -4456,7 +5078,7 @@ index b61995956..1fbc32051 100644
      if (route_to_host) {
        // Producer draw: output landed in host_buffer_ (guest RAM), already CPU
        // coherent, so no readback. Just record the written pages. Consumers then
-@@ -4285,9 +4551,39 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4285,9 +4661,39 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
      }
    }
  
@@ -4496,7 +5118,7 @@ index b61995956..1fbc32051 100644
  // Records copies of this draw's export output into staging buffers. The copy
  // out waits, so it is deferred to FlushMemexportStagingReadback, where one wait
  // covers every producer since the last one.
-@@ -4372,6 +4668,169 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
+@@ -4372,6 +4778,169 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
    memexport_staged_.clear();
  }
  
@@ -4666,7 +5288,7 @@ index b61995956..1fbc32051 100644
  bool VulkanCommandProcessor::EnsureMemexportRangeInDeviceBuffer(
      uint32_t base_bytes, uint32_t size_bytes, bool whole_range) {
    // Readers of the device buffer need memexport output copied across from
-@@ -4768,6 +5227,35 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4768,6 +5337,35 @@ bool VulkanCommandProcessor::IssueCopy() {
      return false;
    }
    ++submission_in_progress_.resolve_count;
@@ -4702,7 +5324,7 @@ index b61995956..1fbc32051 100644
  
    // The resolve wrote the device buffer. Drop any stale memexport marks so the
    // output isn't overwritten with guest RAM by a later texture load.
-@@ -4785,9 +5273,17 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4785,9 +5383,17 @@ bool VulkanCommandProcessor::IssueCopy() {
          is_scaled = false;
          written_length = mirrored_length;
        }
@@ -4720,7 +5342,7 @@ index b61995956..1fbc32051 100644
  
    // Pop debug marker for resolve operation.
    if (debug_markers_enabled_) {
-@@ -4796,9 +5292,212 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4796,9 +5402,212 @@ bool VulkanCommandProcessor::IssueCopy() {
  
    SubmitRequestedResolve();
  
@@ -4933,7 +5555,7 @@ index b61995956..1fbc32051 100644
  void VulkanCommandProcessor::EnsureQueryResources() {
    // VIZ surveys need the pool even when ZPD reports are faked.
    if ((zpd_mode_ == ZPDMode::kFake && !cvars::occlusion_query_viz) ||
-@@ -4922,7 +5621,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4922,7 +5731,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
        is_pool_exhausted = !host_query_pool_->has_free_indices();
      }
  
@@ -4942,7 +5564,7 @@ index b61995956..1fbc32051 100644
        return QueryOpenResult::kPoolExhausted;
      }
  
-@@ -4947,6 +5646,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4947,6 +5756,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
          saved_framebuffer = current_framebuffer_;
          EndRenderPass();
        }
@@ -4950,7 +5572,7 @@ index b61995956..1fbc32051 100644
        if (!EndSubmission(false)) {
          return QueryOpenResult::kFailed;
        }
-@@ -4973,7 +5673,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4973,7 +5783,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
          XELOGI("ZPD: Stall awaiting submission={} completed_before={}",
                 wait_for, completed_submission);
        }
@@ -4959,7 +5581,7 @@ index b61995956..1fbc32051 100644
        PumpQueryResolves();
      }
  
-@@ -5147,6 +5847,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+@@ -5147,6 +5957,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
  bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                 uint64_t wait_for_submission) {
    assert_not_zero(wait_for_submission);
@@ -4972,7 +5594,7 @@ index b61995956..1fbc32051 100644
  
    // The resolve is still in the open submission.
    if (wait_for_submission >= GetCurrentSubmission()) {
-@@ -5154,13 +5860,15 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5154,13 +5970,15 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
        return false;
      }
      EndRenderPass();
@@ -4989,7 +5611,7 @@ index b61995956..1fbc32051 100644
    }
  
    PumpQueryResolves();
-@@ -5169,6 +5877,20 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5169,6 +5987,20 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
    return !report || !report->pending_segments;
  }
  
@@ -5010,7 +5632,7 @@ index b61995956..1fbc32051 100644
  bool VulkanCommandProcessor::EnsureVIZPredicateBuffer() {
    if (viz_predicate_buffer_ != VK_NULL_HANDLE) {
      return true;
-@@ -5306,7 +6028,7 @@ void VulkanCommandProcessor::AwaitVIZQueryResolve(
+@@ -5306,7 +6138,7 @@ void VulkanCommandProcessor::AwaitVIZQueryResolve(
    }
  
    if (wait_for_submission > GetCompletedSubmission()) {
@@ -5019,7 +5641,7 @@ index b61995956..1fbc32051 100644
    }
  
    PumpQueryResolves();
-@@ -5378,7 +6100,7 @@ void VulkanCommandProcessor::LogRecentSubmissions(const char* context) {
+@@ -5378,7 +6210,7 @@ void VulkanCommandProcessor::LogRecentSubmissions(const char* context) {
  }
  
  void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
@@ -5028,7 +5650,7 @@ index b61995956..1fbc32051 100644
    // Only report once, no need to retry a wait that won't succeed anyway.
    if (device_lost_) {
      return;
-@@ -5386,6 +6108,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
+@@ -5386,6 +6218,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
  
    if (await_submission >= GetCurrentSubmission()) {
      if (submission_open_) {
@@ -5036,7 +5658,7 @@ index b61995956..1fbc32051 100644
        EndSubmission(false);
      }
      // A submission won't be ended if it hasn't been started, or if ending
-@@ -5393,7 +6116,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
+@@ -5393,7 +6226,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
      await_submission = GetCurrentSubmission() - 1;
    }
  
@@ -5045,7 +5667,7 @@ index b61995956..1fbc32051 100644
  
    const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
  
-@@ -5517,7 +6240,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5517,7 +6350,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
        is_opening_frame
            ? closed_frame_submissions_[frame_current_ % kMaxFramesInFlight]
            : 0;
@@ -5054,7 +5676,7 @@ index b61995956..1fbc32051 100644
    const uint64_t completed_submission = GetCompletedSubmission();
    if (device_lost_ || completed_submission < await_submission) {
      return false;
-@@ -5665,6 +6388,135 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5665,6 +6498,135 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
    return true;
  }
  
@@ -5190,7 +5812,7 @@ index b61995956..1fbc32051 100644
  void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    if (!vulkan_device->properties().timestampPeriod) {
-@@ -5711,13 +6563,211 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
+@@ -5711,13 +6673,211 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
                                    sizeof(uint64_t),
                                    VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
          timestamps[1] > timestamps[0]) {
@@ -5403,7 +6025,7 @@ index b61995956..1fbc32051 100644
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5757,13 +6807,17 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5757,13 +6917,17 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        command_buffer_allocate_info.pNext = nullptr;
        command_buffer_allocate_info.commandPool = command_buffer.pool;
        command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -5423,7 +6045,7 @@ index b61995956..1fbc32051 100644
        command_buffers_writable_.push_back(command_buffer);
      }
    }
-@@ -5822,6 +6876,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5822,6 +6986,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        bind_sparse_info.signalSemaphoreCount = 1;
        bind_sparse_info.pSignalSemaphores = &bind_sparse_semaphore;
        VkResult bind_sparse_result;
@@ -5432,7 +6054,7 @@ index b61995956..1fbc32051 100644
        {
          ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
              vulkan_device->AcquireQueue(
-@@ -5860,11 +6916,6 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5860,11 +7026,6 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
      command_buffer_begin_info.flags =
          VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
      command_buffer_begin_info.pInheritanceInfo = nullptr;
@@ -5444,7 +6066,7 @@ index b61995956..1fbc32051 100644
      // Bracket the whole submission. Recycle finished slots first, or a frame
      // with more submissions than slots leaves the later ones untimed.
      CollectCompletedGpuTimeQueries();
-@@ -5874,68 +6925,67 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5874,68 +7035,67 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
          gpu_time_pool_available && !gpu_time_query_submissions_[gpu_time_slot];
      if (gpu_time_pool_available && !gpu_time_recorded) {
        ++gpu_time_untimed_submissions_;
@@ -5556,7 +6178,7 @@ index b61995956..1fbc32051 100644
        LogRecentSubmissions("submit-failure");
        if (vulkan_device->IsLost() && !device_lost_) {
          device_lost_ = true;
-@@ -5943,6 +6993,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5943,6 +7103,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        }
        return false;
      }
@@ -5565,7 +6187,7 @@ index b61995956..1fbc32051 100644
      current_submission_wait_stage_masks_.clear();
      for (VkSemaphore semaphore : current_submission_wait_semaphores_) {
        submissions_in_flight_semaphores_.emplace_back(submission_index,
-@@ -5966,6 +7018,13 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5966,6 +7128,13 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
  
      submission_open_ = false;
  
@@ -5579,7 +6201,7 @@ index b61995956..1fbc32051 100644
      // Process any query resolves that completed with this submission.
      PumpQueryResolves();
      PumpPendingRetire();
-@@ -6882,20 +7941,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6882,20 +8051,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
          std::memcpy(mapping, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X],
                      sizeof(float) * 4 * 256);
        } else {
@@ -5603,7 +6225,7 @@ index b61995956..1fbc32051 100644
        }
      }
      // Pixel shader float constants.
-@@ -6909,20 +7957,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6909,20 +8067,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
        if (!mapping) {
          return false;
        }
@@ -5628,7 +6250,7 @@ index b61995956..1fbc32051 100644
      // Bool and loop constants.
      if (!(current_constant_buffers_up_to_date_ &
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.h b/src/xenia/gpu/vulkan/vulkan_command_processor.h
-index 34c45db8a..93a29bbeb 100644
+index 34c45db8a..9e14e5236 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.h
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.h
 @@ -14,13 +14,16 @@
@@ -5674,7 +6296,7 @@ index 34c45db8a..93a29bbeb 100644
    // If not started yet, begins a render pass from the render target cache.
    // Submission must be open.
    void SubmitBarriersAndEnterRenderTargetCacheRenderPass(
-@@ -315,14 +330,27 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -315,14 +330,31 @@ class VulkanCommandProcessor final : public CommandProcessor {
    XE_FORCEINLINE
    virtual void WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
                                       uint32_t num_registers) override;
@@ -5686,6 +6308,10 @@ index 34c45db8a..93a29bbeb 100644
 +  // constant buffers a changed constant feeds out of date.
 +  void WriteFloatConstants(uint32_t start_index, const uint32_t* source,
 +                           uint32_t count);
++#if XE_PLATFORM_PS5
++  void ReportFrameHitch();
++#endif
++  void OnGuestBatch() override;
  
    void OnGammaRamp256EntryTableValueWritten() override;
    void OnGammaRampPWLValueWritten() override;
@@ -5703,7 +6329,7 @@ index 34c45db8a..93a29bbeb 100644
    uint64_t GetResolveSubmittedThrough() const {
      return resolve_submitted_through_.load(std::memory_order_acquire);
    }
-@@ -366,7 +394,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -366,7 +398,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
    void StageMemexportReadback();
    void FlushMemexportStagingReadback();
    void AwaitMemexportSubmission(uint64_t submission) {
@@ -5712,7 +6338,7 @@ index 34c45db8a..93a29bbeb 100644
    }
    // Export ranges staged but not yet copied out, in record order - a later
    // copy of an overlapping range has to win.
-@@ -380,6 +408,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -380,6 +412,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
    std::vector<MemexportStagedRange> memexport_staged_;
    // For EnsureMemexportRangeInDeviceBuffer.
    std::vector<VkBufferCopy> memexport_copy_regions_;
@@ -5726,7 +6352,7 @@ index 34c45db8a..93a29bbeb 100644
  
    void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                   uint32_t frontbuffer_height) override;
-@@ -395,6 +430,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -395,6 +434,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
                   bool major_mode_explicit) override;
    bool IssueCopy() override;
  
@@ -5734,7 +6360,7 @@ index 34c45db8a..93a29bbeb 100644
    void InitializeTrace() override;
    bool DumpEdramSnapshotToFile(const std::filesystem::path& path) override;
  
-@@ -402,6 +438,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -402,6 +442,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
    struct CommandBuffer {
      VkCommandPool pool;
      VkCommandBuffer buffer;
@@ -5745,7 +6371,7 @@ index 34c45db8a..93a29bbeb 100644
    };
  
    struct SparseBufferBind {
-@@ -521,7 +561,17 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -521,7 +565,17 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // Rechecks submission number and reclaims per-submission resources. Pass 0 as
    // the submission to await to simply check status, or pass
    // GetCurrentSubmission() to wait for all queue operations to be completed.
@@ -5764,7 +6390,7 @@ index 34c45db8a..93a29bbeb 100644
    // If is_guest_command is true, a new full frame - with full cleanup of
    // resources and, if needed, starting capturing - is opened if pending (as
    // opposed to simply resuming after mid-frame synchronization). Returns
-@@ -573,6 +623,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -573,6 +627,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
    void PumpQueryResolves() override;
    bool AwaitQueryResolve(ReportHandle report_handle,
                           uint64_t wait_for_submission) override;
@@ -5773,7 +6399,7 @@ index 34c45db8a..93a29bbeb 100644
  
    bool EnsureVIZPredicateBuffer();
    // Drains the queued predicate copies.
-@@ -701,7 +753,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -701,7 +757,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
  
    // A timestamp pair per in-flight submission, so the summed GPU busy time is
    // comparable against the Metal backend's completion-handler figure.
@@ -5782,7 +6408,7 @@ index 34c45db8a..93a29bbeb 100644
    VkQueryPool gpu_time_query_pool_ = VK_NULL_HANDLE;
    uint64_t gpu_time_query_submissions_[kGpuTimeQuerySubmissions] = {};
    uint32_t gpu_time_query_slot_ = 0;
-@@ -713,6 +765,55 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -713,6 +769,55 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // which sums per-submission intervals and misleads without it.
    uint64_t gpu_time_submissions_window_start_ = 0;
    uint64_t gpu_time_window_start_ns_ = 0;
@@ -5838,7 +6464,7 @@ index 34c45db8a..93a29bbeb 100644
    void CreateGpuTimeQueryPool();
    void DestroyGpuTimeQueryPool();
    void CollectCompletedGpuTimeQueries();
-@@ -734,6 +835,47 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -734,6 +839,47 @@ class VulkanCommandProcessor final : public CommandProcessor {
    std::deque<std::pair<uint64_t, CommandBuffer>> command_buffers_submitted_;
    DeferredCommandBuffer deferred_command_buffer_;
  
@@ -5886,7 +6512,7 @@ index 34c45db8a..93a29bbeb 100644
    std::vector<VkSparseMemoryBind> sparse_memory_binds_;
    std::vector<SparseBufferBind> sparse_buffer_binds_;
    // SparseBufferBind converted to VkSparseBufferMemoryBindInfo to this buffer
-@@ -1092,6 +1234,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -1092,6 +1238,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // .inc for ScaledResolveReadbackInfo.
    bool DownscaleScaledResolve(uint32_t written_address,
                                const ScaledResolveReadbackInfo& scaled_info);
@@ -5900,7 +6526,7 @@ index 34c45db8a..93a29bbeb 100644
                                           uint32_t written_length,
                                           reg::RB_COPY_DEST_INFO copy_dest_info,
 diff --git a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc b/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
-index 266495e99..a1b22784f 100644
+index 266495e99..b9fac50ff 100644
 --- a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_pipeline_cache.cc
 @@ -8,7 +8,9 @@
@@ -5913,7 +6539,18 @@ index 266495e99..a1b22784f 100644
  #include <chrono>
  #include <cstdint>
  #include <cstring>
-@@ -492,6 +494,7 @@ void VulkanPipelineCache::Shutdown() {
+@@ -35,6 +37,10 @@
+ #include "xenia/gpu/vulkan/vulkan_shared_memory.h"
+ #include "xenia/gpu/xenos.h"
+ #include "xenia/ui/vulkan/vulkan_util.h"
++#include <optional>
++#if XE_PLATFORM_PS5
++#include "xbox360ps5/gpu_diagnostics.hpp"
++#endif
+ 
+ // Shader bytecode.
+ namespace shaders {
+@@ -492,6 +498,7 @@ void VulkanPipelineCache::Shutdown() {
      delete it.second;
    }
    shaders_.clear();
@@ -5921,7 +6558,7 @@ index 266495e99..a1b22784f 100644
    texture_binding_layout_map_.clear();
    texture_binding_layouts_.clear();
  
-@@ -511,9 +514,16 @@ VulkanShader* VulkanPipelineCache::LoadShader(xenos::ShaderType shader_type,
+@@ -511,9 +518,16 @@ VulkanShader* VulkanPipelineCache::LoadShader(xenos::ShaderType shader_type,
                                                const uint32_t* host_address,
                                                uint32_t dword_count,
                                                uint64_t data_hash) {
@@ -5938,7 +6575,35 @@ index 266495e99..a1b22784f 100644
      return it->second;
    }
    // Always create the shader and stash it away.
-@@ -2338,8 +2348,11 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
+@@ -564,6 +578,14 @@ bool VulkanPipelineCache::EnsureShadersTranslated(
+   // not calling this on the draw thread - the creation thread does it here.
+   SpirvShaderTranslator& used_translator =
+       translator ? *translator : guest_shader_cache_.translator();
++#if XE_PLATFORM_PS5
++  // PS5X360E: translation on the GPU thread, for the hitch report.
++  std::optional<xbox360ps5::gpu_diag::HitchScope> hitch_scope;
++  if (!vertex_shader->is_translated() ||
++      (pixel_shader && !pixel_shader->is_translated())) {
++    hitch_scope.emplace(xbox360ps5::gpu_diag::hitch_translate);
++  }
++#endif
+   if (!vertex_shader->is_translated()) {
+     vertex_shader->shader().AnalyzeUcode(ucode_disasm_buffer_);
+     if (!TranslateAnalyzedShader(used_translator, *vertex_shader,
+@@ -1694,6 +1716,12 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
+     VkShaderModule fragment_shader_override,
+     VkShaderModule vertex_shader_override,
+     VkPipeline* out_unpublished_pipeline) {
++#if XE_PLATFORM_PS5
++  // PS5X360E: counted when on the GPU thread (placeholders, synchronous
++  // creation), for the hitch report.
++  xbox360ps5::gpu_diag::HitchScope hitch_scope(
++      xbox360ps5::gpu_diag::hitch_pipeline);
++#endif
+   if (out_unpublished_pipeline) {
+     // Defined on every path below, including the early returns.
+     *out_unpublished_pipeline = VK_NULL_HANDLE;
+@@ -2338,8 +2366,11 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
      pso_create_start = std::chrono::steady_clock::now();
    }
    VkPipeline pipeline;
@@ -5951,7 +6616,7 @@ index 266495e99..a1b22784f 100644
    if (result == VK_SUCCESS && profile) {
      // Driver SPIR-V->ISA compile + link time.
      XELOGI(
-@@ -2554,17 +2567,62 @@ void VulkanPipelineCache::InitializeShaderStorage(
+@@ -2554,17 +2585,62 @@ void VulkanPipelineCache::InitializeShaderStorage(
            xe::filesystem::OpenFile(vk_pipeline_cache_path_, "rb")) {
      xe::filesystem::Seek(cache_file, 0, SEEK_END);
      int64_t cache_size = xe::filesystem::Tell(cache_file);
@@ -6014,7 +6679,7 @@ index 266495e99..a1b22784f 100644
    // Recreate the VkPipelineCache with the loaded data.
    if (vk_pipeline_cache_ != VK_NULL_HANDLE) {
      dfn.vkDestroyPipelineCache(device, vk_pipeline_cache_, nullptr);
-@@ -2588,6 +2646,11 @@ void VulkanPipelineCache::InitializeShaderStorage(
+@@ -2588,6 +2664,11 @@ void VulkanPipelineCache::InitializeShaderStorage(
                                &vk_pipeline_cache_);
    }
  
@@ -6026,7 +6691,7 @@ index 266495e99..a1b22784f 100644
    if (ReplayStoredPipelines(
            pipeline_stored_descriptions,
            [this](const PipelineStoredDescription& pipeline_stored_description,
-@@ -2736,31 +2799,167 @@ const char* VulkanPipelineCache::QueueStoredPipeline(
+@@ -2736,31 +2817,167 @@ const char* VulkanPipelineCache::QueueStoredPipeline(
    return nullptr;
  }
  
@@ -6310,7 +6975,7 @@ index bf2533069..b2ddc8261 100644
      Shutdown();
      return false;
 diff --git a/src/xenia/gpu/vulkan/vulkan_shared_memory.cc b/src/xenia/gpu/vulkan/vulkan_shared_memory.cc
-index e8068404e..eaddde6a1 100644
+index e8068404e..145fc4820 100644
 --- a/src/xenia/gpu/vulkan/vulkan_shared_memory.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_shared_memory.cc
 @@ -19,6 +19,13 @@
@@ -6365,6 +7030,29 @@ index e8068404e..eaddde6a1 100644
        }
      }
  
+@@ -726,6 +759,10 @@ bool VulkanSharedMemory::UploadRanges(
+       }
+       MakeRangeValid(upload_range_start << page_size_log2(),
+                      uint32_t(upload_buffer_size), false);
++#if XE_PLATFORM_PS5
++      xbox360ps5::gpu_diag::hitch_upload_bytes.fetch_add(
++          upload_buffer_size, std::memory_order_relaxed);
++#endif
+ 
+       if (upload_buffer_size < (1ULL << 32) && upload_buffer_size > 8192) {
+         memory::vastcpy(
+diff --git a/src/xenia/gpu/vulkan/vulkan_shared_memory.h b/src/xenia/gpu/vulkan/vulkan_shared_memory.h
+index 00f89352d..334eaa706 100644
+--- a/src/xenia/gpu/vulkan/vulkan_shared_memory.h
++++ b/src/xenia/gpu/vulkan/vulkan_shared_memory.h
+@@ -76,6 +76,7 @@ class VulkanSharedMemory : public SharedMemory {
+ 
+   bool UploadRanges(const std::pair<uint32_t, uint32_t>* upload_page_ranges,
+                     uint32_t num_ranges) override;
++  bool IsZeroCopy() const override { return zero_copy_; }
+ 
+  private:
+   void GetUsageMasks(Usage usage, VkPipelineStageFlags& stage_mask,
 diff --git a/src/xenia/gpu/vulkan/vulkan_texture_cache.cc b/src/xenia/gpu/vulkan/vulkan_texture_cache.cc
 index 108718adf..e2aafce06 100644
 --- a/src/xenia/gpu/vulkan/vulkan_texture_cache.cc

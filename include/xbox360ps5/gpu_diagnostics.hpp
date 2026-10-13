@@ -158,6 +158,34 @@ struct Intervals {
     return text;
   }
 };
+// PS5X360E (alpha.57): what the GPU command thread spent a frame on, for the
+// report of a frame that took over 50 ms ("Hitch:" in the log). Work counted
+// only on that thread (on_gpu_thread); the frame end takes the differences.
+inline thread_local bool on_gpu_thread = false;
+struct HitchWork {
+  std::atomic<uint64_t> ns{0}, count{0};
+};
+// Shader translation, pipelines created on the GPU thread (placeholders or
+// synchronous ones), texture loads, and bytes uploaded to the GPU copy of
+// guest memory.
+inline HitchWork hitch_translate, hitch_pipeline, hitch_texture;
+inline std::atomic<uint64_t> hitch_upload_bytes{0};
+class HitchScope {
+ public:
+  explicit HitchScope(HitchWork& work)
+      : work_(on_gpu_thread ? &work : nullptr),
+        started_(work_ ? SteadyNs() : 0) {}
+  ~HitchScope() {
+    if (!work_) return;
+    work_->ns.fetch_add(SteadyNs() - started_, std::memory_order_relaxed);
+    work_->count.fetch_add(1, std::memory_order_relaxed);
+  }
+  HitchScope(const HitchScope&) = delete;
+  HitchScope& operator=(const HitchScope&) = delete;
+ private:
+  HitchWork* work_;
+  uint64_t started_;
+};
 // Guest vblank interrupts, the game's VdSwap calls, swaps the GPU thread
 // processed, and host presents.
 inline Intervals vblank_intervals, guest_vdswap, guest_swaps, host_presents;
