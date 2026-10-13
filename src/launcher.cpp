@@ -246,7 +246,7 @@ const std::vector<Option>& Options() {
        "Tamanho da imagem enviada à TV durante o jogo. 4K: a imagem do jogo chega à tela em 3840x2160, e o 2x e o 3x mostram todo o detalhe. 1080p: como antes, a TV amplia. Os menus continuam em 1080p.",
        {"1080p", "4K"}},
       {"framegen_size", &S::framegen_size, 0, W::live, 0, true, "Tamanho da geração de quadros",
-       "Os quadros gerados são feitos numa cópia menor da imagem do jogo e ampliados; os quadros do próprio jogo continuam no tamanho cheio. Em 3x, 1440p custa ao vídeo cerca de um quarto do tamanho cheio. Muda na hora.",
+       "Os quadros gerados são feitos numa cópia menor da imagem do jogo e ampliados; os quadros do próprio jogo continuam no tamanho cheio. Em 3x, 1440p custa ao vídeo menos da metade do tamanho cheio, e 1080p cerca de um quarto. Muda na hora.",
        {"Imagem do jogo", "1440p", "1080p"}},
       // PS5X360E (alpha.71): tests for the 3x-only picture faults (NFS The Run:
       // shapes across the menus, blank panels, HUD flicker; 2x is clean).
