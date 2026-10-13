@@ -3,6 +3,18 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.60+0.6.0 (PS5X360E, on Xenia Edge)
+
+From alpha.59's frame generation runs (NFS The Run with the 120 Hz video clock): the game ran at
+31 FPS, the output at 59.94 Hz, so a generated frame between two of the game's fit only part of
+the time (1.56-1.92 pictures per game frame, the counter moving between 30 and 50; strict pacing
+kept losing the cadence and adaptive pacing took over).
+
+- **Frame generation gets a game at exactly half the output**: with the 120 Hz video clock the
+  game is held to 29.97 FPS (each game frame and its generated one take two refreshes at
+  59.94 Hz); with the 60 Hz clock the guest vblank is at 59.94 Hz at every target, the display
+  rate included (it was only for the 30 and 40 FPS targets).
+
 ## 0.2-alpha.59+0.6.0 (PS5X360E, on Xenia Edge)
 
 From alpha.58 (NFS The Run, Challenge Series race): with "Memory shared with the GPU" every racing

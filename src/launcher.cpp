@@ -549,7 +549,16 @@ void Settings::Apply() const {
   const bool paced_30 = frame_pacing == 1 && !video_clock && !FramegenOnAtStart();
   // Frame generation held at 30 or 40 FPS: the guest vblank at the display's 59.94 Hz as well
   // (half of 119.88), so a game at 30 never drifts against the outputs.
-  const bool framegen_30 = !video_clock && FramegenOnAtStart() && FramegenTargetAtStart() != 0;
+  // PS5X360E (alpha.60): with any target. At the display rate a game at 30
+  // FPS has to come exactly once per two 59.94 Hz refreshes for the generated
+  // frame to sit halfway, or strict pacing keeps losing the cadence (NFS The
+  // Run at 30.0 or 31 FPS: 30-50 FPS shown, not an even 60).
+  const bool framegen_30 = !video_clock && FramegenOnAtStart();
+  // The 120 Hz video clock with frame generation: the game ran at 31 FPS on its
+  // own, over half the 59.94 Hz output, so a generated frame fit only some of
+  // the time. Held to 29.97 FPS, each game frame and its generated one take
+  // exactly two refreshes.
+  const bool framegen_fast_clock = video_clock && FramegenOnAtStart();
   // PS5X360E (alpha.59): the 120 Hz video clock with even 30 pacing. The game
   // waits on vblanks a quarter of a 30 FPS frame apart instead of half, which
   // feels quicker to the controls, but alone it ran NFS The Run at 25-42 ms
@@ -557,14 +566,16 @@ void Settings::Apply() const {
   // Here the GPU thread holds the game to 29.97 FPS and each frame is shown for
   // exactly 4 refreshes at 119.88 Hz (2 at 59.94), from the measured display
   // rate.
-  const bool paced_30_fast_clock = frame_pacing == 1 && video_clock && !FramegenOnAtStart();
+  const bool paced_30_fast_clock =
+      (frame_pacing == 1 && video_clock && !FramegenOnAtStart()) || framegen_fast_clock;
   cvars::framerate_limit = paced_30_fast_clock ? 0 : video_clock ? 120 : (paced_30 || framegen_30 ? 0 : 60);
   cvars::framerate_limit_millihz = paced_30_fast_clock ? 29970 : 0;
   // PS5X360E: the 120 Hz video clock again (Edge's own vblanks are 50/60 only).
   cvars::guest_vblank_rate_override = video_clock ? 120 : 0;
   cvars::guest_vblank_rate_millihz = paced_30_fast_clock ? 119880 : paced_30 || framegen_30 ? 59940 : 0;
   cvars::present_frame_repeat = paced_30 ? 2 : 0;
-  cvars::present_pace_millihz = paced_30_fast_clock ? 29970 : 0;
+  // Frame generation paces its own presents.
+  cvars::present_pace_millihz = paced_30_fast_clock && !framegen_fast_clock ? 29970 : 0;
   cvars::present_letterbox = stretch == 0;
   // Read as the emulator starts.
   cvars::depth_float24_convert_in_pixel_shader = depth_precision != 0;
