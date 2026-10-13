@@ -3,6 +3,14 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.66+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Where the GPU's time goes** (measurement only, nothing else changes): with Measure
+  performance on, the 30 s performance line now ends with "GPU work ms/s" split into draws,
+  render target copies, resolves, readbacks, texture loads and uploads. Each change between
+  these kinds of work writes a GPU timestamp into the submission. This is for the 2x resolution
+  dips in dense city scenes (NFS The Run, Las Vegas), where the GPU is 70% busy with few draws.
+
 ## 0.2-alpha.65+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Back to alpha.61**, the build NFS The Run played best on (frame generation Automatic, 120 Hz
