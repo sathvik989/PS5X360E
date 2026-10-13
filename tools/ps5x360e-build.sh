@@ -14,7 +14,7 @@
 #     PS5X360E/.deps/references/PS5_Mesa     the Mesa fork RADV is built from
 #     PS5X360E/.deps/references/PS5_PayloadSDK  the payload SDK fork
 #     Castation/native-ps5/                  BrinooTk's Castation (only its image checker is used)
-#     build-YYYYMMDD-HHMMSS.log              full output of this run - send it if anything fails
+#     build-logs/build-YYYYMMDD-HHMMSS.log   full output of this run - send it if anything fails
 #
 # Re-running is safe: finished steps are skipped (RADV and the SDK record what they
 # were built from), so after the first build only changed code is recompiled.
@@ -25,7 +25,8 @@ WS="$(pwd)"
 # image is replaced without --image.
 IMAGE="ps5x360e-builder:edge1"
 BRANCH="edge-core"
-LOG="$WS/build-$(date +%Y%m%d-%H%M%S).log"
+mkdir -p "$WS/build-logs"
+LOG="$WS/build-logs/build-$(date +%Y%m%d-%H%M%S).log"
 exec > >(tee -a "$LOG") 2>&1
 echo "== PS5X360E build, $(date), workspace: $WS"
 
