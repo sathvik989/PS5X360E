@@ -3,6 +3,29 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.49+0.6.0 (PS5X360E, on Xenia Edge)
+
+Measurements for the graphics thread, which limits NFS The Run in heavy scenes (alpha.48's
+log: about 6 µs of CPU per draw, 83 % of one core at 135,000 draws a second, while the GPU
+was 25 % busy), and the first changes aimed at it.
+
+- **Accurate visibility queries wait less**: a query the game will poll for (it marks the report
+  pending, or the emulator has had to wait for that report before) is handed to the GPU as soon
+  as its report is queued, instead of when the game starts polling. The GPU works on it while
+  the graphics thread goes on, so the result is often there already. Same results as before; one
+  more submission per such report. `occlusion_query_strict_early_submit` turns it off.
+- **Graphics thread on its own core** (Settings > Performance, off by default): the GPU command
+  thread stays on CPU 2, and no other emulator thread uses CPU 2 or 3. For comparing the same
+  race on and off; the log names the choice ("graphics thread core dedicated/shared").
+- **Draw timing**: every 64th draw is timed in eight stages (shaders, render targets, pipeline,
+  textures, state, bindings, memory, render pass and draw), reported each 30 s as "per draw
+  N us in IssueDraw (...)" beside the draw count.
+- **CPU use per guest CPU**: a new line each 30 s gives the six emulated Xbox 360 CPUs (the
+  threads running the game's code) and the whole emulator, in percent of one PS5 CPU.
+- **Driver messages**: the console refused the pipe alpha.48 put on standard error, so RADV's
+  output now goes to `logs/driver-messages.txt` and its lines are copied into the game log
+  ("Driver: ...").
+
 ## 0.2-alpha.48+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Xenia Edge updated** from 2e6898afc to 8e44485d9 (65 commits, 12 Oct 2026). Among them:
