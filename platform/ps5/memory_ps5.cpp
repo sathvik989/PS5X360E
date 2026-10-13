@@ -6,6 +6,7 @@
 // pages are 16 KiB while guest heaps use 4 KiB pages, so each host page gets
 // the union of the access of its four guest pages.
 #include "xenia/base/memory.h"
+#include "xenia/base/clock.h"
 #include "xbox360ps5/gpu_diagnostics.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -221,12 +222,12 @@ bool Apply(uintptr_t base, View& view, size_t first_guest, size_t guest_count) {
     } else {
       while (end <= last && view.backed[end] && view.host[end] != bits && wanted(end) == bits) ++end;
     }
-    timespec before{}, after{};
-    clock_gettime(CLOCK_MONOTONIC, &before);
+    // The host tick count is nanoseconds from the time-stamp counter here
+    // (alpha.58; clock_gettime is itself a system call of about 1 us).
+    const uint64_t before = xe::Clock::QueryHostTickCount();
     const int32_t result = sceKernelMprotect(reinterpret_cast<void*>(base + page * kPage),
                                              (end - page) * kPage, bits);
-    clock_gettime(CLOCK_MONOTONIC, &after);
-    const long long taken = (after.tv_sec - before.tv_sec) * 1000000000ll + (after.tv_nsec - before.tv_nsec);
+    const long long taken = (long long)(xe::Clock::QueryHostTickCount() - before);
     ++xbox360ps5::protect_syscalls;
     xbox360ps5::protect_nanoseconds += taken;
     xbox360ps5::protect_pages += end - page;

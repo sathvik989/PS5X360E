@@ -24,6 +24,7 @@ int sceAudioOutClose(int32_t);
 }
 #endif
 DECLARE_bool(mute);
+DECLARE_uint32(apu_max_queued_frames);
 namespace xbox360ps5 {
 using xe::X_STATUS;
 namespace {
@@ -107,17 +108,53 @@ class PacedDriver final : public xe::apu::AudioDriver {
     }
   }
 
+  // PS5X360E (alpha.58): frames held before the port starts playing, and
+  // again after it ran dry. The emulator makes a frame every 5.33 ms, as fast
+  // as the port plays them, so without a reserve the queue held about one
+  // frame and any delay of the game's audio code over ~5 ms (a hitch at the
+  // start of a race) was a gap in the sound. Half the queue the emulator may
+  // fill (apu_max_queued_frames), so it can still catch up after a stall.
+  uint32_t PrefillFrames() const {
+    return std::clamp<uint32_t>(cvars::apu_max_queued_frames / 2, 1, 16);
+  }
+
   void Run() {
     xe::threading::set_name("Xbox360PS5 audio");
     auto next = std::chrono::steady_clock::now();
     std::vector<float> stereo;
     std::array<int16_t, kGrain * 2> grain;
+    bool primed = false;
     for (;;) {
       std::vector<float> frame;
       {
         std::unique_lock<std::mutex> lock(mutex_);
+        if (port_ >= 0 && primed && frames_.empty() && !paused_ && !stopping_) {
+          // Ran dry while playing: the port plays silence until the reserve
+          // is back.
+          primed = false;
+          ++gaps_;
+          gap_started_ = std::chrono::steady_clock::now();
+        }
+        if (port_ >= 0 && !primed) {
+          // Waits for the reserve, but never longer than its own playing
+          // time (a game that makes frames slowly still plays).
+          const size_t want = PrefillFrames();
+          wake_.wait_for(lock, std::chrono::microseconds(uint64_t(want) * 5334 + 2000), [&] {
+            return stopping_ || (!paused_ && frames_.size() >= want);
+          });
+        }
         wake_.wait(lock, [this] { return stopping_ || (!paused_ && !frames_.empty()); });
         if (stopping_) return;
+        if (port_ >= 0 && !primed) {
+          primed = true;
+          if (gap_started_ != std::chrono::steady_clock::time_point{}) {
+            const auto gap = std::chrono::steady_clock::now() - gap_started_;
+            const uint64_t gap_us = uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(gap).count());
+            gap_us_ += gap_us;
+            longest_gap_us_ = std::max(longest_gap_us_, gap_us);
+            gap_started_ = {};
+          }
+        }
         frame = std::move(frames_.front());
         frames_.pop_front();
       }
@@ -154,6 +191,16 @@ class PacedDriver final : public xe::apu::AudioDriver {
   void Meter(int peak) {
     peak_ = std::max(peak_, peak);
     ++total_;
+    // About every 30 s of sound: the gaps, if any.
+    if (port_ >= 0 && ++since_report_ >= 5625) {
+      if (gaps_) {
+        XELOGW("Audio: {} gaps in the last 30 s (the game's sound came late), {:.0f} ms of silence, longest {:.0f} ms; {} frames held in reserve",
+               gaps_, double(gap_us_) / 1000.0, double(longest_gap_us_) / 1000.0, PrefillFrames());
+      }
+      gaps_ = 0;
+      gap_us_ = longest_gap_us_ = 0;
+      since_report_ = 0;
+    }
     if (++metered_ < 1024) return;
     XELOGI("Audio level: peak {} of 32767 in the last {} frames ({} submitted)", peak_, metered_, total_);
     peak_ = 0;
@@ -172,6 +219,9 @@ class PacedDriver final : public xe::apu::AudioDriver {
   float volume_ = 1.0f;
   int port_ = -1, peak_ = 0;
   unsigned metered_ = 0, total_ = 0;
+  unsigned gaps_ = 0, since_report_ = 0;
+  uint64_t gap_us_ = 0, longest_gap_us_ = 0;
+  std::chrono::steady_clock::time_point gap_started_{};
 };
 }
 

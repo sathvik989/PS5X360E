@@ -43,6 +43,7 @@ DECLARE_string(render_target_path);  // PS5X360E: Edge's "performance"/"accuracy
 DECLARE_bool(async_shader_compilation);
 DECLARE_bool(vulkan_async_submission);
 DECLARE_bool(shared_memory_zero_copy);
+DECLARE_uint32(apu_max_queued_frames);
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(delay_via_maybeyield);
 DECLARE_int32(license_mask);
@@ -518,6 +519,10 @@ void Settings::Apply() const {
   static constexpr uint32_t kWindows[] = {0x4000, 0x10000, 0};
   gpu_diag::invalidation_window = kWindows[memory_window % 3];
   audio_volume = float(volume + 1) * 0.25f;
+  // PS5X360E (alpha.58): 16 frames of sound may wait for the port (85 ms), so
+  // the audio thread can hold half of them in reserve (platform/ps5/
+  // canary_audio.cpp) and still catch up after the game's sound comes late.
+  cvars::apu_max_queued_frames = 16;
   // Read when a game starts.
   cvars::delay_via_maybeyield = guest_yield != 0;
   cvars::license_mask = arcade_full ? 1 : 0;

@@ -9,6 +9,8 @@
 #include <string>
 #include <utility>
 
+#include "xenia/base/clock.h"
+
 namespace xbox360ps5::gpu_diag {
 enum class Kind : unsigned { pipeline, submit, present, fence, idle, cpu_draw, cpu_copy, cpu_upload, cpu_completion, count };
 inline constexpr const char* names[] = {"pipeline", "submit", "present", "fence", "idle", "cpu-draw-sampled-1of1024", "cpu-copy", "cpu-upload-sampled-1of1024", "cpu-completion"};
@@ -170,14 +172,18 @@ struct HitchWork {
 // guest memory.
 inline HitchWork hitch_translate, hitch_pipeline, hitch_texture;
 inline std::atomic<uint64_t> hitch_upload_bytes{0};
+// The host tick count is nanoseconds from the time-stamp counter on the PS5;
+// steady_clock is a system call of about a microsecond there, which on texture
+// loads alone cost the GPU thread 2.8 % in alpha.57.
 class HitchScope {
  public:
   explicit HitchScope(HitchWork& work)
       : work_(on_gpu_thread ? &work : nullptr),
-        started_(work_ ? SteadyNs() : 0) {}
+        started_(work_ ? xe::Clock::QueryHostTickCount() : 0) {}
   ~HitchScope() {
     if (!work_) return;
-    work_->ns.fetch_add(SteadyNs() - started_, std::memory_order_relaxed);
+    work_->ns.fetch_add(xe::Clock::QueryHostTickCount() - started_,
+                        std::memory_order_relaxed);
     work_->count.fetch_add(1, std::memory_order_relaxed);
   }
   HitchScope(const HitchScope&) = delete;

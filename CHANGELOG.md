@@ -3,6 +3,31 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.58+0.6.0 (PS5X360E, on Xenia Edge)
+
+From alpha.57's five sessions (NFS The Run, the usual race and a Challenge Series race, with
+"Memory shared with the GPU" off and on): the race holds 30 FPS up to 185,000 draws a second;
+with the shared memory every racing window was 30.0, minimum 30, every frame two refreshes.
+The graphics thread's profile, named from the build's symbols, and the reported sound gaps:
+
+- **Sound keeps a reserve**: the emulator makes a frame of sound every 5.33 ms, exactly as fast
+  as the console plays them, so the queue held about one frame and the game's sound code
+  running a few milliseconds late (as at the start of a race, when the game loads) was a gap.
+  The audio thread now holds 8 frames (43 ms) before playing, and again after running dry; the
+  queue may hold 16, so it still catches up after a stall. Gaps are logged ("Audio: N gaps").
+- **Graphics thread: no global lock for vertex data that needs nothing**: with the shared memory
+  the lock was the thread's largest cost (6.6 %): every draw reading data left unwatched took
+  it. Such requests are now answered without it, as are those whose data was already compared
+  in the same batch of commands.
+- **GPU output kept through neighbouring writes is found without the lock**: while any such page
+  existed, every request for any memory took the global lock and walked all of them (1.1 %). A
+  bitmap answers most requests at once.
+- **Fewer pages go back to being watched**: alpha.57 let most unwatched pages cool down and be
+  watched again within 20 s (1,500 a minute), then fault their way back. A page found changed
+  stays unwatched; with the shared memory, unwatched pages stay so.
+- The "Hitch:" timing and the page protection timing use the console's cheap clock (2.8 % of
+  the graphics thread went to clock system calls in texture loads).
+
 ## 0.2-alpha.57+0.6.0 (PS5X360E, on Xenia Edge)
 
 alpha.56 holds 30 FPS in NFS The Run's heaviest section (graphics thread 55-61 % busy). This
