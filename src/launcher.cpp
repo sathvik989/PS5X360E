@@ -387,8 +387,10 @@ GameOverrides GamePreset(const std::string& title_id) {
       // late: the game reads them without waiting for them, and the hallway
       // light itself stayed in the elevator again (user). Even 30 FPS pacing
       // for its 30 FPS.
+      // alpha.51: the graphics thread on its own core took 5-8 % off its CPU
+      // per draw in both pairs of runs (120 Hz and Even 30), with better lows.
       {"4541094A", {{"readback", 1}, {"fast_locks", 1}, {"memory_boost", 1}, {"occlusion", 3},
-                    {"frame_pacing", 1}}},
+                    {"frame_pacing", 1}, {"gpu_core", 1}}},
   };
   GameOverrides preset;
   for (const auto& [id, values] : built_in) if (Lower(title_id) == Lower(id)) preset = values;

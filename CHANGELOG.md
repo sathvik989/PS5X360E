@@ -3,6 +3,26 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.52+0.6.0 (PS5X360E, on Xenia Edge)
+
+From alpha.51's four NFS The Run sessions (120 Hz and Even 30, graphics core shared and own):
+
+- **Submissions on their own thread** (`vulkan_async_submission`, on): the graphics thread hands
+  each finished batch of GPU work to a second thread, which replays it into the driver and
+  submits it, and goes on with the next draws. The draw timing showed about 3.4 µs of the
+  graphics thread's 6.2-7 µs per draw inside the draw itself; much of the rest is that replay
+  and the driver's submission (RADV: about 0.45 ms per submission, 80-175 ms a second). Frame
+  ends, waits for GPU results and copies for the CPU still wait for the second thread where
+  queue order matters.
+- **Cheaper clock**: the PS5's clock_gettime is a system call of about a microsecond (each
+  timestamp of the draw timing cost that much). The emulator's host clock now reads the
+  processor's time-stamp counter (sceKernelReadTsc), scaled to nanoseconds; the guest
+  scheduler, timers and the game's own time queries all use it.
+- **NFS The Run: graphics thread on its own core by default**: 5-8 % less CPU per draw in both
+  pairs of runs and higher lows (Even 30: lowest 26 against 24 FPS).
+- Even 30 FPS with the hardware frame rate worked: one present per frame, every frame shown
+  for exactly two refreshes (883 of 883), and about half the driver time of the 120 Hz runs.
+
 ## 0.2-alpha.51+0.6.0 (PS5X360E, on Xenia Edge)
 
 From alpha.50's two NFS The Run sessions (graphics thread shared, then on its own core):
