@@ -1552,7 +1552,7 @@ index 4878e9725..d93d10ec4 100644
    ThreadState* thread_state_ = nullptr;
    std::unique_ptr<xe::threading::Thread> thread_ = nullptr;
 diff --git a/src/xenia/cpu/thread_state.cc b/src/xenia/cpu/thread_state.cc
-index ddb026c91..d4710684c 100644
+index ddb026c91..2557c64b9 100644
 --- a/src/xenia/cpu/thread_state.cc
 +++ b/src/xenia/cpu/thread_state.cc
 @@ -14,6 +14,7 @@
@@ -1563,24 +1563,65 @@ index ddb026c91..d4710684c 100644
  #include "xenia/base/threading.h"
  #include "xenia/cpu/processor.h"
  
-@@ -25,7 +26,16 @@ thread_local ThreadState* thread_state_ = nullptr;
+@@ -25,19 +26,28 @@ thread_local ThreadState* thread_state_ = nullptr;
  
  static void* AllocateContext() {
    size_t granularity = xe::memory::allocation_granularity();
 -  for (unsigned pos32 = 0x40; pos32 < 8192; ++pos32) {
+-    /*
+-        we want our register which points to the context to have 0xE0000000 in
+-       the low 32 bits, for checking for whether we need the 4k offset, but also
+-       if we allocate starting from the page before we allow backends to index
+-       negatively to get to their own backend specific data, which makes full
+-        use of int8 displacement
+-
+-
+-        the downside is we waste most of one granula and probably a fair bit of
+-       the one starting at 0xE0 by using a direct virtual memory allocation
+-       instead of malloc
+-    */
 +#if XE_PLATFORM_PS5
-+  // PS5X360E (alpha69nice2): the PS5 Vulkan driver hands out GPU memory from a
-+  // 256 GiB region at 0x4000000000 and maps it there at fixed addresses; at 3x
-+  // resolution it reached the contexts at 0x40E0000000 and up and replaced
-+  // them with GPU memory (crash at the first vblank). Start past the region.
-+  constexpr unsigned kFirstContextPos32 = 0x100;
++  // PS5X360E (alpha.70): the PS5 Vulkan driver hands out GPU memory from a
++  // 256 GiB region at 0x4000000000 (to 0x8000000000) and maps it there at
++  // fixed addresses; at 3x resolution it reached the contexts at 0x40E0000000
++  // and up and replaced them (crash at the first vblank). Start past the
++  // region but below the end of the application map area (0xFC00000000);
++  // 0x100E0000000 (alpha69nice2) is past that end and every attempt failed.
++  // The old range is the fallback.
++  constexpr unsigned kFirstContextPos32 = 0x80;
++  constexpr unsigned kLastContextPos32 = 0xFB;
 +#else
 +  constexpr unsigned kFirstContextPos32 = 0x40;
++  constexpr unsigned kLastContextPos32 = 8191;
 +#endif
-+  for (unsigned pos32 = kFirstContextPos32; pos32 < 8192; ++pos32) {
-     /*
-         we want our register which points to the context to have 0xE0000000 in
-        the low 32 bits, for checking for whether we need the 4k offset, but also
++  for (unsigned step = 0; step < 8192 - 0x40; ++step) {
++    const unsigned pos32 =
++        kFirstContextPos32 + step <= kLastContextPos32
++            ? kFirstContextPos32 + step
++            : 0x40 + (step - (kLastContextPos32 + 1 - kFirstContextPos32));
++    if (pos32 >= 8192) {
++      break;
++    }
+     uintptr_t context_pre =
+         ((static_cast<uint64_t>(pos32) << 32) | 0xE0000000) - granularity;
+ 
+@@ -45,6 +55,16 @@ static void* AllocateContext() {
+         (void*)context_pre, granularity + sizeof(ppc::PPCContext),
+         memory::AllocationType::kReserveCommit, memory::PageAccess::kReadWrite);
+     if (p) {
++      if (pos32 < kFirstContextPos32) {
++        static bool noted = false;
++        if (!noted) {
++          noted = true;
++          XELOGW(
++              "PPC thread contexts: preferred range full, using {:X}E0000000 "
++              "(inside the GPU memory region on PS5)",
++              pos32);
++        }
++      }
+       return reinterpret_cast<char*>(p) +
+              granularity;  // now we have a ctx ptr with the e0 constant in low,
+                            // and one page allocated before it
 diff --git a/src/xenia/cpu/xex_module.cc b/src/xenia/cpu/xex_module.cc
 index 2353ed14e..12eb382c2 100644
 --- a/src/xenia/cpu/xex_module.cc

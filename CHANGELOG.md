@@ -3,6 +3,14 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.70+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Starts again** (alpha69nice2 stopped at start with "Unable to allocate PPC thread context
+  memory"): the thread register blocks it moved to 0x100E0000000 are past the end of the area a
+  PS5 application may map (0xFC00000000). They now go from 0x80E0000000 to 0xFBE0000000, after
+  the GPU memory region and before that end (124 places), and fall back to the old range with a
+  log line if more are needed.
+
 ## 0.2-alpha69nice2+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **3x resolution no longer crashes at start**: the PS5 Vulkan driver places GPU memory in a
