@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.68+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **3x render resolution, for testing**: Video > Render resolution has a third choice,
+  "3x (2160p, test)" (3840x2160 for a 720p game). The PS5 output stays 1920x1080, so the picture
+  is drawn at 3x and scaled down. Off unless chosen; 1x and 2x are unchanged.
+- **GPU breakdown** (measurement only): texture loads are now split into textures the game
+  rendered itself (loaded from the upscaled copies) and ordinary textures. In alpha.67's Sin City
+  run at 2x, texture loads were 180 ms of each second, render target copies 100 and resolves 52,
+  next to 270 for drawing.
+
 ## 0.2-alpha.67+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **The GPU breakdown counts racing correctly** (measurement only). In alpha.66 most of a race's

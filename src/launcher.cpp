@@ -237,7 +237,7 @@ const std::vector<Option>& Options() {
        {"60 Hz", "120 Hz (teste)"}},
       {"render_scale", &S::render_scale, 0, W::start, 0, true, "Resolução de renderização",
        "O jogo desenha em 2x a resolução original (720p vira 1440p): imagem bem mais nítida, mais trabalho para o vídeo e mais memória. Alguns efeitos podem sair errados em 2x; volte a 1x se aparecerem.",
-       {"1x (720p, original)", "2x (1440p, pesado)"}},
+       {"1x (720p, original)", "2x (1440p, pesado)", "3x (2160p, teste)"}},
       {"frame_pacing", &S::frame_pacing, 0, W::live, 0, true, "Ritmo dos quadros",
        "Para jogos que rodam a 30 quadros: mostra cada quadro por exatamente duas atualizações da tela, para um movimento uniforme sem trancos. Jogos a 60 quadros ficam limitados a 30; deixe em Automático para eles.",
        {"Automático", "30 FPS uniforme"}},
@@ -487,7 +487,7 @@ void Settings::Apply() const {
   cvars::user_language = GameLanguage();
   cvars::mute = mute != 0;
   // PS5X360E: the Video option; a game config can still set its own scale.
-  cvars::draw_resolution_scale_x = cvars::draw_resolution_scale_y = std::clamp(render_scale, 0, 1) + 1;
+  cvars::draw_resolution_scale_x = cvars::draw_resolution_scale_y = std::clamp(render_scale, 0, 2) + 1;
   // Normal gameplay records warnings/errors plus explicit session metadata.
   // Do not duplicate every line into the platform stdout transport, and do
   // not let stale debug files silently override the user's visible setting.

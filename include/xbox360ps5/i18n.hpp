@@ -288,6 +288,7 @@ inline const char* Tr(const char* key) {
     {"Simples", "Basic", "Básico"},
     {"3x (2160p, muito pesado)", "3x (2160p, very demanding)", "3x (2160p, muy exigente)"},
     {"2x (1440p, pesado)", "2x (1440p, demanding)", "2x (1440p, exigente)"},
+    {"3x (2160p, teste)", "3x (2160p, test)", "3x (2160p, prueba)"},
     {"1x (720p, original)", "1x (720p, native)", "1x (720p, original)"},
     {"Ritmo dos quadros", "Frame pacing", "Ritmo de fotogramas"},
     {"Para jogos que rodam a 30 quadros: mostra cada quadro por exatamente duas atualizações da tela, para um movimento uniforme sem trancos. Jogos a 60 quadros ficam limitados a 30; deixe em Automático para eles.",
