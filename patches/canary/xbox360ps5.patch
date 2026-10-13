@@ -32,6 +32,45 @@ index 1050d2f52..4d15091f3 100644
    endif()
  
    list(APPEND _sources ${_plat_sources})
+diff --git a/src/xenia/base/clock.cc b/src/xenia/base/clock.cc
+index 20d406f44..58232a880 100644
+--- a/src/xenia/base/clock.cc
++++ b/src/xenia/base/clock.cc
+@@ -54,6 +54,13 @@ std::pair<uint64_t, uint64_t> guest_tick_ratio_ = std::make_pair(1, 1);
+ 
+ // Native guest ticks.
+ uint64_t last_guest_tick_count_ = 0;
++// PS5X360E (alpha.56): the part of a host tick delta too small to make a
++// whole guest tick, carried to the next update (in units of
++// 1/guest_tick_ratio_.second guest ticks). Dropping it lost up to 19 ns of
++// guest time per update (1 GHz host, 50 MHz guest): with the clock read a few
++// hundred thousand times a second the guest clock ran 0.4% slow under load,
++// and with it the vertical blank, so a 30 FPS game managed 29.85.
++uint64_t guest_tick_remainder_ = 0;
+ // Last sampled host tick count.
+ uint64_t last_host_tick_count_ = Clock::QueryHostTickCount();
+ 
+@@ -88,6 +95,7 @@ void RecomputeGuestTickScalar() {
+ 
+   std::lock_guard<tick_mutex_type> lock(tick_mutex_);
+   guest_tick_ratio_ = frac;
++  guest_tick_remainder_ = 0;
+ }
+ 
+ // Update the guest timer for all threads.
+@@ -107,8 +115,10 @@ uint64_t UpdateGuestClock() {
+                                    ? host_tick_count - last_host_tick_count_
+                                    : 0;
+     last_host_tick_count_ = host_tick_count;
+-    uint64_t guest_tick_delta =
+-        host_tick_delta * guest_tick_ratio_.first / guest_tick_ratio_.second;
++    const uint64_t scaled =
++        host_tick_delta * guest_tick_ratio_.first + guest_tick_remainder_;
++    uint64_t guest_tick_delta = scaled / guest_tick_ratio_.second;
++    guest_tick_remainder_ = scaled % guest_tick_ratio_.second;
+     last_guest_tick_count_ += guest_tick_delta;
+     return last_guest_tick_count_;
+   } else {
 diff --git a/src/xenia/base/clock_posix.cc b/src/xenia/base/clock_posix.cc
 index 64383e07a..05a8aa1b4 100644
 --- a/src/xenia/base/clock_posix.cc

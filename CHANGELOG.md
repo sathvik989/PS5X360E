@@ -3,6 +3,21 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.56+0.6.0 (PS5X360E, on Xenia Edge)
+
+From alpha.55's measurement at NFS The Run's heaviest spot (139,000 draws a second): 29.8-29.9
+FPS where alpha.53 managed 27.9, with the graphics thread 62 % busy (4.4 µs a draw) with
+background submission and 73 % (5.2 µs) without it. Every 30 s window still read 29.8,
+minimum 29, though nothing was busy enough to explain it:
+
+- **The game's clock runs at the right speed again**: converting the console's 1 GHz clock to
+  the Xbox 360's 50 MHz one dropped the leftover fraction of a tick (up to 19 ns) at every
+  reading. Since alpha.52 made the clock cheap to read, the game reads it a few hundred thousand
+  times a second while racing, and its clock (with the vertical blank it is paced by) ran
+  0.4 % slow: 16.75 ms a refresh instead of 16.68 (alpha.51: 16.70). At 29.85 game frames a
+  second against a 29.97 display, a frame was shown three refreshes about every 8 s. The
+  leftover is now carried over.
+
 ## 0.2-alpha.55+0.6.0 (PS5X360E, on Xenia Edge)
 
 From alpha.54's measurement (named from the build's symbols): the graphics thread still sets the
