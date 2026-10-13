@@ -3,6 +3,25 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.51+0.6.0 (PS5X360E, on Xenia Edge)
+
+From alpha.50's two NFS The Run sessions (graphics thread shared, then on its own core):
+
+- **Fewer driver submissions for render output the game reads**: with "Image read by the game:
+  Fast", every copy of render output for the CPU was handed to the GPU at once, about 180
+  times a second. RADV's own figures (now in the log) put each submission at about 0.45 ms of
+  CPU (0.17 ms in the Agc submit, 0.26 ms suspended). Those copies now go at most every 8 ms
+  (`readback_async_submit_spacing_ms`); one asked for sooner rides with the next copy, guest
+  sync point or frame. The game already accepted the previous frame's output for these reads.
+- **Draw timing now reported**: alpha.49/50 timed the draws but discarded every sample (the
+  last mark was skipped), so no "per draw" figures appeared.
+- **Guest CPU use measured by each guest CPU itself**: reading the six dispatch threads' CPU
+  clocks from another thread gave the same figure for all six; each now samples its own clock
+  every quarter second. The whole-emulator figure comes from getrusage (the process CPU clock
+  read as exactly one CPU).
+- Graphics thread on its own core: about 4 % less CPU per draw in the same scenes (6.0 against
+  6.3 µs), within the scenes' variation; the frame rate was the same. Stays a setting, off.
+
 ## 0.2-alpha.50+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Fixes the hang after Press Start in alpha.49.** It was not a hang: loading crawled. On the

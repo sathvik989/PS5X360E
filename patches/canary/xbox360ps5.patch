@@ -1558,7 +1558,7 @@ index 3984cd9d6..3ee0b21a7 100644
    for (int i = 0; i < 32; i++) {
      crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
 diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
-index c9bac1689..0bd667eaf 100644
+index c9bac1689..ca9c890e4 100644
 --- a/src/xenia/gpu/command_processor.cc
 +++ b/src/xenia/gpu/command_processor.cc
 @@ -8,6 +8,7 @@
@@ -1581,7 +1581,7 @@ index c9bac1689..0bd667eaf 100644
      "GPU");
  
  DEFINE_bool(
-@@ -109,6 +113,43 @@ DEFINE_bool(
+@@ -109,6 +113,50 @@ DEFINE_bool(
      "RAM without it, which breaks games that read it back.",
      "GPU");
  
@@ -1613,6 +1613,13 @@ index c9bac1689..0bd667eaf 100644
 +    "the two go together, per title.",
 +    "GPU");
 +
++DEFINE_uint32(
++    readback_async_submit_spacing_ms, 8,
++    "With readback_resolve_async, hand copies of render output to the GPU at "
++    "most this often (milliseconds); one asked for sooner goes with the next "
++    "copy, guest sync point or frame. 0: each at once, as before alpha.51.",
++    "GPU");
++
 +DEFINE_bool(
 +    occlusion_query_strict_early_submit, true,
 +    "With accurate (strict) occlusion queries, hand a query the guest will "
@@ -1625,7 +1632,7 @@ index c9bac1689..0bd667eaf 100644
  DEFINE_bool(
      memexport_enable, true,
      "Make memory export output visible to the CPU. Needed by games that read "
-@@ -144,6 +185,12 @@ DEFINE_bool(
+@@ -144,6 +192,12 @@ DEFINE_bool(
      "Vulkan, SV_Barycentrics on Direct3D 12).",
      "GPU");
  
@@ -1638,7 +1645,7 @@ index c9bac1689..0bd667eaf 100644
  namespace xe {
  namespace gpu {
  
-@@ -195,6 +242,8 @@ static ZPDMode ParseZPDMode() {
+@@ -195,6 +249,8 @@ static ZPDMode ParseZPDMode() {
    const std::string& mode = cvars::occlusion_query;
    if (mode == "strict") {
      return ZPDMode::kStrict;
@@ -1647,7 +1654,7 @@ index c9bac1689..0bd667eaf 100644
    } else if (mode == "fast") {
      return ZPDMode::kFast;
    } else if (mode == "fast-alt") {
-@@ -407,6 +456,9 @@ void CommandProcessor::SetZPDMode(ZPDMode mode) {
+@@ -407,6 +463,9 @@ void CommandProcessor::SetZPDMode(ZPDMode mode) {
      case ZPDMode::kStrict:
        mode_str = "strict";
        break;
@@ -1657,7 +1664,7 @@ index c9bac1689..0bd667eaf 100644
      default:
        break;
    }
-@@ -498,6 +550,11 @@ void CommandProcessor::SetTitleStateSuffix(std::string suffix) {
+@@ -498,6 +557,11 @@ void CommandProcessor::SetTitleStateSuffix(std::string suffix) {
  }
  
  void CommandProcessor::WorkerThreadMain() {
@@ -1669,7 +1676,7 @@ index c9bac1689..0bd667eaf 100644
    if (!SetupContext()) {
      xe::FatalError("Unable to setup command processor internal state");
      return;
-@@ -517,18 +574,47 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -517,18 +581,47 @@ void CommandProcessor::WorkerThreadMain() {
        // We've run out of commands to execute.
        // We spin here waiting for new ones, as the overhead of waiting on our
        // event is too high.
@@ -1718,7 +1725,7 @@ index c9bac1689..0bd667eaf 100644
            }
          } else {
            xe::threading::MaybeYield();
-@@ -539,6 +625,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -539,6 +632,7 @@ void CommandProcessor::WorkerThreadMain() {
                 (write_ptr_index == 0xBAADF00D ||
                  read_ptr_index_ == write_ptr_index));
        ReturnFromWait();
@@ -1726,7 +1733,7 @@ index c9bac1689..0bd667eaf 100644
        if (!worker_running_ || !pending_fns_.empty()) {
          continue;
        }
-@@ -565,6 +652,184 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -565,6 +659,184 @@ void CommandProcessor::WorkerThreadMain() {
    ShutdownContext();
  }
  
@@ -1911,7 +1918,7 @@ index c9bac1689..0bd667eaf 100644
  void CommandProcessor::Pause() {
    if (paused_) {
      return;
-@@ -754,6 +1019,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
+@@ -754,6 +1026,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
        uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
        uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
        xe::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
@@ -1921,7 +1928,7 @@ index c9bac1689..0bd667eaf 100644
      }
    } else {
      switch (index) {
-@@ -1046,6 +1314,12 @@ void CommandProcessor::PrepareForWait() {
+@@ -1046,6 +1321,12 @@ void CommandProcessor::PrepareForWait() {
    trace_writer_.Flush();
    if (zpd_mode_ == ZPDMode::kStrict && zpd_awaited_report_count_) {
      PrepareZPDForWait();
@@ -1934,7 +1941,7 @@ index c9bac1689..0bd667eaf 100644
    }
    if (viz_pending_resolves_) {
      PollCompletedSubmission();
-@@ -1263,7 +1537,7 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1263,7 +1544,7 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
  
    ZPDReport& report = zpd_current_report_;
    report.address = report_address;
@@ -1943,7 +1950,7 @@ index c9bac1689..0bd667eaf 100644
      // See EVENT_WRITE_ZPD for additional information on the pending sentinel.
      const uint32_t kPendingSentinel = xe::byte_swap(0xFFFFFEEDu);
      const auto* guest =
-@@ -1291,8 +1565,19 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1291,8 +1572,19 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
      WriteZPDReport(report_address, report.speculative_value);
    }
    zpd_awaited_report_count_ += report.awaited;
@@ -1963,7 +1970,7 @@ index c9bac1689..0bd667eaf 100644
  
    // The next report's segment opens at its first draw.
    // Report runs without draws between them never use any pool slots.
-@@ -1340,8 +1625,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
+@@ -1340,8 +1632,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
    if (result == QueryOpenResult::kPoolExhausted) {
      zpd_stats_.pool_exhausted++;
    }
@@ -1973,7 +1980,7 @@ index c9bac1689..0bd667eaf 100644
      // Fast modes favor forward progress over accuracy. Report at least one
      // passing sample instead of waiting for a slot to become available.
      if (report) {
-@@ -1488,10 +1772,30 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
+@@ -1488,10 +1779,30 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
    return nullptr;
  }
  
@@ -2006,7 +2013,7 @@ index c9bac1689..0bd667eaf 100644
        awaited_handle = report.handle;
        break;
      }
-@@ -1512,6 +1816,10 @@ void CommandProcessor::PrepareZPDForWait() {
+@@ -1512,6 +1823,10 @@ void CommandProcessor::PrepareZPDForWait() {
    if (!wait_report || !wait_report->pending_segments) {
      return;
    }
@@ -2017,7 +2024,7 @@ index c9bac1689..0bd667eaf 100644
    if (AwaitQueryResolve(wait_report->handle,
                          wait_report->last_segment_end_submission)) {
      PumpPendingRetire();
-@@ -1543,13 +1851,22 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1543,13 +1858,22 @@ void CommandProcessor::PumpPendingRetire() {
        if (zpd_mode_ == ZPDMode::kStrict) {
          break;
        }
@@ -2041,7 +2048,7 @@ index c9bac1689..0bd667eaf 100644
          break;
        }
        front.delta.z_pass = std::max<uint64_t>(front.delta.z_pass, 1);
-@@ -1559,6 +1876,21 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1559,6 +1883,21 @@ void CommandProcessor::PumpPendingRetire() {
      zpd_pending_retire_start_ms_ = 0;
  
      zpd_sample_counter_ += front.delta;
@@ -2248,7 +2255,7 @@ index 484b6d2e1..452d8f4c2 100644
    uint8_t* source = static_cast<uint8_t*>(buffer.mapped) + source_offset;
    // vastcpy's non-temporal stores need both pointers and the length to be
 diff --git a/src/xenia/gpu/command_processor_resolve_readwatch.inc b/src/xenia/gpu/command_processor_resolve_readwatch.inc
-index 8c2e6f64d..62fe0ca7f 100644
+index 8c2e6f64d..827344f13 100644
 --- a/src/xenia/gpu/command_processor_resolve_readwatch.inc
 +++ b/src/xenia/gpu/command_processor_resolve_readwatch.inc
 @@ -26,6 +26,10 @@
@@ -2321,7 +2328,7 @@ index 8c2e6f64d..62fe0ca7f 100644
      std::memcpy(memory_->TranslatePhysical(range.first), source_bytes,
                  range.second);
      source_bytes += range.second;
-@@ -302,22 +329,72 @@ void NoteResolveForReadback(uint32_t address, uint32_t length, bool is_scaled) {
+@@ -302,23 +329,75 @@ void NoteResolveForReadback(uint32_t address, uint32_t length, bool is_scaled) {
      owner.frame = resolve_frame_index_;
      owner.copyable = !is_scaled;
      owner.in_guest_ram = false;
@@ -2379,6 +2386,7 @@ index 8c2e6f64d..62fe0ca7f 100644
 +    // write has the shortest window in which it can't wait for it.
 +    resolve_unsubmitted_watched_ = true;
 +    resolve_submit_requested_ = true;
++    resolve_submit_async_only_ = true;
 +    return;
 +  }
 +  // PS5X360E: guest sync points (fences, interrupts, memory writes) submit
@@ -2394,9 +2402,32 @@ index 8c2e6f64d..62fe0ca7f 100644
 -  if (ResolveReadRecently(resolve_key, read_before)) {
 +  if (read_recently) {
      resolve_submit_requested_ = true;
++    resolve_submit_async_only_ = false;
    }
  }
-@@ -398,6 +475,7 @@ void SubmitRequestedResolve() {
+ 
+@@ -389,7 +468,20 @@ void SubmitRequestedResolve() {
+   if (!resolve_submit_requested_) {
+     return;
+   }
++  // PS5X360E: copies for reads that don't wait (readback_resolve_async) are
++  // submitted at most every readback_async_submit_spacing_ms; one that comes
++  // sooner rides with the next copy, the next guest sync point or the frame.
++  // Each submission costs the PS5's driver about half a millisecond of the GPU
++  // thread, and NFS The Run made some 180 of them a second this way.
++  const uint64_t now_ms = Clock::QueryHostUptimeMillis();
++  if (resolve_submit_async_only_ && cvars::readback_async_submit_spacing_ms &&
++      now_ms - resolve_async_submit_ms_ <
++          uint64_t(cvars::readback_async_submit_spacing_ms)) {
++    return;
++  }
+   resolve_submit_requested_ = false;
++  resolve_submit_async_only_ = false;
++  resolve_async_submit_ms_ = now_ms;
+   EndResolveSubmission();
+ }
+ 
+@@ -398,6 +490,7 @@ void SubmitRequestedResolve() {
  // them used up are armed again.
  void OnResolveSubmissionEnded() {
    resolve_unsubmitted_owner_ = false;
@@ -2404,7 +2435,7 @@ index 8c2e6f64d..62fe0ca7f 100644
    {
      std::lock_guard<std::mutex> lock(resolve_read_mutex_);
      if (resolve_rearm_ranges_.empty()) {
-@@ -419,6 +497,14 @@ void OnResolveSubmissionEnded() {
+@@ -419,6 +512,14 @@ void OnResolveSubmissionEnded() {
  // Before the guest can learn the GPU got past a resolve, the resolve has to be
  // submitted, so ProvideResolveOutput can copy its output from the fault.
  void SubmitResolvesForGuestSync() override {
@@ -2419,7 +2450,7 @@ index 8c2e6f64d..62fe0ca7f 100644
    if (resolve_unsubmitted_owner_) {
      EndResolveSubmission();
    }
-@@ -495,9 +581,9 @@ bool GetScaledResolveReadbackInfo(uint32_t address, uint32_t length,
+@@ -495,9 +596,9 @@ bool GetScaledResolveReadbackInfo(uint32_t address, uint32_t length,
    // RB_COPY_DEST_INFO, for depth the register can hold a different size.
    uint32_t pixel_size_log2 =
        draw_util::GetResolveDownscalePixelSizeLog2(copy_dest_info);
@@ -2432,7 +2463,7 @@ index 8c2e6f64d..62fe0ca7f 100644
      XELOGGPU(
          "Skipping readback of a resolution-scaled resolve to a 128bpp "
          "destination - not supported by the downscale shader");
-@@ -574,7 +660,9 @@ void ResetResolveReadWatch() {
+@@ -574,7 +675,9 @@ void ResetResolveReadWatch() {
      resolve_read_keys_.clear();
      resolve_owners_.clear();
    }
@@ -2442,7 +2473,7 @@ index 8c2e6f64d..62fe0ca7f 100644
    resolve_submit_requested_ = false;
    resolve_rearm_ranges_.clear();
    resolve_read_frames_.clear();
-@@ -599,6 +687,10 @@ struct ResolveOwner {
+@@ -599,6 +702,10 @@ struct ResolveOwner {
    uint32_t frame = 0;
    bool copyable = false;
    bool in_guest_ram = false;
@@ -2453,7 +2484,7 @@ index 8c2e6f64d..62fe0ca7f 100644
    // In resolve_rearm_ranges_ already.
    bool rearm_pending = false;
    // The CPU wrote this edge page before the output could be copied, so only
-@@ -610,6 +702,10 @@ std::unordered_map<uint64_t, ResolveOwner> resolve_owners_;
+@@ -610,6 +717,10 @@ std::unordered_map<uint64_t, ResolveOwner> resolve_owners_;
  static constexpr size_t kMaxResolveOwners = 4096;
  // Under resolve_read_mutex_.
  void RearmResolveAfterSubmission(ResolveOwner& owner) {
@@ -2464,7 +2495,7 @@ index 8c2e6f64d..62fe0ca7f 100644
    if (!owner.rearm_pending) {
      owner.rearm_pending = true;
      resolve_rearm_ranges_.emplace_back(owner.address, owner.length);
-@@ -639,12 +735,21 @@ std::vector<std::pair<uint32_t, uint32_t>> resolve_rearming_ranges_;
+@@ -639,13 +750,26 @@ std::vector<std::pair<uint32_t, uint32_t>> resolve_rearming_ranges_;
  // Frame the CPU last read each destination's output, by resolve key. GPU thread
  // only.
  std::unordered_map<uint64_t, uint32_t> resolve_read_frames_;
@@ -2484,8 +2515,13 @@ index 8c2e6f64d..62fe0ca7f 100644
 +// A CPU read found output that was not submitted yet. Set by faulting threads.
 +std::atomic<bool> resolve_read_raced_{false};
  bool resolve_submit_requested_ = false;
++// PS5X360E: whether only asynchronous copies asked for it, and when those last
++// went to the GPU.
++bool resolve_submit_async_only_ = false;
++uint64_t resolve_async_submit_ms_ = 0;
  uint32_t resolve_frame_index_ = 0;
  // Handle from RegisterPhysicalMemoryReadCallback, or null when not armed.
+ void* resolve_read_callback_ = nullptr;
 diff --git a/src/xenia/gpu/d3d12/d3d12_command_processor.cc b/src/xenia/gpu/d3d12/d3d12_command_processor.cc
 index e35baf118..2423e1a92 100644
 --- a/src/xenia/gpu/d3d12/d3d12_command_processor.cc
@@ -2625,7 +2661,7 @@ index bada58008..bdb29a6c3 100644
  DEFINE_bool(
      gpu_debug_markers, false,
 diff --git a/src/xenia/gpu/gpu_flags.h b/src/xenia/gpu/gpu_flags.h
-index d20f38f1f..5e5f4e429 100644
+index d20f38f1f..e699fb952 100644
 --- a/src/xenia/gpu/gpu_flags.h
 +++ b/src/xenia/gpu/gpu_flags.h
 @@ -11,6 +11,67 @@
@@ -2696,7 +2732,7 @@ index d20f38f1f..5e5f4e429 100644
  DECLARE_path(trace_gpu_prefix);
  DECLARE_bool(trace_gpu_stream);
  
-@@ -28,6 +89,13 @@ DECLARE_bool(gpu_allow_invalid_fetch_constants);
+@@ -28,6 +89,14 @@ DECLARE_bool(gpu_allow_invalid_fetch_constants);
  DECLARE_bool(shared_memory_zero_copy);
  
  DECLARE_bool(enable_host_buffer);
@@ -2707,10 +2743,11 @@ index d20f38f1f..5e5f4e429 100644
 +DECLARE_bool(readback_skip_unread_resolves);
 +DECLARE_bool(resolve_sync_only_watched);
 +DECLARE_bool(readback_resolve_async);
++DECLARE_uint32(readback_async_submit_spacing_ms);
  
  DECLARE_bool(memexport_enable);
  DECLARE_bool(memexport_await_pixel_exports);
-@@ -49,9 +117,13 @@ DECLARE_bool(occlusion_query_full_counters);
+@@ -49,9 +118,13 @@ DECLARE_bool(occlusion_query_full_counters);
  
  DECLARE_bool(occlusion_query_viz);
  
@@ -3807,7 +3844,7 @@ index e6b7d535c..0f0eb959b 100644
      SharedMemory::WatchHandle base_watch_handle_ = nullptr;
      SharedMemory::WatchHandle mips_watch_handle_ = nullptr;
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index b61995956..3cfe50150 100644
+index b61995956..a4d2254d7 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,9 +8,12 @@
@@ -4176,7 +4213,7 @@ index b61995956..3cfe50150 100644
 +    return;
 +  }
 +  draw_timing_sample_ = false;
-+  MarkDrawStage(kDrawStages);
++  draw_timing_marks_[kDrawStages] = PerfNowNs();
 +  for (uint32_t i = 0; i < kDrawStages; ++i) {
 +    // A stage passed over by a path (none today) would read an old mark.
 +    if (draw_timing_marks_[i + 1] < draw_timing_marks_[i]) {
@@ -5599,11 +5636,41 @@ index 108718adf..e2aafce06 100644
  #include <algorithm>
  #include <array>
  #include <cstddef>
+diff --git a/src/xenia/kernel/guest_scheduler.cc b/src/xenia/kernel/guest_scheduler.cc
+index c24087925..3af8cbcdb 100644
+--- a/src/xenia/kernel/guest_scheduler.cc
++++ b/src/xenia/kernel/guest_scheduler.cc
+@@ -7,6 +7,7 @@
+  ******************************************************************************
+  */
+ 
++#include <ctime>
+ #include "xenia/kernel/guest_scheduler.h"
+ 
+ #include <algorithm>
+@@ -1548,6 +1549,17 @@ void GuestScheduler::RunLoop(int cpu_index) {
+     // busy fiber that rarely waits would starve them. The timer runs at what
+     // the parked waiters actually need, a wake skips it entirely.
+     uint64_t now = Clock::QueryHostUptimeMillis();
++#if XE_PLATFORM_LINUX || XE_PLATFORM_MAC
++    if (now >= cpu.next_cpu_sample_ms) {
++      cpu.next_cpu_sample_ms = now + 250;
++      timespec cpu_ts;
++      if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu_ts) == 0) {
++        cpu.thread_cpu_ns.store(uint64_t(cpu_ts.tv_sec) * 1000000000ull +
++                                    uint64_t(cpu_ts.tv_nsec),
++                                std::memory_order_relaxed);
++      }
++    }
++#endif
+     if (cpu.repoll_now.exchange(false, std::memory_order_relaxed) ||
+         now >= cpu.next_timed_repoll_ms) {
+       RereadyBlocked(cpu_index);
 diff --git a/src/xenia/kernel/guest_scheduler.h b/src/xenia/kernel/guest_scheduler.h
-index 4b254e51a..f065118bc 100644
+index 4b254e51a..caf0355af 100644
 --- a/src/xenia/kernel/guest_scheduler.h
 +++ b/src/xenia/kernel/guest_scheduler.h
-@@ -174,6 +174,13 @@ class GuestScheduler {
+@@ -174,6 +174,22 @@ class GuestScheduler {
  
    KernelState* kernel_state() const { return kernel_state_; }
  
@@ -5613,10 +5680,29 @@ index 4b254e51a..f065118bc 100644
 +  xe::threading::Thread* dispatch_thread(int cpu) const {
 +    return cpu >= 0 && cpu < kMaxCpus ? cpus_[cpu].host_thread.get() : nullptr;
 +  }
++  // PS5X360E: CPU time the dispatch thread of guest CPU |cpu| has used, in
++  // nanoseconds, as it measured itself at most a quarter second ago (0 where
++  // the platform has no thread CPU clock). Reading another thread's CPU clock
++  // gave the same figure for all six on the PS5.
++  uint64_t dispatch_thread_cpu_ns(int cpu) const {
++    return cpu >= 0 && cpu < kMaxCpus
++               ? cpus_[cpu].thread_cpu_ns.load(std::memory_order_relaxed)
++               : 0;
++  }
 +
   private:
    // Xbox 360 logical CPU count, also the maximum number of dispatch threads.
    static constexpr int kMaxCpus = 6;
+@@ -208,6 +224,9 @@ class GuestScheduler {
+     XThread* suspended_tail = nullptr;
+     XThread* exited_thread = nullptr;
+     std::unique_ptr<xe::threading::Thread> host_thread;
++    // PS5X360E: dispatch_thread_cpu_ns, and when the loop samples it next.
++    std::atomic<uint64_t> thread_cpu_ns{0};
++    uint64_t next_cpu_sample_ms = 0;
+     std::unique_ptr<xe::threading::Fiber> idle_fiber;
+     std::unique_ptr<xe::threading::Event> ready_event;
+     // Hint read lock-free by WakeAll so it only wakes CPUs with a parked
 diff --git a/src/xenia/kernel/kernel_flags.cc b/src/xenia/kernel/kernel_flags.cc
 index 57b097c11..42a142055 100644
 --- a/src/xenia/kernel/kernel_flags.cc

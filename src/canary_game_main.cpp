@@ -2,6 +2,7 @@
 // The title's entry point on the Xenia Canary core: Canary's emulator with the
 // console's video output (KHR_display), pad, audio port and the launcher.
 #include <pthread.h>
+#include <sys/resource.h>
 #include <time.h>
 #include "xenia/emulator.h"
 #include "xenia/base/logging.h"
@@ -1955,17 +1956,23 @@ int main(int argc, char** argv) {
                              ? uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec) : 0;
                 };
                 const uint64_t wall = clock_ns(CLOCK_MONOTONIC);
-                const uint64_t process = clock_ns(CLOCK_PROCESS_CPUTIME_ID);
+                // The whole process from getrusage (its CPU-time clock read as
+                // one CPU's worth on the PS5, alpha.50).
+                uint64_t process = 0;
+                {
+                  rusage usage;
+                  if (getrusage(RUSAGE_SELF, &usage) == 0)
+                    process = (uint64_t(usage.ru_utime.tv_sec) + uint64_t(usage.ru_stime.tv_sec)) * 1000000000ull +
+                              (uint64_t(usage.ru_utime.tv_usec) + uint64_t(usage.ru_stime.tv_usec)) * 1000ull;
+                }
                 std::string guest;
                 uint64_t guest_sum = 0;
                 bool have_guest = false;
                 if (auto* scheduler = emulator.kernel_state()->guest_scheduler()) {
                   for (int cpu = 0; cpu < 6 && cpu < scheduler->dispatch_cpu_count(); ++cpu) {
-                    auto* host = scheduler->dispatch_thread(cpu);
-                    clockid_t clock;
-                    uint64_t now = 0;
-                    if (host && pthread_getcpuclockid(static_cast<pthread_t>(host->native_handle()), &clock) == 0)
-                      now = clock_ns(clock);
+                    // Each dispatch thread measures itself (another thread's
+                    // CPU clock gave the same figure for all six on the PS5).
+                    const uint64_t now = scheduler->dispatch_thread_cpu_ns(cpu);
                     if (previous_wall && now && previous_cpu[cpu] && wall > previous_wall) {
                       const uint64_t used = now - previous_cpu[cpu];
                       guest += fmt::format("{}{:.0f}", guest.empty() ? "" : " ", 100.0 * double(used) / double(wall - previous_wall));
