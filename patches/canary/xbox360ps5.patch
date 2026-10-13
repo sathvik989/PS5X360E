@@ -14943,10 +14943,10 @@ index 000000000..b78936006
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp b/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp
 new file mode 100644
-index 000000000..e478fe09a
+index 000000000..45de8c918
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp
-@@ -0,0 +1,474 @@
+@@ -0,0 +1,460 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Included in exactly one presenter translation unit. No frozen class members.
 +#pragma once
@@ -15078,12 +15078,6 @@ index 000000000..e478fe09a
 +  double adaptive_fps = 0;
 +  // The 600-frame summary: frames paced by each path, and the presents made for them.
 +  uint64_t strict_frames = 0, adaptive_frames = 0, outputs_reported = 0, backlogs_reported = 0;
-+  // PS5X360E (alpha.63): adaptive spans by the outputs they showed (0 to 4 or
-+  // more), and outputs whose time had already passed when they were due (the
-+  // presenting thread late by over half a refresh).
-+  uint64_t span_outputs[5]{};
-+  uint64_t late_outputs = 0;
-+  uint64_t worst_late_us = 0;
 +  static constexpr uint32_t kAdaptiveAnnounce = 8;  // game frames in a row before "started" is logged
 +  static constexpr uint32_t kAdaptiveLogs = 48;     // start and stop lines per process
 +  static bool AdaptiveEnabled() { return ps5x360::framegen::AdaptivePacingEnabled(FramegenConfig()); }
@@ -15198,14 +15192,6 @@ index 000000000..e478fe09a
 +    skipped_sources = slow_acquires = 0;
 +    // strict and adaptive: frames paced by each path; dormant: frames shown without generation.
 +    const uint64_t outputs = midpoint_present_ok + ordinary_present_ok;
-+    if (adaptive_frames) {
-+      XELOGW("Framegen adaptive spans by outputs shown: 1 {}, 2 {}, 3 {}, 4+ {} (none {}); "
-+             "outputs over half a refresh late {} (worst {:.1f} ms)",
-+             span_outputs[1], span_outputs[2], span_outputs[3], span_outputs[4],
-+             span_outputs[0], late_outputs, double(worst_late_us) / 1000.0);
-+    }
-+    for (auto& n : span_outputs) n = 0;
-+    late_outputs = worst_late_us = 0;
 +    XELOGW("Framegen presentation cost: source={} dormant={} deferred={} waits={} mean={}ms max={}ms "
 +           "strict={} adaptive={} outputs_per_source={:.2f}",
 +           new_frames, dormant_frames, deferred_frames, snapshot_waits,
@@ -52998,7 +52984,7 @@ index fd3e34d1c..ec38ab067 100644
      bool ext_KHR_xcb_surface = false;  // #6
  #endif
 diff --git a/src/xenia/ui/vulkan/vulkan_presenter.cc b/src/xenia/ui/vulkan/vulkan_presenter.cc
-index 9cf803fd6..6d59579dd 100644
+index 9cf803fd6..5f6f1aaea 100644
 --- a/src/xenia/ui/vulkan/vulkan_presenter.cc
 +++ b/src/xenia/ui/vulkan/vulkan_presenter.cc
 @@ -17,6 +17,10 @@
@@ -53012,7 +52998,7 @@ index 9cf803fd6..6d59579dd 100644
  
  #if XE_PLATFORM_ANDROID
  #include "xenia/ui/surface_android.h"
-@@ -57,6 +61,24 @@ DEFINE_bool(vulkan_presenter_use_backing_scale, false,
+@@ -57,6 +61,16 @@ DEFINE_bool(vulkan_presenter_use_backing_scale, false,
              "Vulkan");
  #endif  // XE_PLATFORM_MAC
  
@@ -53023,21 +53009,13 @@ index 9cf803fd6..6d59579dd 100644
 +            "Frame generation: pictures made between the game's frames "
 +            "(set from framegen.conf by the launcher).",
 +            "Video");
-+// PS5X360E (alpha.63): the launcher's "even 60" frame generation: the game is
-+// held to half the output's rate and every frame is paced by the adaptive path
-+// (a generated picture at the middle, then the game's frame, one refresh each),
-+// never by the strict path, which in alpha.60 showed 2-7 % of frames late.
-+DEFINE_bool(framegen_adaptive_only, false,
-+            "Frame generation: pace every frame with the adaptive path, never the "
-+            "strict one (set by the launcher's even 60 option).",
-+            "Video");
 +#include "xenia/ui/vulkan/framegen/presenter_sidecar.hpp"
 +#include "xenia/ui/vulkan/framegen/shared/output_metrics.hpp"
 +
  namespace xe {
  namespace ui {
  namespace vulkan {
-@@ -73,6 +95,13 @@ namespace shaders {
+@@ -73,6 +87,13 @@ namespace shaders {
  #include "xenia/ui/shaders/bytecode/vulkan_spirv/guest_output_ffx_fsr_rcas_dither_ps.h"
  #include "xenia/ui/shaders/bytecode/vulkan_spirv/guest_output_ffx_fsr_rcas_ps.h"
  #include "xenia/ui/shaders/bytecode/vulkan_spirv/guest_output_triangle_strip_rect_vs.h"
@@ -53051,7 +53029,7 @@ index 9cf803fd6..6d59579dd 100644
  }  // namespace shaders
  
  VulkanPresenter::PaintContext::Submission::~Submission() {
-@@ -153,6 +182,7 @@ VulkanPresenter::~VulkanPresenter() {
+@@ -153,6 +174,7 @@ VulkanPresenter::~VulkanPresenter() {
    // just one sleep will likely be needed.
    ui_completion_timeline_.AwaitAllSubmissions();
    guest_output_image_refresher_completion_timeline_.AwaitAllSubmissions();
@@ -53059,7 +53037,7 @@ index 9cf803fd6..6d59579dd 100644
  
    const VulkanDevice::Functions& dfn = vulkan_device_->functions();
    const VkDevice device = vulkan_device_->device();
-@@ -183,6 +213,7 @@ VulkanPresenter::~VulkanPresenter() {
+@@ -183,6 +205,7 @@ VulkanPresenter::~VulkanPresenter() {
          guest_output_paint_pipeline.intermediate_pipeline);
    }
  
@@ -53067,7 +53045,7 @@ index 9cf803fd6..6d59579dd 100644
    util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device,
                               guest_output_intermediate_render_pass_);
    for (VkShaderModule& shader_module : guest_output_paint_fs_) {
-@@ -206,6 +237,11 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
+@@ -206,6 +229,11 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
      return 0;
    }
    Surface::TypeFlags type_flags = 0;
@@ -53079,7 +53057,7 @@ index 9cf803fd6..6d59579dd 100644
  #if XE_PLATFORM_ANDROID
    if (instance_extensions.ext_KHR_android_surface) {
      type_flags |= Surface::kTypeFlag_AndroidNativeWindow;
-@@ -537,6 +573,7 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
+@@ -537,6 +565,7 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
    const VulkanDevice::Functions& dfn = vulkan_device_->functions();
    const VkDevice device = vulkan_device_->device();
  
@@ -53087,7 +53065,7 @@ index 9cf803fd6..6d59579dd 100644
    VkFormat new_swapchain_format;
  
    // ConnectOrReconnectToSurfaceFromUIThread may be called only for the
-@@ -594,6 +631,41 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
+@@ -594,6 +623,41 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
      }
      VkResult vulkan_surface_create_result = VK_ERROR_UNKNOWN;
      switch (surface_type) {
@@ -53129,7 +53107,7 @@ index 9cf803fd6..6d59579dd 100644
  #if XE_PLATFORM_ANDROID
        case Surface::kTypeIndex_AndroidNativeWindow: {
          auto& android_native_window_surface =
-@@ -904,6 +976,7 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
+@@ -904,6 +968,7 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
  
  void VulkanPresenter::DisconnectPaintingFromSurfaceFromUIThreadImpl() {
    paint_context_.DestroySwapchainAndVulkanSurface();
@@ -53137,7 +53115,7 @@ index 9cf803fd6..6d59579dd 100644
  }
  
  bool VulkanPresenter::RefreshGuestOutputImpl(
-@@ -970,6 +1043,8 @@ bool VulkanPresenter::RefreshGuestOutputImpl(
+@@ -970,6 +1035,8 @@ bool VulkanPresenter::RefreshGuestOutputImpl(
          "fence signal: {}",
          vk::to_string(vk::Result(submit_result)));
    }
@@ -53146,7 +53124,7 @@ index 9cf803fd6..6d59579dd 100644
    return refresher_succeeded;
  }
  
-@@ -1111,7 +1186,9 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+@@ -1111,7 +1178,9 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
  #endif
    VkSurfaceFormatKHR image_format;
    if (surface_formats.empty() ||
@@ -53157,7 +53135,7 @@ index 9cf803fd6..6d59579dd 100644
         surface_formats[0].format == VK_FORMAT_UNDEFINED)) {
      // Can choose any format if the implementation specifies only UNDEFINED.
      image_format.format = kFormat8888Primary;
-@@ -1288,7 +1365,10 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+@@ -1288,7 +1357,10 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
    // interfering with GPU command processing, and also to allow tearing so
    // variable refresh rate may be used where it's available.
    // Note: If the priorities here are changes, update the cvar descriptions.
@@ -53169,7 +53147,7 @@ index 9cf803fd6..6d59579dd 100644
        std::ranges::find(std::as_const(present_modes),
                          VK_PRESENT_MODE_IMMEDIATE_KHR) !=
            present_modes.cend()) {
-@@ -1358,7 +1438,7 @@ VkSwapchainKHR VulkanPresenter::PaintContext::PrepareForSwapchainRetirement() {
+@@ -1358,7 +1430,7 @@ VkSwapchainKHR VulkanPresenter::PaintContext::PrepareForSwapchainRetirement() {
      if (present_queue_family != UINT32_MAX) {
        const VulkanDevice::Queue::Acquisition queue_acquisition =
            vulkan_device->AcquireQueue(present_queue_family, 0);
@@ -53178,7 +53156,7 @@ index 9cf803fd6..6d59579dd 100644
      }
    }
    const VulkanDevice::Functions& dfn = vulkan_device->functions();
-@@ -1469,6 +1549,171 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
+@@ -1469,6 +1541,169 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
  
  Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
      bool execute_ui_drawers) {
@@ -53229,9 +53207,7 @@ index 9cf803fd6..6d59579dd 100644
 +          pinned->extent().width, pinned->extent().height, fg->display_hz,
 +          // PS5X360E: with a 30 FPS target only the adaptive path paces (the
 +          // steady-rate path would fill a steady 30 up to the display's rate).
-+          // Nor with the launcher's even 60 (alpha.63).
-+          true, FramegenConfig().target_fps == 0 && !cvars::framegen_adaptive_only,
-+          this);
++          true, FramegenConfig().target_fps == 0, this);
 +      // Adaptive pacing sees every arrival and takes the span only when strict pacing is not
 +      // engaged for it (and the mode and the settings file allow it).
 +      adaptive_span = fg->AdaptiveArrive(this, serial, now, fg->pacing.Engaged());
@@ -53350,7 +53326,7 @@ index 9cf803fd6..6d59579dd 100644
    // Begin the submission in place of the one not currently potentially used on
    // the GPU.
    const uint64_t current_paint_submission_index =
-@@ -1510,9 +1755,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1510,9 +1745,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
    VkSemaphore acquire_semaphore = paint_submission.acquire_semaphore();
  
    uint32_t swapchain_image_index;
@@ -53363,7 +53339,7 @@ index 9cf803fd6..6d59579dd 100644
    switch (acquire_result) {
      case VK_SUCCESS:
      case VK_SUBOPTIMAL_KHR:
-@@ -1576,7 +1824,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1576,7 +1814,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
    GuestOutputProperties guest_output_properties;
    GuestOutputPaintConfig guest_output_paint_config;
    std::shared_ptr<GuestOutputImage> guest_output_image;
@@ -53376,7 +53352,7 @@ index 9cf803fd6..6d59579dd 100644
      uint32_t guest_output_mailbox_index;
      std::unique_lock<std::mutex> guest_output_consumer_lock(
          ConsumeGuestOutput(guest_output_mailbox_index, &guest_output_properties,
-@@ -1600,6 +1852,41 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1600,6 +1842,41 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
          guest_output_properties, paint_context_.swapchain_extent.width,
          paint_context_.swapchain_extent.height, max_framebuffer_extent.width,
          max_framebuffer_extent.height, guest_output_paint_config);
@@ -53418,7 +53394,7 @@ index 9cf803fd6..6d59579dd 100644
      if (guest_output_flow.effect_count) {
        // Store the main target reference to the guest output image so it's not
        // destroyed while it's still potentially in use by main target painting
-@@ -1653,6 +1940,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1653,6 +1930,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
          paint_context_
              .guest_output_image_paint_refs[guest_output_image_paint_ref_index] =
              std::make_pair(uint64_t(0), guest_output_image);
@@ -53426,7 +53402,7 @@ index 9cf803fd6..6d59579dd 100644
          // Create the descriptors of the new image.
          VkDescriptorImageInfo guest_output_image_descriptor_image_info;
          guest_output_image_descriptor_image_info.sampler = VK_NULL_HANDLE;
-@@ -1837,6 +2125,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1837,6 +2115,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
        }
  
        if (guest_output_flow.effect_count) {
@@ -53434,7 +53410,7 @@ index 9cf803fd6..6d59579dd 100644
          // Actually draw the guest output.
          paint_context_
              .guest_output_image_paint_refs[guest_output_image_paint_ref_index]
-@@ -1855,6 +2144,32 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1855,6 +2134,32 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
            paint_context_.guest_output_intermediate_image_last_submission =
                current_paint_submission_index;
          }
@@ -53467,7 +53443,7 @@ index 9cf803fd6..6d59579dd 100644
          for (size_t i = 0; i < guest_output_flow.effect_count; ++i) {
            bool is_final_effect = i + 1 >= guest_output_flow.effect_count;
  
-@@ -1936,11 +2251,14 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -1936,11 +2241,14 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
                  PaintContext::kGuestOutputDescriptorSetGuestOutput0Sampled +
                  guest_output_image_paint_ref_index);
            }
@@ -53484,7 +53460,7 @@ index 9cf803fd6..6d59579dd 100644
                0, nullptr);
  
            GuestOutputPaintRectangleConstants effect_rect_constants;
-@@ -2082,7 +2400,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -2082,7 +2390,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
      swapchain_image_clear_needed = false;
    }
  
@@ -53493,7 +53469,7 @@ index 9cf803fd6..6d59579dd 100644
      // Draw the UI.
      VulkanUIDrawContext ui_draw_context(
          *this, paint_context_.swapchain_extent.width,
-@@ -2102,10 +2420,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -2102,10 +2410,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
    VkCommandBuffer command_buffers[2];
    uint32_t command_buffer_count = 0;
@@ -53506,7 +53482,7 @@ index 9cf803fd6..6d59579dd 100644
                           : SIZE_MAX;
    if (ui_setup_command_buffer_index != SIZE_MAX) {
      PaintContext::UISetupCommandBuffer& ui_setup_command_buffer =
-@@ -2169,7 +2487,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -2169,7 +2477,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
      // To avoid that, recreate the swapchain - don't return just kNotPresented.
      return PaintResult::kNotPresentedConnectionOutdated;
    }
@@ -53515,7 +53491,7 @@ index 9cf803fd6..6d59579dd 100644
      // Also update the completion timeline providing submission indices to UI
      // draw callbacks if submission is successful.
      const VkResult ui_signal_submit_result =
-@@ -2196,7 +2514,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -2196,7 +2504,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
      const VulkanDevice::Queue::Acquisition queue_acquisition =
          vulkan_device_->AcquireQueue(paint_context_.present_queue_family, 0);
      present_result =
@@ -53524,7 +53500,7 @@ index 9cf803fd6..6d59579dd 100644
    }
    switch (present_result) {
      case VK_SUCCESS:
-@@ -2232,9 +2550,167 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
+@@ -2232,9 +2540,155 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
        // kNotPresented.
        return PaintResult::kNotPresentedConnectionOutdated;
    }
@@ -53568,18 +53544,8 @@ index 9cf803fd6..6d59579dd 100644
 +    const auto refresh = std::chrono::nanoseconds(int64_t(1000000000.0 / fg->display_hz));
 +    auto deadline = std::chrono::steady_clock::now();
 +    PaintResult result = PaintResult::kNotPresented;
-+    uint32_t shown = 0;
 +    for (uint32_t k = 0; k < fg->plan.count; ++k) {
-+      if (k) {
-+        std::this_thread::sleep_until(deadline);
-+        // PS5X360E (alpha.63): woken over half a refresh after the output's time.
-+        const auto late = std::chrono::steady_clock::now() - deadline;
-+        if (late > refresh / 2) {
-+          ++fg->late_outputs;
-+          fg->worst_late_us = std::max<uint64_t>(
-+              fg->worst_late_us, uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(late).count()));
-+        }
-+      }
++      if (k) std::this_thread::sleep_until(deadline);
 +      // The first acquire waited for a refresh: every image was queued or on screen. The
 +      // pictures still to come are left out so that the queue, and the latency, cannot grow.
 +      if (k == 1 && fg->adaptive_backlog) fg->AdaptiveCut(k);
@@ -53604,14 +53570,12 @@ index 9cf803fd6..6d59579dd 100644
 +        return result;
 +      }
 +      if (midpoint) ++fg->midpoint_present_ok; else ++fg->ordinary_present_ok;
-+      ++shown;
 +      if (!guest_picture_drawn) {
 +        fg->AdaptiveStop("the game's picture could not be drawn");
 +        break;
 +      }
 +      deadline += refresh * output.refreshes;
 +    }
-+    ++fg->span_outputs[std::min<uint32_t>(shown, 4)];
 +    midpoint = false;
 +    return result;
 +  }
@@ -53692,7 +53656,7 @@ index 9cf803fd6..6d59579dd 100644
    const VulkanDevice::Functions& dfn = vulkan_device_->functions();
    const VkDevice device = vulkan_device_->device();
  
-@@ -2680,6 +3156,593 @@ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(
+@@ -2680,6 +3134,593 @@ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(
    return pipeline;
  }
  

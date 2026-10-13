@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.65+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Back to alpha.61**, the build NFS The Run played best on (frame generation Automatic, 120 Hz
+  video clock, Memory shared with the GPU): everything since is withdrawn, alpha.62's change
+  excepted. "Audio reserve" stays off by default.
+- Withdrawn: alpha.63's "Even 60 with frame generation" (it left a third to half of the game's
+  frames without a generated picture: the adaptive path's margin drifts against an exact 2:1)
+  and its frame generation statistics, and alpha.64's 120 Hz display mode choice and mode list
+  (the driver's 120 Hz check measures a VRR display at its 48 Hz floor and falls back to 60 Hz).
+
 ## 0.2-alpha.64+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **A 120 Hz output request takes a 120 Hz mode at any size**: frame generation asked for 120 Hz

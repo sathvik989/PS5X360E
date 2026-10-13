@@ -56,7 +56,6 @@ DECLARE_uint32(guest_vblank_rate_millihz);
 DECLARE_uint32(present_frame_repeat);
 DECLARE_uint32(present_pace_millihz);
 DECLARE_uint32(framerate_limit_millihz);
-DECLARE_bool(framegen_adaptive_only);
 DECLARE_bool(readback_resolve_async);
 DECLARE_bool(resolve_sync_only_watched);
 DECLARE_uint32(kernel_display_gamma_type);
@@ -239,8 +238,6 @@ const std::vector<Option>& Options() {
       {"render_scale", &S::render_scale, 0, W::start, 0, true, "Resolução de renderização",
        "O jogo desenha em 2x a resolução original (720p vira 1440p): imagem bem mais nítida, mais trabalho para o vídeo e mais memória. Alguns efeitos podem sair errados em 2x; volte a 1x se aparecerem.",
        {"1x (720p, original)", "2x (1440p, pesado)"}},
-      {"fg_even_60", &S::fg_even_60, 0, W::start, 0, true, "60 uniforme com geração de quadros",
-       "Com a geração de quadros: o jogo fica preso em 29,97 FPS e cada quadro do jogo ganha exatamente um quadro gerado no meio, para 59,94 uniformes. Desligado: o jogo roda no próprio ritmo (31 FPS com o vídeo emulado a 120 Hz) e a geração se ajusta a ele.", off_on},
       {"frame_pacing", &S::frame_pacing, 0, W::live, 0, true, "Ritmo dos quadros",
        "Para jogos que rodam a 30 quadros: mostra cada quadro por exatamente duas atualizações da tela, para um movimento uniforme sem trancos. Jogos a 60 quadros ficam limitados a 30; deixe em Automático para eles.",
        {"Automático", "30 FPS uniforme"}},
@@ -559,13 +556,8 @@ void Settings::Apply() const {
   // half the output for frame generation, and strict pacing then took every
   // frame but shown less evenly (45-50 FPS seen) than adaptive pacing with
   // the game at its own 31 FPS on the 120 Hz video clock.
-  // alpha.63: "60 uniforme com geração de quadros" brings alpha.60's hold back
-  // as an option, with every frame paced by the adaptive path.
-  const bool fg_even = fg_even_60 != 0 && FramegenOnAtStart() && FramegenTargetAtStart() == 0;
-  const bool framegen_30 =
-      !video_clock && FramegenOnAtStart() && (FramegenTargetAtStart() != 0 || fg_even);
-  const bool framegen_fast_clock = video_clock && fg_even;
-  cvars::framegen_adaptive_only = fg_even;
+  const bool framegen_30 = !video_clock && FramegenOnAtStart() && FramegenTargetAtStart() != 0;
+  const bool framegen_fast_clock = false;
   // PS5X360E (alpha.59): the 120 Hz video clock with even 30 pacing. The game
   // waits on vblanks a quarter of a 30 FPS frame apart instead of half, which
   // feels quicker to the controls, but alone it ran NFS The Run at 25-42 ms
