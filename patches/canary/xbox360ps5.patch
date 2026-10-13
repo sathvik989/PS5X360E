@@ -1551,6 +1551,36 @@ index 4878e9725..d93d10ec4 100644
  
    ThreadState* thread_state_ = nullptr;
    std::unique_ptr<xe::threading::Thread> thread_ = nullptr;
+diff --git a/src/xenia/cpu/thread_state.cc b/src/xenia/cpu/thread_state.cc
+index ddb026c91..d4710684c 100644
+--- a/src/xenia/cpu/thread_state.cc
++++ b/src/xenia/cpu/thread_state.cc
+@@ -14,6 +14,7 @@
+ 
+ #include "xenia/base/assert.h"
+ #include "xenia/base/logging.h"
++#include "xenia/base/platform.h"
+ #include "xenia/base/threading.h"
+ #include "xenia/cpu/processor.h"
+ 
+@@ -25,7 +26,16 @@ thread_local ThreadState* thread_state_ = nullptr;
+ 
+ static void* AllocateContext() {
+   size_t granularity = xe::memory::allocation_granularity();
+-  for (unsigned pos32 = 0x40; pos32 < 8192; ++pos32) {
++#if XE_PLATFORM_PS5
++  // PS5X360E (alpha69nice2): the PS5 Vulkan driver hands out GPU memory from a
++  // 256 GiB region at 0x4000000000 and maps it there at fixed addresses; at 3x
++  // resolution it reached the contexts at 0x40E0000000 and up and replaced
++  // them with GPU memory (crash at the first vblank). Start past the region.
++  constexpr unsigned kFirstContextPos32 = 0x100;
++#else
++  constexpr unsigned kFirstContextPos32 = 0x40;
++#endif
++  for (unsigned pos32 = kFirstContextPos32; pos32 < 8192; ++pos32) {
+     /*
+         we want our register which points to the context to have 0xE0000000 in
+        the low 32 bits, for checking for whether we need the 4k offset, but also
 diff --git a/src/xenia/cpu/xex_module.cc b/src/xenia/cpu/xex_module.cc
 index 2353ed14e..12eb382c2 100644
 --- a/src/xenia/cpu/xex_module.cc

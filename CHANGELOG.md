@@ -3,6 +3,14 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha69nice2+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **3x resolution no longer crashes at start**: the PS5 Vulkan driver places GPU memory in a
+  256 GiB region from 0x4000000000, and Xenia kept each emulated CPU thread's register block in
+  that same range (0x40E0000000 and up). At 3x the GPU memory grew into it and replaced a
+  thread's registers, crashing at the first vblank. The register blocks now start at
+  0x100E0000000, past the region.
+
 ## 0.2-alpha69nice+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Games go to the TV in 4K**: Video > Game video output, 4K (new, on) or 1080p (as before).
