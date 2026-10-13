@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // The title's entry point on the Xenia Canary core: Canary's emulator with the
 // console's video output (KHR_display), pad, audio port and the launcher.
+#include <pthread.h>
+#include <time.h>
 #include "xenia/emulator.h"
 #include "xenia/base/logging.h"
 #include "xenia/gpu/vulkan/vulkan_graphics_system.h"
@@ -929,7 +931,7 @@ class ConsoleLogSink final : public xe::LogSink {
   std::atomic<int64_t> second_{0};
   std::atomic<int> lines_{0};
 };
-namespace xbox360ps5 { void CaptureDriverMessages(); }
+namespace xbox360ps5 { void CaptureDriverMessages(const std::filesystem::path& directory); }
 int main(int argc, char** argv) {
   const std::filesystem::path storage = "/download0/ps5x360e";
   std::error_code error;
@@ -995,6 +997,9 @@ int main(int argc, char** argv) {
   // title has made no core thread and holds no lock yet: the core's mutexes
   // may still be told to spin before they block (xenia/base/mutex.h).
   xe::ps5_spin_mutexes = settings.fast_locks != 0;
+  // PS5X360E: the GPU command thread on a core of its own (CPU 2, with its twin
+  // CPU 3 kept free), before any core thread places itself.
+  xbox360ps5::SetGpuCoreDedicated(settings.gpu_core != 0);
   // The driver's worker-thread recording is a test. A start with it on that
   // did not get as far as the launcher or a running game turns it off.
   bool driver_test_withdrawn = false;
@@ -1064,15 +1069,16 @@ int main(int argc, char** argv) {
   xe::AddLogSink(std::make_unique<ConsoleLogSink>());
   if (log_ready) XELOGW("Logs: {}", game_log->session.Path().string());
   // RADV's own messages (its submission time breakdown among them) go to the log.
-  xbox360ps5::CaptureDriverMessages();
+  if (log_ready) xbox360ps5::CaptureDriverMessages(log_root);
   XELOGW("Graphics renderer requested: {}", xbox360ps5::RendererName(started.renderer));
   if (!xbox360ps5::RendererAvailable(started.renderer)) {
     XELOGE("Requested OpenGL game backend is not linked in this executable; launch cancelled");
     return 6;
   }
   xbox360ps5::gpu_diag::enabled = settings.memory_boost != 0;
-  XELOGW("Compatibility: spinning locks {}, video-memory optimizations {} (both off is the v0.5.5 behaviour)",
-         settings.fast_locks ? "on" : "off", settings.memory_boost ? "on" : "off");
+  XELOGW("Compatibility: spinning locks {}, video-memory optimizations {} (both off is the v0.5.5 behaviour); graphics thread core {}",
+         settings.fast_locks ? "on" : "off", settings.memory_boost ? "on" : "off",
+         xbox360ps5::GpuCoreDedicated() ? "dedicated" : "shared");
   XELOGW("Logging: {} (level {}), platform stdout disabled", settings.detailed_logs ? "detailed" : "normal", cvars::log_level);
   // The settings page for a phone on the same network. Its key is shown on
   // screen only: it does not go to the logs, which are shared.
@@ -1936,6 +1942,49 @@ int main(int argc, char** argv) {
                 XELOGW("Performance: watch arming {:.0f}/s for CPU writes, {:.0f}/s for CPU reads of GPU output",
                        double(w - write_arms) / summary_samples, double(r - read_arms) / summary_samples);
                 write_arms = w; read_arms = r;
+              }
+              // CPU use: each of the six guest CPUs (the dispatch threads that
+              // run the game's threads) and the whole emulator, in percent of
+              // one PS5 CPU over the half minute.
+              {
+                static uint64_t previous_wall = 0, previous_process = 0;
+                static uint64_t previous_cpu[6] = {};
+                auto clock_ns = [](clockid_t clock) -> uint64_t {
+                  timespec ts;
+                  return clock_gettime(clock, &ts) == 0
+                             ? uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec) : 0;
+                };
+                const uint64_t wall = clock_ns(CLOCK_MONOTONIC);
+                const uint64_t process = clock_ns(CLOCK_PROCESS_CPUTIME_ID);
+                std::string guest;
+                uint64_t guest_sum = 0;
+                bool have_guest = false;
+                if (auto* scheduler = emulator.kernel_state()->guest_scheduler()) {
+                  for (int cpu = 0; cpu < 6 && cpu < scheduler->dispatch_cpu_count(); ++cpu) {
+                    auto* host = scheduler->dispatch_thread(cpu);
+                    clockid_t clock;
+                    uint64_t now = 0;
+                    if (host && pthread_getcpuclockid(static_cast<pthread_t>(host->native_handle()), &clock) == 0)
+                      now = clock_ns(clock);
+                    if (previous_wall && now && previous_cpu[cpu] && wall > previous_wall) {
+                      const uint64_t used = now - previous_cpu[cpu];
+                      guest += fmt::format("{}{:.0f}", guest.empty() ? "" : " ", 100.0 * double(used) / double(wall - previous_wall));
+                      guest_sum += used;
+                      have_guest = true;
+                    } else if (!now) {
+                      guest += guest.empty() ? "n/a" : " n/a";
+                    }
+                    previous_cpu[cpu] = now;
+                  }
+                }
+                if (previous_wall && wall > previous_wall) {
+                  const double span = double(wall - previous_wall);
+                  XELOGW("Performance: CPU % of one PS5 CPU: guest CPUs 0-5 {} (sum {:.0f}); whole emulator {:.0f} (of 1300 available)",
+                         have_guest ? guest : std::string("n/a"), 100.0 * double(guest_sum) / span,
+                         process && previous_process ? 100.0 * double(process - previous_process) / span : 0.0);
+                }
+                previous_wall = wall;
+                previous_process = process;
               }
               // Frame pacing: intervals of guest vblanks, the game's swaps,
               // swaps processed and host presents (in display refreshes), and

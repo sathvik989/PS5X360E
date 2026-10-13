@@ -1539,7 +1539,7 @@ index 3984cd9d6..3ee0b21a7 100644
    for (int i = 0; i < 32; i++) {
      crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
 diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
-index c9bac1689..38fdfe4b0 100644
+index c9bac1689..0bd667eaf 100644
 --- a/src/xenia/gpu/command_processor.cc
 +++ b/src/xenia/gpu/command_processor.cc
 @@ -8,6 +8,7 @@
@@ -1562,7 +1562,7 @@ index c9bac1689..38fdfe4b0 100644
      "GPU");
  
  DEFINE_bool(
-@@ -109,6 +113,34 @@ DEFINE_bool(
+@@ -109,6 +113,43 @@ DEFINE_bool(
      "RAM without it, which breaks games that read it back.",
      "GPU");
  
@@ -1594,10 +1594,19 @@ index c9bac1689..38fdfe4b0 100644
 +    "the two go together, per title.",
 +    "GPU");
 +
++DEFINE_bool(
++    occlusion_query_strict_early_submit, true,
++    "With accurate (strict) occlusion queries, hand a query the guest will "
++    "poll for to the GPU as soon as its report is queued, instead of when the "
++    "guest starts polling: the GPU works on it while the command processor "
++    "goes on, so the wait for the result is shorter or gone. One more "
++    "submission per such report.",
++    "GPU");
++
  DEFINE_bool(
      memexport_enable, true,
      "Make memory export output visible to the CPU. Needed by games that read "
-@@ -144,6 +176,12 @@ DEFINE_bool(
+@@ -144,6 +185,12 @@ DEFINE_bool(
      "Vulkan, SV_Barycentrics on Direct3D 12).",
      "GPU");
  
@@ -1610,7 +1619,7 @@ index c9bac1689..38fdfe4b0 100644
  namespace xe {
  namespace gpu {
  
-@@ -195,6 +233,8 @@ static ZPDMode ParseZPDMode() {
+@@ -195,6 +242,8 @@ static ZPDMode ParseZPDMode() {
    const std::string& mode = cvars::occlusion_query;
    if (mode == "strict") {
      return ZPDMode::kStrict;
@@ -1619,7 +1628,7 @@ index c9bac1689..38fdfe4b0 100644
    } else if (mode == "fast") {
      return ZPDMode::kFast;
    } else if (mode == "fast-alt") {
-@@ -407,6 +447,9 @@ void CommandProcessor::SetZPDMode(ZPDMode mode) {
+@@ -407,6 +456,9 @@ void CommandProcessor::SetZPDMode(ZPDMode mode) {
      case ZPDMode::kStrict:
        mode_str = "strict";
        break;
@@ -1629,7 +1638,7 @@ index c9bac1689..38fdfe4b0 100644
      default:
        break;
    }
-@@ -498,6 +541,11 @@ void CommandProcessor::SetTitleStateSuffix(std::string suffix) {
+@@ -498,6 +550,11 @@ void CommandProcessor::SetTitleStateSuffix(std::string suffix) {
  }
  
  void CommandProcessor::WorkerThreadMain() {
@@ -1641,7 +1650,7 @@ index c9bac1689..38fdfe4b0 100644
    if (!SetupContext()) {
      xe::FatalError("Unable to setup command processor internal state");
      return;
-@@ -517,18 +565,47 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -517,18 +574,47 @@ void CommandProcessor::WorkerThreadMain() {
        // We've run out of commands to execute.
        // We spin here waiting for new ones, as the overhead of waiting on our
        // event is too high.
@@ -1690,7 +1699,7 @@ index c9bac1689..38fdfe4b0 100644
            }
          } else {
            xe::threading::MaybeYield();
-@@ -539,6 +616,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -539,6 +625,7 @@ void CommandProcessor::WorkerThreadMain() {
                 (write_ptr_index == 0xBAADF00D ||
                  read_ptr_index_ == write_ptr_index));
        ReturnFromWait();
@@ -1698,7 +1707,7 @@ index c9bac1689..38fdfe4b0 100644
        if (!worker_running_ || !pending_fns_.empty()) {
          continue;
        }
-@@ -565,6 +643,184 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -565,6 +652,184 @@ void CommandProcessor::WorkerThreadMain() {
    ShutdownContext();
  }
  
@@ -1883,7 +1892,7 @@ index c9bac1689..38fdfe4b0 100644
  void CommandProcessor::Pause() {
    if (paused_) {
      return;
-@@ -754,6 +1010,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
+@@ -754,6 +1019,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
        uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
        uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
        xe::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
@@ -1893,7 +1902,7 @@ index c9bac1689..38fdfe4b0 100644
      }
    } else {
      switch (index) {
-@@ -1046,6 +1305,12 @@ void CommandProcessor::PrepareForWait() {
+@@ -1046,6 +1314,12 @@ void CommandProcessor::PrepareForWait() {
    trace_writer_.Flush();
    if (zpd_mode_ == ZPDMode::kStrict && zpd_awaited_report_count_) {
      PrepareZPDForWait();
@@ -1906,7 +1915,7 @@ index c9bac1689..38fdfe4b0 100644
    }
    if (viz_pending_resolves_) {
      PollCompletedSubmission();
-@@ -1263,7 +1528,7 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1263,7 +1537,7 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
  
    ZPDReport& report = zpd_current_report_;
    report.address = report_address;
@@ -1915,7 +1924,7 @@ index c9bac1689..38fdfe4b0 100644
      // See EVENT_WRITE_ZPD for additional information on the pending sentinel.
      const uint32_t kPendingSentinel = xe::byte_swap(0xFFFFFEEDu);
      const auto* guest =
-@@ -1291,6 +1556,8 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1291,8 +1565,19 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
      WriteZPDReport(report_address, report.speculative_value);
    }
    zpd_awaited_report_count_ += report.awaited;
@@ -1923,8 +1932,19 @@ index c9bac1689..38fdfe4b0 100644
 +      refreshed_output_count_.load(std::memory_order_relaxed);
    zpd_reports_.push_back(report);
    zpd_stats_.reports_queued++;
++  // PS5X360E: the guest marked this report pending, or the command processor
++  // has had to wait for this report before, so it will be polled.
++  // Start the GPU on it now: by the time the guest polls, the result is often
++  // there already, and the command processor doesn't stand waiting for it.
++  if (zpd_mode_ == ZPDMode::kStrict && report.pending_segments &&
++      cvars::occlusion_query_strict_early_submit &&
++      (report.awaited || zpd_waited_addresses_.count(report.address))) {
++    SubmitQueryResolvesNoWait(report.last_segment_end_submission, false);
++  }
  
-@@ -1340,8 +1607,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
+   // The next report's segment opens at its first draw.
+   // Report runs without draws between them never use any pool slots.
+@@ -1340,8 +1625,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
    if (result == QueryOpenResult::kPoolExhausted) {
      zpd_stats_.pool_exhausted++;
    }
@@ -1934,7 +1954,7 @@ index c9bac1689..38fdfe4b0 100644
      // Fast modes favor forward progress over accuracy. Report at least one
      // passing sample instead of waiting for a slot to become available.
      if (report) {
-@@ -1488,10 +1754,30 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
+@@ -1488,10 +1772,30 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
    return nullptr;
  }
  
@@ -1967,7 +1987,18 @@ index c9bac1689..38fdfe4b0 100644
        awaited_handle = report.handle;
        break;
      }
-@@ -1543,13 +1829,22 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1512,6 +1816,10 @@ void CommandProcessor::PrepareZPDForWait() {
+   if (!wait_report || !wait_report->pending_segments) {
+     return;
+   }
++  if (zpd_waited_addresses_.size() >= 4096) {
++    zpd_waited_addresses_.clear();
++  }
++  zpd_waited_addresses_.insert(wait_report->address);
+   if (AwaitQueryResolve(wait_report->handle,
+                         wait_report->last_segment_end_submission)) {
+     PumpPendingRetire();
+@@ -1543,13 +1851,22 @@ void CommandProcessor::PumpPendingRetire() {
        if (zpd_mode_ == ZPDMode::kStrict) {
          break;
        }
@@ -1991,7 +2022,7 @@ index c9bac1689..38fdfe4b0 100644
          break;
        }
        front.delta.z_pass = std::max<uint64_t>(front.delta.z_pass, 1);
-@@ -1559,6 +1854,21 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1559,6 +1876,21 @@ void CommandProcessor::PumpPendingRetire() {
      zpd_pending_retire_start_ms_ = 0;
  
      zpd_sample_counter_ += front.delta;
@@ -2014,10 +2045,18 @@ index c9bac1689..38fdfe4b0 100644
        if (fast_zpd_report_cached_deltas_.size() >= kFastZPDCacheMaxEntries &&
            !fast_zpd_report_cached_deltas_.count(front.address)) {
 diff --git a/src/xenia/gpu/command_processor.h b/src/xenia/gpu/command_processor.h
-index 3057e6bc9..8ca2216c8 100644
+index 3057e6bc9..69339aeca 100644
 --- a/src/xenia/gpu/command_processor.h
 +++ b/src/xenia/gpu/command_processor.h
-@@ -53,6 +53,9 @@ enum class ZPDMode {
+@@ -21,6 +21,7 @@
+ #include <queue>
+ #include <string>
+ #include <unordered_map>
++#include <unordered_set>
+ #include <vector>
+ 
+ #include "xenia/base/math.h"
+@@ -53,6 +54,9 @@ enum class ZPDMode {
    kFast,     // Real queries, speculative writes biased visible (fast)
    kFastAlt,  // Fast, but replays cached zero deltas too (fast-alt)
    kStrict,   // Real queries, waits before writeback (strict)
@@ -2027,7 +2066,7 @@ index 3057e6bc9..8ca2216c8 100644
  };
  
  void SaveGPUSetting(GPUSetting setting, uint64_t value);
-@@ -75,6 +78,9 @@ struct ResolveRange {
+@@ -75,6 +79,9 @@ struct ResolveRange {
  constexpr uint64_t kStrictZPDRetireDeadlineMs = 2;
  // The fast modes only need to keep queue growth in check.
  constexpr uint64_t kFastZPDRetireDeadlineMs = 250;
@@ -2037,7 +2076,7 @@ index 3057e6bc9..8ca2216c8 100644
  
  // Cap for the fast-mode cached delta map.  Games reuse a small set of report
  // addresses so this should never be hit, but prevents unbounded growth if a
-@@ -136,7 +142,25 @@ class CommandProcessor {
+@@ -136,7 +143,25 @@ class CommandProcessor {
                     kernel::KernelState* kernel_state);
    virtual ~CommandProcessor();
    uint32_t counter() const { return counter_; }
@@ -2063,7 +2102,7 @@ index 3057e6bc9..8ca2216c8 100644
  
    Shader* active_vertex_shader() const { return active_vertex_shader_; }
    Shader* active_pixel_shader() const { return active_pixel_shader_; }
-@@ -199,6 +223,10 @@ class CommandProcessor {
+@@ -199,6 +224,10 @@ class CommandProcessor {
        std::function<void()> completion_callback = nullptr);
  
    virtual void RequestFrameTrace(const std::filesystem::path& root_path);
@@ -2074,7 +2113,7 @@ index 3057e6bc9..8ca2216c8 100644
    virtual void BeginTracing(const std::filesystem::path& root_path);
    virtual void EndTracing();
    // Safe from any thread, the writer is closed on the next swap.
-@@ -219,6 +247,9 @@ class CommandProcessor {
+@@ -219,6 +248,9 @@ class CommandProcessor {
    // register write-back - by backends that must have submitted what the guest
    // may then touch (see command_processor_resolve_readwatch.inc).
    virtual void SubmitResolvesForGuestSync() {}
@@ -2084,7 +2123,7 @@ index 3057e6bc9..8ca2216c8 100644
  
    void RestoreRegisters(uint32_t first_register,
                          const uint32_t* register_values,
-@@ -398,6 +429,8 @@ class CommandProcessor {
+@@ -398,6 +430,8 @@ class CommandProcessor {
      // For strict, when a report holds the D3D sentinel.
      // Only these are worth blocking a wait for.
      bool awaited = false;
@@ -2093,7 +2132,7 @@ index 3057e6bc9..8ca2216c8 100644
    };
  
    static constexpr uint64_t kInvalidVIZGeneration = 0;
-@@ -496,7 +529,22 @@ class CommandProcessor {
+@@ -496,7 +530,22 @@ class CommandProcessor {
    // order, so the queue is indexed by the front handle.
    ZPDReport* FindZPDReport(ReportHandle report_handle);
    // Handles a strict report the guest is waiting on while the ring is empty.
@@ -2117,7 +2156,18 @@ index 3057e6bc9..8ca2216c8 100644
    // Called from PrepareForWait and submission boundaries so retired reports
    // reach the guest before it loops again. Fast modes give up on a stuck front
    // report after kFastZPDRetireDeadlineMs.
-@@ -710,6 +758,8 @@ class CommandProcessor {
+@@ -656,6 +705,10 @@ class CommandProcessor {
+   XenosZPDReport zpd_sample_counter_;
+   XenosZPDReport zpd_speculative_sample_counter_;
+   std::unordered_map<uint32_t, XenosZPDReport> fast_zpd_report_cached_deltas_;
++  // PS5X360E: strict mode, addresses of reports the command processor has had
++  // to wait for (the guest polled them, with or without the pending
++  // sentinel): their next reports go to the GPU as soon as they are queued.
++  std::unordered_set<uint32_t> zpd_waited_addresses_;
+ 
+   // Sticky after host pool init failure. Forces EVENT_WRITE_ZPD onto the fake
+   // path so guests don't stall waiting on a pending sentinel that will never
+@@ -710,6 +763,8 @@ class CommandProcessor {
    std::vector<uint32_t> me_bin_;
  
    uint32_t counter_ = 0;
@@ -2126,7 +2176,7 @@ index 3057e6bc9..8ca2216c8 100644
  
    uint32_t primary_buffer_ptr_ = 0;
    uint32_t primary_buffer_size_ = 0;
-@@ -718,6 +768,39 @@ class CommandProcessor {
+@@ -718,6 +773,39 @@ class CommandProcessor {
    uint32_t read_ptr_update_freq_ = 0;
    uint32_t read_ptr_writeback_ptr_ = 0;
  
@@ -3738,7 +3788,7 @@ index e6b7d535c..0f0eb959b 100644
      SharedMemory::WatchHandle base_watch_handle_ = nullptr;
      SharedMemory::WatchHandle mips_watch_handle_ = nullptr;
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index b61995956..febe69c19 100644
+index b61995956..3cfe50150 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,9 +8,12 @@
@@ -3989,17 +4039,43 @@ index b61995956..febe69c19 100644
      EndSubmission(false);
    }
  }
-@@ -3398,6 +3537,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3398,6 +3537,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 +  // PS5X360E: one writer, so no locked increment per draw.
 +  perf_draws_.store(perf_draws_.load(std::memory_order_relaxed) + 1,
 +                    std::memory_order_relaxed);
++  draw_timing_sample_ = !(++draw_timing_counter_ & 63);
++  MarkDrawStage(0);
  
    const RegisterFile& regs = *register_file_;
  
-@@ -3839,6 +3981,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3728,6 +3872,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+     CheckSubmissionCompletionAndDeviceLoss(sampler_overflow_await_submission);
+   }
+ 
++  MarkDrawStage(1);
+   // Put the window offset into the EDRAM bases when possible.
+   int32_t window_offset_tiles = render_target_cache_->GetWindowOffsetTiles(
+       regs, normalized_depth_control, normalized_color_mask, frame_current_);
+@@ -3738,6 +3883,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+           normalized_color_mask, *vertex_shader, window_offset_tiles)) {
+     return false;
+   }
++  MarkDrawStage(2);
+   const char* stand_in_wait_reason =
+       render_target_cache_->GetPipelineStandInWaitReason(
+           frame_current_, *vertex_shader, pixel_shader, memexport_used_vertex,
+@@ -3783,6 +3929,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+     OnVIZSurveyDraw(false);
+     return true;
+   }
++  MarkDrawStage(3);
+   VkPipeline current_pipeline =
+       pipeline->pipeline.load(std::memory_order_acquire);
+   // Whether the placeholder pipeline is bound rather than the real one. Derived
+@@ -3839,7 +3986,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
        (pixel_shader != nullptr && pixel_shader->bindings_ready()
             ? pixel_shader->GetUsedTextureMaskAfterTranslation()
             : 0);
@@ -4010,9 +4086,27 @@ index b61995956..febe69c19 100644
 +    TraceRingDraw(used_texture_mask, *vertex_shader, pixel_shader);
 +  }
    texture_cache_->RequestTextures(used_texture_mask);
++  MarkDrawStage(4);
  
    // Update the graphics pipeline, and if the new graphics pipeline has a
-@@ -4129,6 +4277,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+   // different layout, invalidate incompatible descriptor sets before updating
+@@ -3975,6 +4129,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+       normalized_color_mask,
+       apply_host_depth_polygon_offset ? &host_depth_polygon_offset : nullptr,
+       window_offset_tiles);
++  MarkDrawStage(5);
+ 
+   {
+     uint32_t ucode_base_dwords = 0, cf_instr_count = 0;
+@@ -4042,6 +4197,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+                       placeholder_pixel_shader)) {
+     return false;
+   }
++  MarkDrawStage(6);
+ 
+   // Ensure vertex buffers are resident.
+   //
+@@ -4129,6 +4285,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
            return false;
          }
        }
@@ -4025,7 +4119,15 @@ index b61995956..febe69c19 100644
      }
    }
  
-@@ -4265,6 +4419,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4173,6 +4335,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+   // After all commands that may dispatch, copy or insert barriers, submit the
+   // barriers (may end the render pass), and (re)enter the render pass before
+   // drawing.
++  MarkDrawStage(7);
+   uint32_t zpd_hybrid_index_before_render_pass =
+       active_segment_.hybrid ? active_query_index_ : UINT32_MAX;
+   SubmitBarriersAndEnterRenderTargetCacheRenderPass(
+@@ -4265,6 +4428,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
    }
  
    if (!memexport_ranges_.empty()) {
@@ -4036,7 +4138,47 @@ index b61995956..febe69c19 100644
      if (route_to_host) {
        // Producer draw: output landed in host_buffer_ (guest RAM), already CPU
        // coherent, so no readback. Just record the written pages. Consumers then
-@@ -4372,6 +4530,169 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
+@@ -4285,9 +4452,39 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+     }
+   }
+ 
++  FinishDrawSample();
+   return true;
+ }
+ 
++void VulkanCommandProcessor::MarkDrawStage(uint32_t stage) {
++  if (draw_timing_sample_) {
++    draw_timing_marks_[stage] = PerfNowNs();
++  }
++}
++
++void VulkanCommandProcessor::FinishDrawSample() {
++  if (!draw_timing_sample_) {
++    return;
++  }
++  draw_timing_sample_ = false;
++  MarkDrawStage(kDrawStages);
++  for (uint32_t i = 0; i < kDrawStages; ++i) {
++    // A stage passed over by a path (none today) would read an old mark.
++    if (draw_timing_marks_[i + 1] < draw_timing_marks_[i]) {
++      return;
++    }
++  }
++  for (uint32_t i = 0; i < kDrawStages; ++i) {
++    perf_draw_stage_ns_[i].store(
++        perf_draw_stage_ns_[i].load(std::memory_order_relaxed) +
++            (draw_timing_marks_[i + 1] - draw_timing_marks_[i]),
++        std::memory_order_relaxed);
++  }
++  perf_draw_samples_.store(perf_draw_samples_.load(std::memory_order_relaxed) +
++                               1,
++                           std::memory_order_relaxed);
++}
++
+ // Records copies of this draw's export output into staging buffers. The copy
+ // out waits, so it is deferred to FlushMemexportStagingReadback, where one wait
+ // covers every producer since the last one.
+@@ -4372,6 +4569,169 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
    memexport_staged_.clear();
  }
  
@@ -4206,7 +4348,7 @@ index b61995956..febe69c19 100644
  bool VulkanCommandProcessor::EnsureMemexportRangeInDeviceBuffer(
      uint32_t base_bytes, uint32_t size_bytes, bool whole_range) {
    // Readers of the device buffer need memexport output copied across from
-@@ -4768,6 +5089,35 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4768,6 +5128,35 @@ bool VulkanCommandProcessor::IssueCopy() {
      return false;
    }
    ++submission_in_progress_.resolve_count;
@@ -4242,7 +4384,7 @@ index b61995956..febe69c19 100644
  
    // The resolve wrote the device buffer. Drop any stale memexport marks so the
    // output isn't overwritten with guest RAM by a later texture load.
-@@ -4785,9 +5135,17 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4785,9 +5174,17 @@ bool VulkanCommandProcessor::IssueCopy() {
          is_scaled = false;
          written_length = mirrored_length;
        }
@@ -4260,7 +4402,7 @@ index b61995956..febe69c19 100644
  
    // Pop debug marker for resolve operation.
    if (debug_markers_enabled_) {
-@@ -4796,9 +5154,212 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4796,9 +5193,212 @@ bool VulkanCommandProcessor::IssueCopy() {
  
    SubmitRequestedResolve();
  
@@ -4473,7 +4615,7 @@ index b61995956..febe69c19 100644
  void VulkanCommandProcessor::EnsureQueryResources() {
    // VIZ surveys need the pool even when ZPD reports are faked.
    if ((zpd_mode_ == ZPDMode::kFake && !cvars::occlusion_query_viz) ||
-@@ -4922,7 +5483,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4922,7 +5522,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
        is_pool_exhausted = !host_query_pool_->has_free_indices();
      }
  
@@ -4482,7 +4624,7 @@ index b61995956..febe69c19 100644
        return QueryOpenResult::kPoolExhausted;
      }
  
-@@ -4947,6 +5508,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4947,6 +5547,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
          saved_framebuffer = current_framebuffer_;
          EndRenderPass();
        }
@@ -4490,7 +4632,7 @@ index b61995956..febe69c19 100644
        if (!EndSubmission(false)) {
          return QueryOpenResult::kFailed;
        }
-@@ -4973,7 +5535,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4973,7 +5574,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
          XELOGI("ZPD: Stall awaiting submission={} completed_before={}",
                 wait_for, completed_submission);
        }
@@ -4499,7 +4641,7 @@ index b61995956..febe69c19 100644
        PumpQueryResolves();
      }
  
-@@ -5147,6 +5709,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+@@ -5147,6 +5748,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
  bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                 uint64_t wait_for_submission) {
    assert_not_zero(wait_for_submission);
@@ -4512,7 +4654,7 @@ index b61995956..febe69c19 100644
  
    // The resolve is still in the open submission.
    if (wait_for_submission >= GetCurrentSubmission()) {
-@@ -5154,13 +5722,15 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5154,13 +5761,15 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
        return false;
      }
      EndRenderPass();
@@ -4529,7 +4671,7 @@ index b61995956..febe69c19 100644
    }
  
    PumpQueryResolves();
-@@ -5169,6 +5739,20 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5169,6 +5778,20 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
    return !report || !report->pending_segments;
  }
  
@@ -4550,7 +4692,7 @@ index b61995956..febe69c19 100644
  bool VulkanCommandProcessor::EnsureVIZPredicateBuffer() {
    if (viz_predicate_buffer_ != VK_NULL_HANDLE) {
      return true;
-@@ -5306,7 +5890,7 @@ void VulkanCommandProcessor::AwaitVIZQueryResolve(
+@@ -5306,7 +5929,7 @@ void VulkanCommandProcessor::AwaitVIZQueryResolve(
    }
  
    if (wait_for_submission > GetCompletedSubmission()) {
@@ -4559,7 +4701,7 @@ index b61995956..febe69c19 100644
    }
  
    PumpQueryResolves();
-@@ -5378,7 +5962,7 @@ void VulkanCommandProcessor::LogRecentSubmissions(const char* context) {
+@@ -5378,7 +6001,7 @@ void VulkanCommandProcessor::LogRecentSubmissions(const char* context) {
  }
  
  void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
@@ -4568,7 +4710,7 @@ index b61995956..febe69c19 100644
    // Only report once, no need to retry a wait that won't succeed anyway.
    if (device_lost_) {
      return;
-@@ -5386,6 +5970,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
+@@ -5386,6 +6009,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
  
    if (await_submission >= GetCurrentSubmission()) {
      if (submission_open_) {
@@ -4576,7 +4718,7 @@ index b61995956..febe69c19 100644
        EndSubmission(false);
      }
      // A submission won't be ended if it hasn't been started, or if ending
-@@ -5393,7 +5978,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
+@@ -5393,7 +6017,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
      await_submission = GetCurrentSubmission() - 1;
    }
  
@@ -4585,7 +4727,7 @@ index b61995956..febe69c19 100644
  
    const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
  
-@@ -5517,7 +6102,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5517,7 +6141,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
        is_opening_frame
            ? closed_frame_submissions_[frame_current_ % kMaxFramesInFlight]
            : 0;
@@ -4594,7 +4736,7 @@ index b61995956..febe69c19 100644
    const uint64_t completed_submission = GetCompletedSubmission();
    if (device_lost_ || completed_submission < await_submission) {
      return false;
-@@ -5665,6 +6250,101 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5665,6 +6289,130 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
    return true;
  }
  
@@ -4657,13 +4799,42 @@ index b61995956..febe69c19 100644
 +          : 0;
 +  perf_draws_previous_ = draws;
 +  perf_thread_cpu_previous_ns_ = thread_cpu_ns;
++  const uint64_t draw_samples = perf_draw_samples_.load(std::memory_order_relaxed);
++  const uint64_t window_draw_samples = draw_samples - perf_draw_samples_previous_;
++  perf_draw_samples_previous_ = draw_samples;
++  std::string draw_stages;
++  {
++    static const char* const kStageNames[kDrawStages] = {
++        "shaders", "render targets", "pipeline", "textures",
++        "state",   "bindings",       "memory",   "draw"};
++    double total_us = 0;
++    std::string parts;
++    for (uint32_t i = 0; i < kDrawStages; ++i) {
++      const uint64_t stage_ns =
++          perf_draw_stage_ns_[i].load(std::memory_order_relaxed);
++      const uint64_t window_ns = stage_ns - perf_draw_stage_previous_ns_[i];
++      perf_draw_stage_previous_ns_[i] = stage_ns;
++      if (!window_draw_samples) {
++        continue;
++      }
++      const double us = double(window_ns) / 1000.0 / double(window_draw_samples);
++      total_us += us;
++      parts += fmt::format("{}{} {:.2f}", parts.empty() ? "" : ", ",
++                           kStageNames[i], us);
++    }
++    if (window_draw_samples) {
++      draw_stages = fmt::format(
++          "; per draw {:.2f} us in IssueDraw ({}; {} sampled)", total_us,
++          parts, window_draw_samples);
++    }
++  }
 +  std::string thread_cpu =
 +      thread_cpu_ns ? fmt::format("{:.0f}%", 100.0 *
 +                                                 double(window_thread_cpu_ns) /
 +                                                 double(now - since))
 +                    : std::string("n/a");
 +  return fmt::format(
-+      "draws {:.0f}/s, command processor thread CPU {}; "
++      "draws {:.0f}/s, command processor thread CPU {}{}; "
 +      "GPU busy {:.0f}% ({:.1f} ms/s over {} timed submissions, {} untimed); "
 +      "submissions {:.0f}/s: swap {:.0f}, guest buffer end {:.0f}, resolve "
 +      "sync {:.0f}, occlusion query {:.0f}, wait {:.0f}, other {:.0f}; GPU "
@@ -4671,7 +4842,7 @@ index b61995956..febe69c19 100644
 +      "{:.1f} ms/s, export output for the guest {:.0f}/s {:.1f} ms/s, other "
 +      "{:.0f}/s {:.1f} ms/s, resolve read by CPU {:.0f}/s {:.1f} ms/s; render "
 +      "output copied for the CPU without waiting {:.0f}/s",
-+      per_s(window_draws), thread_cpu,
++      per_s(window_draws), thread_cpu, draw_stages,
 +      100.0 * double(busy) / double(now - since), ms_per_s(busy), timed,
 +      untimed, per_s(total_submits),
 +      per_s(submits[uint32_t(SubmitReason::kSwap)]),
@@ -4696,7 +4867,7 @@ index b61995956..febe69c19 100644
  void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    if (!vulkan_device->properties().timestampPeriod) {
-@@ -5711,13 +6391,22 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
+@@ -5711,13 +6459,22 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
                                    sizeof(uint64_t),
                                    VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
          timestamps[1] > timestamps[0]) {
@@ -4720,7 +4891,7 @@ index b61995956..febe69c19 100644
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5874,6 +6563,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5874,6 +6631,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
          gpu_time_pool_available && !gpu_time_query_submissions_[gpu_time_slot];
      if (gpu_time_pool_available && !gpu_time_recorded) {
        ++gpu_time_untimed_submissions_;
@@ -4728,7 +4899,7 @@ index b61995956..febe69c19 100644
      }
      if (gpu_time_recorded) {
        dfn.vkCmdResetQueryPool(command_buffer.buffer, gpu_time_query_pool_,
-@@ -5943,6 +6633,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5943,6 +6701,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        }
        return false;
      }
@@ -4737,7 +4908,7 @@ index b61995956..febe69c19 100644
      current_submission_wait_stage_masks_.clear();
      for (VkSemaphore semaphore : current_submission_wait_semaphores_) {
        submissions_in_flight_semaphores_.emplace_back(submission_index,
-@@ -6882,20 +7574,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6882,20 +7642,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
          std::memcpy(mapping, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X],
                      sizeof(float) * 4 * 256);
        } else {
@@ -4761,7 +4932,7 @@ index b61995956..febe69c19 100644
        }
      }
      // Pixel shader float constants.
-@@ -6909,20 +7590,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6909,20 +7658,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
        if (!mapping) {
          return false;
        }
@@ -4786,7 +4957,7 @@ index b61995956..febe69c19 100644
      // Bool and loop constants.
      if (!(current_constant_buffers_up_to_date_ &
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.h b/src/xenia/gpu/vulkan/vulkan_command_processor.h
-index 34c45db8a..d5cec9724 100644
+index 34c45db8a..0df415dc5 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.h
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.h
 @@ -18,6 +18,7 @@
@@ -4906,7 +5077,7 @@ index 34c45db8a..d5cec9724 100644
    VkQueryPool gpu_time_query_pool_ = VK_NULL_HANDLE;
    uint64_t gpu_time_query_submissions_[kGpuTimeQuerySubmissions] = {};
    uint32_t gpu_time_query_slot_ = 0;
-@@ -713,6 +751,41 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -713,6 +751,55 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // which sums per-submission intervals and misleads without it.
    uint64_t gpu_time_submissions_window_start_ = 0;
    uint64_t gpu_time_window_start_ns_ = 0;
@@ -4939,6 +5110,20 @@ index 34c45db8a..d5cec9724 100644
 +  std::atomic<uint64_t> perf_thread_cpu_ns_{0};
 +  uint64_t perf_draws_previous_ = 0;
 +  uint64_t perf_thread_cpu_previous_ns_ = 0;
++  // Where a draw's time goes, timed on one draw in 64 (IssueDraw stages:
++  // shaders, render targets, pipeline, textures, state, bindings, vertex and
++  // export memory, render pass and draw). Written by the command processor
++  // thread only; a sample that returns early is dropped.
++  static constexpr uint32_t kDrawStages = 8;
++  uint32_t draw_timing_counter_ = 0;
++  bool draw_timing_sample_ = false;
++  uint64_t draw_timing_marks_[kDrawStages + 1] = {};
++  std::atomic<uint64_t> perf_draw_stage_ns_[kDrawStages] = {};
++  std::atomic<uint64_t> perf_draw_samples_{0};
++  uint64_t perf_draw_stage_previous_ns_[kDrawStages] = {};
++  uint64_t perf_draw_samples_previous_ = 0;
++  void MarkDrawStage(uint32_t stage);
++  void FinishDrawSample();
 +  // Awaits a submission, counting it as a wait (with its time) when it has not
 +  // completed yet.
 +  void AwaitSubmissionCounted(uint64_t submission, WaitReason reason);
@@ -4948,7 +5133,7 @@ index 34c45db8a..d5cec9724 100644
    void CreateGpuTimeQueryPool();
    void DestroyGpuTimeQueryPool();
    void CollectCompletedGpuTimeQueries();
-@@ -1092,6 +1165,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -1092,6 +1179,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // .inc for ScaledResolveReadbackInfo.
    bool DownscaleScaledResolve(uint32_t written_address,
                                const ScaledResolveReadbackInfo& scaled_info);

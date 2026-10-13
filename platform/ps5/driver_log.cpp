@@ -2,13 +2,16 @@
 //
 // RADV (PS5_Mesa) writes to the standard error stream: among others, every 10 s
 // a breakdown of where queue submission time goes. On the console that stream
-// is not kept anywhere a player can send, so it is captured here: standard
-// error becomes a pipe, and a thread hands each line to the log ("Driver: ...")
-// and passes it on to where standard error went before.
+// is not kept anywhere a player can send. The console refuses to put a pipe in
+// its place (dup2 onto descriptor 2 failed, alpha.48), so standard error is
+// reopened onto a file instead (as the native runtime probe does), and a thread
+// follows that file, handing each new line to the log ("Driver: ...").
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <thread>
 
@@ -16,39 +19,34 @@
 
 namespace xbox360ps5 {
 
-void CaptureDriverMessages() {
+void CaptureDriverMessages(const std::filesystem::path& directory) {
   static bool started = false;
-  if (started) return;
-  int ends[2];
-  if (pipe(ends) != 0) {
-    XELOGW("Driver messages: no pipe, standard error is not logged");
-    return;
-  }
-  const int previous = dup(STDERR_FILENO);
+  if (started || directory.empty()) return;
+  const std::string path = (directory / "driver-messages.txt").string();
   std::fflush(stderr);
-  // A writer never waits for the reader: a crash handler writing to standard
-  // error must not block on a full pipe. Lines beyond the pipe's buffer are
-  // dropped instead.
-  fcntl(ends[1], F_SETFL, fcntl(ends[1], F_GETFL) | O_NONBLOCK);
-  if (dup2(ends[1], STDERR_FILENO) < 0) {
-    close(ends[0]);
-    close(ends[1]);
-    if (previous >= 0) close(previous);
-    XELOGW("Driver messages: standard error could not be redirected");
+  if (!std::freopen(path.c_str(), "w", stderr)) {
+    XELOGW("Driver messages: standard error could not be reopened on {}", path);
     return;
   }
-  close(ends[1]);
   std::setvbuf(stderr, nullptr, _IOLBF, 0);
+  const int reader = open(path.c_str(), O_RDONLY);
+  if (reader < 0) {
+    XELOGW("Driver messages: {} could not be read back; they stay in that file", path);
+    return;
+  }
   started = true;
-  const int reader = ends[0];
   try {
-    std::thread([reader, previous] {
+    std::thread([reader] {
       std::string pending;
       char buffer[1024];
       while (true) {
         const ssize_t got = read(reader, buffer, sizeof(buffer));
-        if (got <= 0) break;
-        if (previous >= 0) (void)write(previous, buffer, size_t(got));
+        if (got < 0) break;
+        if (got == 0) {
+          // At the end of what was written so far: look again shortly.
+          std::this_thread::sleep_for(std::chrono::milliseconds(500));
+          continue;
+        }
         pending.append(buffer, size_t(got));
         for (size_t end; (end = pending.find('\n')) != std::string::npos;
              pending.erase(0, end + 1)) {
@@ -61,16 +59,12 @@ void CaptureDriverMessages() {
       }
     }).detach();
   } catch (...) {
-    XELOGW("Driver messages: no reader thread, standard error is not logged");
-    if (previous >= 0) {
-      dup2(previous, STDERR_FILENO);
-      close(previous);
-    }
     close(reader);
     started = false;
+    XELOGW("Driver messages: no reader thread; they stay in {}", path);
     return;
   }
-  XELOGI("Driver messages: standard error goes to this log");
+  XELOGW("Driver messages: standard error goes to this log (through {})", path);
 }
 
 }  // namespace xbox360ps5
