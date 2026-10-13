@@ -115,6 +115,10 @@ void LoadGameConfigs(const std::string& title_id) {
   cvars::draw_resolution_scale_threshold = nfs_the_run ? 320 : 0;
   if (small_effects_choice == 1) cvars::draw_resolution_scale_threshold = 0;
   if (small_effects_choice == 2) cvars::draw_resolution_scale_threshold = 640;
+  // alpha.72: the steps between, at EDRAM tile widths (80 pixels).
+  if (small_effects_choice == 3) cvars::draw_resolution_scale_threshold = 400;
+  if (small_effects_choice == 4) cvars::draw_resolution_scale_threshold = 480;
+  if (small_effects_choice == 5) cvars::draw_resolution_scale_threshold = 560;
   XELOGW("3x tests: small effects native up to {} pixels", uint32_t(cvars::draw_resolution_scale_threshold));
 
   if (!cvar::ConfigVars) return;

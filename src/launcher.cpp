@@ -248,7 +248,7 @@ const std::vector<Option>& Options() {
       // shapes across the menus, blank panels, HUD flicker; 2x is clean).
       {"small_effects", &S::small_effects, 0, W::start, 0, true, "Efeitos pequenos em resolução nativa (teste)",
        "Superfícies pequenas (brilho, desfoque) ficam na resolução original em vez de 2x/3x. Padrão do jogo: o ajuste que o jogo precisa (NFS The Run: até 320 pixels). Desligado: tudo é ampliado. Mais largo: até 640 pixels. Teste para defeitos que só aparecem em 3x.",
-       {"Padrão do jogo", "Desligado", "Mais largo (640)"}},
+       {"Padrão do jogo", "Desligado", "Mais largo (640)", "400", "480", "560"}},
       {"scaled_offsets", &S::scaled_offsets, 0, W::start, 0, true, "Deslocamentos de textura ampliados (teste)",
        "Ajusta os deslocamentos de textura dos efeitos à resolução ampliada (sombras, brilho). Teste para defeitos que só aparecem em 3x.",
        {"Ligado", "Desligado"}},

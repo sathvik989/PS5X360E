@@ -3,6 +3,14 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.72+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Small effects at native resolution (test) has the widths between 320 and 640**: 400, 480 and
+  560 pixels. In alpha.71's runs the white triangles at 3x were gone whenever this setting was
+  away from NFS The Run's 320 (it was never back on Game default in those runs). Off made the GPU
+  work hardest (13-24 FPS, wrong lighting); 640 raced at 29-30 FPS but froze for seconds in
+  menus and loading. The steps between are to find a width without either.
+
 ## 0.2-alpha.71+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Three test options for the 3x-only picture faults** (NFS The Run at 3x: shapes across the
