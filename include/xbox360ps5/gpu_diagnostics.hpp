@@ -171,6 +171,14 @@ struct HitchWork {
 // synchronous ones), texture loads, and bytes uploaded to the GPU copy of
 // guest memory.
 inline HitchWork hitch_translate, hitch_pipeline, hitch_texture;
+// alpha.73: render target transfer and dump pipelines created, render targets
+// and textures created, scaled resolve memory committed, sparse binds (with
+// the wait for earlier submissions before them), the wait for room in the
+// submit thread's queue, waits for submissions to reach the queue, and the
+// CPU side of render target transfers and resolves.
+inline HitchWork hitch_rt_pipeline, hitch_rt_create, hitch_texture_create,
+    hitch_scaled_commit, hitch_sparse, hitch_backpressure, hitch_queue_wait,
+    hitch_transfers, hitch_resolves;
 inline std::atomic<uint64_t> hitch_upload_bytes{0};
 // The host tick count is nanoseconds from the time-stamp counter on the PS5;
 // steady_clock is a system call of about a microsecond there, which on texture

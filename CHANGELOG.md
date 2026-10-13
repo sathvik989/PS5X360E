@@ -3,6 +3,15 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.73+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Where a freeze goes** (measurement only): each "Hitch:" line is followed by a "Hitch detail:"
+  line with the GPU thread's time in render target transfer and dump pipelines created, render
+  targets and textures created, upscaled memory committed, sparse binds, waits for room in the
+  submit queue and for submissions to reach the GPU queue, render target transfers and resolves.
+  Freezes up to two minutes are reported (five seconds before; alpha.71's 15 s freeze went
+  unreported). For the 1-3 s freezes at 3x with Small effects 640, while the GPU was nearly idle.
+
 ## 0.2-alpha.72+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Small effects at native resolution (test) has the widths between 320 and 640**: 400, 480 and
