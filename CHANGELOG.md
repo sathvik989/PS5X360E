@@ -3,6 +3,17 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.71+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Three test options for the 3x-only picture faults** (NFS The Run at 3x: shapes across the
+  menus, blank panels, HUD flicker; 2x is clean). All in Video, each starting at the previous
+  behaviour:
+  - Small effects at native resolution (test): Game default (NFS: up to 320 pixels), Off, or
+    Wider (640).
+  - Scaled texture offsets (test): On (default) or Off.
+  - Half pixel in upscaled copies (test): On (default) or Off.
+  The log says which small-effects width is in use ("3x tests: ...").
+
 ## 0.2-alpha.70+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Starts again** (alpha69nice2 stopped at start with "Unable to allocate PPC thread context

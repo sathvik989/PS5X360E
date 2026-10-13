@@ -113,6 +113,9 @@ void LoadGameConfigs(const std::string& title_id) {
   // pixels wide native fixed it (user, alpha.39).
   const bool nfs_the_run = xe::utf8::lower_ascii(title_id) == "4541094a";
   cvars::draw_resolution_scale_threshold = nfs_the_run ? 320 : 0;
+  if (small_effects_choice == 1) cvars::draw_resolution_scale_threshold = 0;
+  if (small_effects_choice == 2) cvars::draw_resolution_scale_threshold = 640;
+  XELOGW("3x tests: small effects native up to {} pixels", uint32_t(cvars::draw_resolution_scale_threshold));
 
   if (!cvar::ConfigVars) return;
   for (const auto& folder : folders) {

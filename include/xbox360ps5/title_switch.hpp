@@ -11,6 +11,9 @@
 #include <string>
 #include <vector>
 namespace xbox360ps5 {
+// "Small effects at native resolution" (alpha.71 test): 0 the game's own
+// threshold, 1 none, 2 up to 640 pixels. Set by Settings::Apply.
+inline int small_effects_choice = 0;
 struct PendingLaunch {
   std::filesystem::path game;  // What was launched: a .xex, an .iso or a package.
   std::string module;          // The guest executable to run in it, game:\...

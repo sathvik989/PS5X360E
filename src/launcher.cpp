@@ -10,6 +10,7 @@
 #include "xbox360ps5/renderer.hpp"
 #include "xbox360ps5/canary_audio.hpp"
 #include "xbox360ps5/gpu_diagnostics.hpp"
+#include "xbox360ps5/title_switch.hpp"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include <algorithm>
@@ -35,6 +36,8 @@ DECLARE_bool(mute);
 DECLARE_bool(log_to_stdout);
 DECLARE_int32(draw_resolution_scale_x);
 DECLARE_int32(draw_resolution_scale_y);
+DECLARE_bool(draw_resolution_scaled_texture_offsets);
+DECLARE_bool(resolve_resolution_scale_fill_half_pixel_offset);
 DECLARE_bool(gpu_allow_invalid_fetch_constants);
 DECLARE_int32(anisotropic_override);
 DECLARE_string(occlusion_query);
@@ -241,6 +244,17 @@ const std::vector<Option>& Options() {
       {"output_4k", &S::output_4k, 0, W::start, 1, true, "Saída de vídeo do jogo",
        "Tamanho da imagem enviada à TV durante o jogo. 4K: a imagem do jogo chega à tela em 3840x2160, e o 2x e o 3x mostram todo o detalhe. 1080p: como antes, a TV amplia. Os menus continuam em 1080p.",
        {"1080p", "4K"}},
+      // PS5X360E (alpha.71): tests for the 3x-only picture faults (NFS The Run:
+      // shapes across the menus, blank panels, HUD flicker; 2x is clean).
+      {"small_effects", &S::small_effects, 0, W::start, 0, true, "Efeitos pequenos em resolução nativa (teste)",
+       "Superfícies pequenas (brilho, desfoque) ficam na resolução original em vez de 2x/3x. Padrão do jogo: o ajuste que o jogo precisa (NFS The Run: até 320 pixels). Desligado: tudo é ampliado. Mais largo: até 640 pixels. Teste para defeitos que só aparecem em 3x.",
+       {"Padrão do jogo", "Desligado", "Mais largo (640)"}},
+      {"scaled_offsets", &S::scaled_offsets, 0, W::start, 0, true, "Deslocamentos de textura ampliados (teste)",
+       "Ajusta os deslocamentos de textura dos efeitos à resolução ampliada (sombras, brilho). Teste para defeitos que só aparecem em 3x.",
+       {"Ligado", "Desligado"}},
+      {"resolve_half_pixel", &S::resolve_half_pixel, 0, W::start, 0, true, "Meio pixel nas cópias ampliadas (teste)",
+       "Corrige meio pixel ao limpar cópias ampliadas da imagem. Teste para defeitos que só aparecem em 3x.",
+       {"Ligado", "Desligado"}},
       {"frame_pacing", &S::frame_pacing, 0, W::live, 0, true, "Ritmo dos quadros",
        "Para jogos que rodam a 30 quadros: mostra cada quadro por exatamente duas atualizações da tela, para um movimento uniforme sem trancos. Jogos a 60 quadros ficam limitados a 30; deixe em Automático para eles.",
        {"Automático", "30 FPS uniforme"}},
@@ -491,6 +505,10 @@ void Settings::Apply() const {
   cvars::mute = mute != 0;
   // PS5X360E: the Video option; a game config can still set its own scale.
   cvars::draw_resolution_scale_x = cvars::draw_resolution_scale_y = std::clamp(render_scale, 0, 2) + 1;
+  // Tests for 3x (alpha.71); the stored value 0 is the previous behaviour.
+  xbox360ps5::small_effects_choice = small_effects;
+  cvars::draw_resolution_scaled_texture_offsets = scaled_offsets == 0;
+  cvars::resolve_resolution_scale_fill_half_pixel_offset = resolve_half_pixel == 0;
   // Normal gameplay records warnings/errors plus explicit session metadata.
   // Do not duplicate every line into the platform stdout transport, and do
   // not let stale debug files silently override the user's visible setting.
