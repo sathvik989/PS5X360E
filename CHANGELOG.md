@@ -3,6 +3,18 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.50+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Fixes the hang after Press Start in alpha.49.** It was not a hang: loading crawled. On the
+  PS5 the runtime's unwinder refused the unwind information the JIT gives it for every compiled
+  function and printed a line to standard error each time. Until alpha.48 those lines went
+  nowhere; alpha.49 sent standard error to a file, so loading NFS The Run's main module wrote
+  tens of thousands of lines one by one (15,519 before the stall report). The JIT no longer
+  registers that information on the PS5 (it was refused anyway, and nothing there unwinds
+  through generated code), standard error is buffered, and such lines are counted, not logged.
+- Driver messages now work: RADV's submission breakdown appears every 10 s as
+  "Driver: radv/ps5 submissions: ...".
+
 ## 0.2-alpha.49+0.6.0 (PS5X360E, on Xenia Edge)
 
 Measurements for the graphics thread, which limits NFS The Run in heavy scenes (alpha.48's

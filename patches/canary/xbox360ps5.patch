@@ -1255,6 +1255,25 @@ index 13583c50f..8ed0b9ce9 100644
    static constexpr uintptr_t kGeneratedCodeExecuteBase = 0xA0000000;
    static_assert(kGeneratedCodeSize < 0x80000000);
    static_assert(kGeneratedCodeExecuteBase + kGeneratedCodeSize <
+diff --git a/src/xenia/cpu/backend/x64/x64_code_cache_posix.cc b/src/xenia/cpu/backend/x64/x64_code_cache_posix.cc
+index 67625137b..a06f2980f 100644
+--- a/src/xenia/cpu/backend/x64/x64_code_cache_posix.cc
++++ b/src/xenia/cpu/backend/x64/x64_code_cache_posix.cc
+@@ -175,6 +175,14 @@ void PosixX64CodeCache::PlaceCode(uint32_t guest_address, void* machine_code,
+     p += 4 + length;
+     p_execute += 4 + length;
+   }
++#elif XE_PLATFORM_PS5
++  // Xbox360PS5: the console's LLVM libunwind takes one FDE at a time and
++  // refused the whole entry ("bad fde: FDE is really a CIE") for every
++  // function, writing that to standard error: tens of thousands of lines while
++  // a game loads, which slowed loading to a crawl once standard error went to
++  // a file (alpha.49). Nothing on the PS5 unwinds through generated code (it
++  // re-enters by jump), so nothing is registered.
++  (void)unwind_execute_address;
+ #else
+   __register_frame(unwind_execute_address);
+   registered_frames_.push_back(unwind_execute_address);
 diff --git a/src/xenia/cpu/thread.cc b/src/xenia/cpu/thread.cc
 index 8a3d4b8d3..1c9613cb6 100644
 --- a/src/xenia/cpu/thread.cc

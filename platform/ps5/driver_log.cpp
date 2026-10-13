@@ -28,7 +28,11 @@ void CaptureDriverMessages(const std::filesystem::path& directory) {
     XELOGW("Driver messages: standard error could not be reopened on {}", path);
     return;
   }
-  std::setvbuf(stderr, nullptr, _IOLBF, 0);
+  // Fully buffered: a burst of messages costs one file write per 64 KiB, not
+  // one per line (alpha.49 wrote a line for each function the JIT compiled
+  // while a game loaded). The reader thread flushes it twice a second.
+  static char buffer_storage[64 * 1024];
+  std::setvbuf(stderr, buffer_storage, _IOFBF, sizeof(buffer_storage));
   const int reader = open(path.c_str(), O_RDONLY);
   if (reader < 0) {
     XELOGW("Driver messages: {} could not be read back; they stay in that file", path);
@@ -39,18 +43,29 @@ void CaptureDriverMessages(const std::filesystem::path& directory) {
     std::thread([reader] {
       std::string pending;
       char buffer[1024];
+      uint64_t unwind_lines = 0;
       while (true) {
         const ssize_t got = read(reader, buffer, sizeof(buffer));
         if (got < 0) break;
         if (got == 0) {
-          // At the end of what was written so far: look again shortly.
+          // At the end of what was written so far: hand on what is buffered
+          // and look again shortly.
+          std::fflush(stderr);
           std::this_thread::sleep_for(std::chrono::milliseconds(500));
           continue;
         }
         pending.append(buffer, size_t(got));
         for (size_t end; (end = pending.find('\n')) != std::string::npos;
              pending.erase(0, end + 1)) {
-          if (end) XELOGW("Driver: {}", std::string_view(pending.data(), end));
+          const std::string_view line(pending.data(), end);
+          // The runtime's unwinder complaining about generated code (fixed in
+          // the core since; counted rather than logged if it comes back).
+          if (line.rfind("libunwind:", 0) == 0) {
+            if (!(unwind_lines++ & 0xFFF))
+              XELOGW("Driver: {} ({} such lines so far, not logged)", line, unwind_lines);
+            continue;
+          }
+          if (end) XELOGW("Driver: {}", line);
         }
         if (pending.size() > 4096) {
           XELOGW("Driver: {}", pending);
