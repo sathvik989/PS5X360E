@@ -3,6 +3,17 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.81+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Back to alpha.65's emulator and graphics core**, as 2x still hitched where alpha.65 did not.
+  Kept from since: the 4K game output (Video > Game video output, alpha69nice) and the 3x render
+  resolution choice with the fix that keeps it from crashing (the emulated CPU threads' register
+  blocks moved out of the PS5 graphics driver's memory range, alpha.70). Everything else since
+  alpha.65 is withdrawn and kept on the branch archive-alpha.66-80: the GPU work breakdown and
+  hitch detail, the 3x test settings and small-effects widths, direct copy of rendered textures,
+  frame generation size, the shader cache for render target programs and the render target log.
+  Later builds bring back what helps one change at a time.
+
 ## 0.2-alpha.80+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **The GPU work breakdown is off unless asked for** (Performance > Measure GPU work by kind).
