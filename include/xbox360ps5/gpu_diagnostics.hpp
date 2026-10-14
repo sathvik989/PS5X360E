@@ -171,6 +171,16 @@ struct HitchWork {
 // synchronous ones), texture loads, and bytes uploaded to the GPU copy of
 // guest memory.
 inline HitchWork hitch_translate, hitch_pipeline, hitch_texture;
+// alpha.84 (Diagnostics): render target transfer and dump pipelines created,
+// render targets and textures created, scaled resolve memory committed, sparse
+// binds (with the wait for earlier submissions before them), the wait for room
+// in the submit thread's queue, waits for submissions to reach the queue, and
+// the CPU side of render target transfers and resolves. Counted only while
+// detail_enabled.
+inline bool detail_enabled = false;
+inline HitchWork hitch_rt_pipeline, hitch_rt_create, hitch_texture_create,
+    hitch_scaled_commit, hitch_sparse, hitch_backpressure, hitch_queue_wait,
+    hitch_transfers, hitch_resolves;
 inline std::atomic<uint64_t> hitch_upload_bytes{0};
 // The host tick count is nanoseconds from the time-stamp counter on the PS5;
 // steady_clock is a system call of about a microsecond there, which on texture
@@ -188,6 +198,24 @@ class HitchScope {
   }
   HitchScope(const HitchScope&) = delete;
   HitchScope& operator=(const HitchScope&) = delete;
+ private:
+  HitchWork* work_;
+  uint64_t started_;
+};
+// The same, for the Diagnostics-only counters above.
+class HitchDetailScope {
+ public:
+  explicit HitchDetailScope(HitchWork& work)
+      : work_(on_gpu_thread && detail_enabled ? &work : nullptr),
+        started_(work_ ? xe::Clock::QueryHostTickCount() : 0) {}
+  ~HitchDetailScope() {
+    if (!work_) return;
+    work_->ns.fetch_add(xe::Clock::QueryHostTickCount() - started_,
+                        std::memory_order_relaxed);
+    work_->count.fetch_add(1, std::memory_order_relaxed);
+  }
+  HitchDetailScope(const HitchDetailScope&) = delete;
+  HitchDetailScope& operator=(const HitchDetailScope&) = delete;
  private:
   HitchWork* work_;
   uint64_t started_;

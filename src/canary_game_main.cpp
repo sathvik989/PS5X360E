@@ -790,6 +790,245 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
   }
   xe::FlushLog();
 }
+// PS5X360E (alpha.84): Diagnostics. A thread of its own samples the
+// emulator's threads (round robin, one every 2 ms, about 40 times a second
+// each) and writes a profile to the log by itself, in the same form as
+// MeasurePerformance's: after the game stopped showing frames for half a
+// second or more (the samples of the pause), for a 2-second stretch under 28
+// frames a second, and once a minute. Nothing stands still meanwhile.
+class BackgroundProfiler {
+ public:
+  explicit BackgroundProfiler(xe::Emulator& emulator)
+      : emulator_(emulator), thread_([this] { Run(); }) {}
+  ~BackgroundProfiler() {
+    stop_.store(true);
+    thread_.join();
+  }
+
+ private:
+  struct Place {
+    uint64_t key;
+    uint32_t count;
+  };
+  struct Tally {
+    std::string name;
+    void* native = nullptr;
+    uint32_t total = 0, guest = 0, title = 0, system = 0;
+    // Guest functions, title code (64-byte blocks), callers into system
+    // libraries, guest instruction addresses.
+    std::vector<Place> places[4];
+    void Add(int kind, uint64_t key, uint32_t count = 1) {
+      for (auto& place : places[kind])
+        if (place.key == key) {
+          place.count += count;
+          return;
+        }
+      places[kind].push_back({key, count});
+    }
+    void Merge(const Tally& other) {
+      total += other.total;
+      guest += other.guest;
+      title += other.title;
+      system += other.system;
+      for (int kind = 0; kind < 4; ++kind)
+        for (const auto& place : other.places[kind]) Add(kind, place.key, place.count);
+    }
+    void Clear() {
+      total = guest = title = system = 0;
+      for (auto& places_of_kind : places) places_of_kind.clear();
+    }
+  };
+  struct Window {
+    std::vector<Tally> tallies;
+    double seconds = 0;
+    uint64_t swaps = 0;
+    unsigned long long protects = 0, syscalls = 0, protect_ns = 0, faults = 0;
+    void Clear() {
+      for (auto& tally : tallies) tally.Clear();
+      seconds = 0;
+      swaps = 0;
+      protects = syscalls = protect_ns = faults = 0;
+    }
+    void Merge(const Window& other) {
+      if (tallies.size() != other.tallies.size()) return;
+      for (size_t n = 0; n < tallies.size(); ++n) tallies[n].Merge(other.tallies[n]);
+      seconds += other.seconds;
+      swaps += other.swaps;
+      protects += other.protects;
+      syscalls += other.syscalls;
+      protect_ns += other.protect_ns;
+      faults += other.faults;
+    }
+  };
+
+  void Threads(Window& window) {
+    window.tallies.clear();
+    for (auto& thread :
+         emulator_.kernel_state()->object_table()->GetObjectsByType<xe::kernel::XThread>())
+      if (thread->thread() && thread->is_running())
+        window.tallies.push_back(Tally{thread->thread_name(), thread->thread()->native_handle()});
+    if (auto* scheduler = emulator_.kernel_state()->guest_scheduler())
+      for (int cpu = 0; cpu < scheduler->dispatch_cpu_count(); ++cpu)
+        if (auto* host = scheduler->dispatch_thread(cpu))
+          window.tallies.push_back(Tally{"Guest CPU " + std::to_string(cpu), host->native_handle()});
+  }
+
+  void Write(const char* reason, const Window& window, double pause_seconds) {
+    auto* code_cache = emulator_.processor()->backend()->code_cache();
+    (void)code_cache;
+    const double seconds = std::max(window.seconds, 0.001);
+    XELOGW(
+        "PROFILE {}: {:.1f} s sampled, {:.1f} frames/s{}; memory: {:.0f} protect calls/s, {:.0f} kernel "
+        "protections/s taking {:.1f} ms/s, {:.0f} faults/s",
+        reason, window.seconds, double(window.swaps) / seconds,
+        pause_seconds > 0 ? fmt::format(", no frame for {:.1f} s", pause_seconds) : std::string(),
+        double(window.protects) / seconds, double(window.syscalls) / seconds,
+        double(window.protect_ns) / seconds / 1e6, double(window.faults) / seconds);
+    for (const auto& original : window.tallies) {
+      if (!original.total) continue;
+      Tally tally = original;
+      std::string line = fmt::format("PROFILE {} thread '{}' samples {} guest {}% title {}% system {}%", reason,
+                                     tally.name, tally.total, 100 * tally.guest / tally.total,
+                                     100 * tally.title / tally.total, 100 * tally.system / tally.total);
+      const char* const kinds[] = {" | guest", " | title", " | system-from", " | guest-pc"};
+      for (int kind = 0; kind < 4; ++kind) {
+        auto& places = tally.places[kind];
+        std::sort(places.begin(), places.end(),
+                  [](const Place& a, const Place& b) { return a.count > b.count; });
+        line += kinds[kind];
+        for (size_t n = 0; n < places.size() && n < (kind == 2 ? 10u : 6u); ++n) {
+          if (kind == 2 && (places[n].key >> 32))
+            line += fmt::format(" {:X}<{:X}:{}%", places[n].key & 0xFFFFFFFFu, places[n].key >> 32,
+                                100 * places[n].count / tally.total);
+          else
+            line += fmt::format(" {:X}:{}%", places[n].key, 100 * places[n].count / tally.total);
+        }
+      }
+      XELOGW("{}", line);
+      // The code of a guest function a guest CPU spends much of its time in,
+      // once a session each, to tell a busy-wait from work.
+      if (tally.name.rfind("Guest CPU", 0) == 0 && 100 * tally.guest / tally.total >= 30) {
+        for (size_t n = 0; n < tally.places[0].size() && n < 2; ++n) {
+          const uint32_t address = uint32_t(tally.places[0][n].key);
+          if (!address || 100 * tally.places[0][n].count / tally.total < 10) continue;
+          if (std::find(dumped_.begin(), dumped_.end(), address) != dumped_.end()) continue;
+          dumped_.push_back(address);
+          auto* function = emulator_.processor()->LookupFunction(address);
+          uint32_t end = function && function->has_end_address() ? function->end_address() : address + 0x100;
+          end = std::min(end, address + 0x200);
+          std::string code = fmt::format("PROFILE code {:08X} ({} bytes):", address, end - address);
+          for (uint32_t at = address; at < end; at += 4)
+            code += fmt::format(" {:08X}",
+                                xe::load_and_swap<uint32_t>(emulator_.memory()->TranslateVirtual(at)));
+          XELOGW("{}", code);
+        }
+      }
+    }
+    xe::FlushLog();
+  }
+
+  void Run() {
+    auto* processor = emulator_.graphics_system()->command_processor();
+    auto* code_cache = emulator_.processor()->backend()->code_cache();
+    Window current, previous, pause;
+    Threads(current);
+    previous.tallies = current.tallies;
+    pause.tallies = current.tallies;
+    size_t next = 0;
+    uint64_t swaps = processor->swap_count();
+    auto now = std::chrono::steady_clock::now();
+    auto window_start = now, last_frame = now, last_baseline = now, last_slow = now - std::chrono::seconds(60),
+         last_pause_log = now - std::chrono::seconds(60);
+    unsigned long long protects = xbox360ps5::protect_calls, syscalls = xbox360ps5::protect_syscalls,
+                       protect_ns = xbox360ps5::protect_nanoseconds, faults = xbox360ps5::fault_count;
+    bool pausing = false;
+    int pauses = 0, slows = 0, baselines = 0;
+    while (!stop_.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      now = std::chrono::steady_clock::now();
+      const uint64_t swaps_now = processor->swap_count();
+      if (swaps_now != swaps) {
+        if (pausing) {
+          const double paused = std::chrono::duration<double>(now - last_frame).count();
+          pause.Merge(current);
+          // Pauses of a second or more, one in 5 s at most (a loading screen
+          // showing a frame a second would otherwise use them all up).
+          if (paused >= 1.0 && pauses < 40 && now - last_pause_log > std::chrono::seconds(5)) {
+            ++pauses;
+            last_pause_log = now;
+            Write("pause", pause, paused);
+          }
+          pause.Clear();
+          current.Clear();
+          window_start = now;
+          pausing = false;
+        }
+        current.swaps += swaps_now - swaps;
+        swaps = swaps_now;
+        last_frame = now;
+      } else if (!pausing && now - last_frame > std::chrono::milliseconds(500)) {
+        // The pause's samples: from the window before it on.
+        pausing = true;
+        pause.Clear();
+        pause.Merge(previous);
+      }
+      if (!current.tallies.empty()) {
+        Tally& tally = current.tallies[next++ % current.tallies.size()];
+        xbox360ps5::ThreadSample sample;
+        if (xbox360ps5::SampleThread(tally.native, &sample)) {
+          ++tally.total;
+          if (sample.in_title) {
+            ++tally.title;
+            tally.Add(1, sample.rip & ~uint64_t(0x3F));
+          } else if (xbox360ps5::InGeneratedCode(sample.rip)) {
+            ++tally.guest;
+            auto* function = code_cache->LookupFunction(sample.rip);
+            tally.Add(0, function ? function->address() : 0);
+            if (function) tally.Add(3, function->MapMachineCodeToGuestAddress(uintptr_t(sample.rip)));
+          } else {
+            ++tally.system;
+            tally.Add(2, sample.caller | (sample.caller2 << 32));
+          }
+        }
+      }
+      if (now - window_start < std::chrono::seconds(2)) continue;
+      // A 2-second window ends.
+      current.seconds = std::chrono::duration<double>(now - window_start).count();
+      current.protects = xbox360ps5::protect_calls - protects;
+      current.syscalls = xbox360ps5::protect_syscalls - syscalls;
+      current.protect_ns = xbox360ps5::protect_nanoseconds - protect_ns;
+      current.faults = xbox360ps5::fault_count - faults;
+      protects = xbox360ps5::protect_calls;
+      syscalls = xbox360ps5::protect_syscalls;
+      protect_ns = xbox360ps5::protect_nanoseconds;
+      faults = xbox360ps5::fault_count;
+      const double fps = double(current.swaps) / current.seconds;
+      if (pausing) {
+        pause.Merge(current);
+      } else if (fps > 5.0 && fps < 28.0 && slows < 24 && now - last_slow > std::chrono::seconds(10)) {
+        ++slows;
+        last_slow = now;
+        Write("slow", current, 0);
+      } else if (now - last_baseline > std::chrono::seconds(60) && baselines < 30) {
+        ++baselines;
+        last_baseline = now;
+        Write("baseline", current, 0);
+      }
+      std::swap(previous, current);
+      // The threads again, in case some ended or began.
+      Threads(current);
+      if (current.tallies.size() != previous.tallies.size()) previous.tallies = current.tallies, previous.Clear();
+      if (current.tallies.size() != pause.tallies.size() && !pausing) pause.tallies = current.tallies, pause.Clear();
+      current.Clear();
+      window_start = now;
+    }
+  }
+
+  xe::Emulator& emulator_;
+  std::atomic<bool> stop_{false};
+  std::vector<uint32_t> dumped_;
+  std::thread thread_;
+};
 // The profile the user chose in the launcher, kept between runs.
 const char kProfileFile[] = "/download0/ps5x360e/profile.txt";
 uint64_t SavedProfile() {
@@ -1777,6 +2016,12 @@ int main(int argc, char** argv) {
         int samples = 0;
         float fps_sum = 0.0f, fps_low = 1e9f, swaps_sum = 0.0f;
         const auto game_started = std::chrono::steady_clock::now();
+        // PS5X360E (alpha.84): Diagnostics: profiles in the log by themselves.
+        std::unique_ptr<BackgroundProfiler> background_profiler;
+        if (settings.diagnostics) {
+          XELOGW("Diagnostics: on (background profiles, GPU work by kind, hitch detail)");
+          background_profiler = std::make_unique<BackgroundProfiler>(emulator);
+        }
         double next_shot = 5;
         while (!context.HasQuitFromUIThread()) {
 #if defined(PS5X360_OPENGL_GAME_RENDERER) && PS5X360_OPENGL_GAME_RENDERER

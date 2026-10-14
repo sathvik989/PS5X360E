@@ -45,6 +45,7 @@ DECLARE_bool(vulkan_async_submission);
 DECLARE_bool(shared_memory_zero_copy);
 DECLARE_bool(rt_pipeline_warm_up);
 DECLARE_bool(texture_load_scaled_direct_copy);
+DECLARE_bool(gpu_section_timing);
 DECLARE_uint32(apu_max_queued_frames);
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(delay_via_maybeyield);
@@ -240,6 +241,9 @@ const std::vector<Option>& Options() {
       {"render_scale", &S::render_scale, 0, W::start, 0, true, "Resolução de renderização",
        "O jogo desenha em 2x a resolução original (720p vira 1440p): imagem bem mais nítida, mais trabalho para o vídeo e mais memória. Alguns efeitos podem sair errados em 2x; volte a 1x se aparecerem.",
        {"1x (720p, original)", "2x (1440p, pesado)", "3x (2160p, teste)"}},
+      {"diagnostics", &S::diagnostics, 4, W::start, 0, true, "Diagnóstico",
+       "Grava no log, sozinho, onde o tempo vai: perfis das tarefas do emulador quando o jogo para de mostrar quadros, quando cai abaixo de 28 quadros e a cada minuto, o trabalho do vídeo por tipo e o detalhe das travadas. Custa um pouco de desempenho; deixe desligado para jogar.",
+       off_on},
       {"rendered_texture_copy_83", &S::rendered_texture_copy, 1, W::start, 0, true, "Cópia direta de texturas renderizadas (teste)",
        "Texturas que o jogo desenhou (reflexos, brilho) passam para o vídeo em uma cópia em vez de duas. Em 2x e 3x é o maior custo do emulador depois do desenho. Teste: compare a mesma corrida ligado e desligado.",
        off_on},
@@ -523,6 +527,8 @@ void Settings::Apply() const {
   cvars::shared_memory_zero_copy = zero_copy != 0;
   cvars::rt_pipeline_warm_up = rt_warm_up != 0;
   cvars::texture_load_scaled_direct_copy = rendered_texture_copy != 0;
+  cvars::gpu_section_timing = diagnostics != 0;
+  xbox360ps5::gpu_diag::detail_enabled = diagnostics != 0;
   cvars::clear_memory_page_state = clear_pages != 0;
   // The core falls back to host render targets by itself when the device lacks
   // fragment shader interlock; the pipeline storage then keeps its .fbo name.

@@ -3,6 +3,17 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.84+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **System > Diagnostics** (off by default): the log gets, by itself, where the time goes.
+  - Profiles of the emulator's threads ("PROFILE ..."), sampled in the background on a thread
+    of its own (one thread every 2 ms): for every pause of a second or more without a new frame
+    (the samples of the pause), for 2-second stretches under 28 frames a second, and once a
+    minute; with the code of a guest function a game CPU spends much of its time in. Unlike the
+    guide's Measure performance, the picture and the controls keep going.
+  - The GPU's work by kind ("GPU work ms/s", alpha.66-68) and the hitch detail lines (alpha.73).
+  Off, the game runs as in alpha.83.
+
 ## 0.2-alpha.83+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Test, back from alpha.75: Performance > Direct copy of rendered textures** (off by default;

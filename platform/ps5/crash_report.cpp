@@ -5,6 +5,7 @@
 #include "xbox360ps5/crash_report.hpp"
 #include <cstring>
 #include <atomic>
+#include <mutex>
 #include <cstddef>
 #include <cstdint>
 #include <fcntl.h>
@@ -255,6 +256,10 @@ bool HostReadable(const void* address, size_t bytes) {
 bool SampleThread(void* thread, ThreadSample* out) {
   InstallProbe();
   if (!thread || !out) return false;
+  // alpha.84: one sample at a time (the guide's Measure and the Diagnostics
+  // sampler share the probe's state).
+  static std::mutex sampling;
+  std::lock_guard<std::mutex> lock(sampling);
   sample_out = out;
   probe_done = false;
   bool taken = false;
