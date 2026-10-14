@@ -3,6 +3,14 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.83+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Test, back from alpha.75: Performance > Direct copy of rendered textures** (off by default;
+  its saved value from then is not read). Textures the game drew itself are converted into a
+  scratch buffer and copied into the texture once, instead of through an integer staging image
+  and a second copy. At 3x it saved about 20 ms of GPU time a second. Writing them into the
+  texture in a single pass would need the texture conversion shaders rewritten.
+
 ## 0.2-alpha.82+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Test: Performance > Prepare image conversions at start** (off by default). The GPU programs

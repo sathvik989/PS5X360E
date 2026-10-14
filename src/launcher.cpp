@@ -44,6 +44,7 @@ DECLARE_bool(async_shader_compilation);
 DECLARE_bool(vulkan_async_submission);
 DECLARE_bool(shared_memory_zero_copy);
 DECLARE_bool(rt_pipeline_warm_up);
+DECLARE_bool(texture_load_scaled_direct_copy);
 DECLARE_uint32(apu_max_queued_frames);
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(delay_via_maybeyield);
@@ -239,6 +240,9 @@ const std::vector<Option>& Options() {
       {"render_scale", &S::render_scale, 0, W::start, 0, true, "Resolução de renderização",
        "O jogo desenha em 2x a resolução original (720p vira 1440p): imagem bem mais nítida, mais trabalho para o vídeo e mais memória. Alguns efeitos podem sair errados em 2x; volte a 1x se aparecerem.",
        {"1x (720p, original)", "2x (1440p, pesado)", "3x (2160p, teste)"}},
+      {"rendered_texture_copy_83", &S::rendered_texture_copy, 1, W::start, 0, true, "Cópia direta de texturas renderizadas (teste)",
+       "Texturas que o jogo desenhou (reflexos, brilho) passam para o vídeo em uma cópia em vez de duas. Em 2x e 3x é o maior custo do emulador depois do desenho. Teste: compare a mesma corrida ligado e desligado.",
+       off_on},
       {"rt_warm_up", &S::rt_warm_up, 1, W::start, 0, true, "Preparar conversões de imagem na abertura (teste)",
        "Guarda os programas que o vídeo usa para converter imagens do jogo e os prepara ao abrir o jogo, antes de serem pedidos. Sem isso cada um é feito na primeira vez que o jogo precisa, com travadas de até alguns segundos em menus e carregamentos (mais em 3x). A primeira sessão ainda faz a lista.",
        off_on},
@@ -518,6 +522,7 @@ void Settings::Apply() const {
   cvars::vulkan_async_submission = submit_thread != 0;
   cvars::shared_memory_zero_copy = zero_copy != 0;
   cvars::rt_pipeline_warm_up = rt_warm_up != 0;
+  cvars::texture_load_scaled_direct_copy = rendered_texture_copy != 0;
   cvars::clear_memory_page_state = clear_pages != 0;
   // The core falls back to host render targets by itself when the device lacks
   // fragment shader interlock; the pipeline storage then keeps its .fbo name.
