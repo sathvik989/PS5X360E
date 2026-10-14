@@ -1,0 +1,7 @@
+{
+  "upstream": "https://github.com/mihawk-99/PS5_MihawkGen",
+  "commit": "c57232a9f16bcb6df5fe07c9bb631518f2b1cc0e",
+  "license": "framegen/: GPL-3.0-or-later (LICENSE.md); the trained network framegen/models/network.fgw with it",
+  "copied": "framegen/include/framegen.h, framegen/src/*.cpp, framegen/src/*.h, framegen/src/shaders/*.comp.h (the SPIR-V the library builds its pipelines from), framegen/shaders/*.comp and *.glsl (their sources) with framegen/compile-shaders.sh, framegen/models/network.fgw, LICENSE.md, THIRD_PARTY_NOTICES.txt",
+  "local_change": "none to these files: PS5X360E builds them through platform/ps5/mihawkgen_*.cpp with their Vulkan calls bound at run time (platform/ps5/mihawkgen_dispatch.hpp)"
+}

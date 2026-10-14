@@ -3,6 +3,23 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.92+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **New: Video > Frame generation engine: FSR 3 or MihawkGen** (FSR 3 by default, as before;
+  changes at once). MihawkGen is mihawk-99's neural frame generation for the PS5
+  ([PS5_MihawkGen](https://github.com/mihawk-99/PS5_MihawkGen)): a network of 432,308 parameters
+  that finds the motion between two of the game's frames from the pictures alone and makes the
+  frames between them. On a base PS5 its author measured about 2.2 ms of GPU time per generated
+  frame at 3840x2160 (FSR 3 took about 10 ms here at 3x, alpha.76), and on clips it was never
+  trained on its pictures came closer to the real ones than FSR 3.1's. It works with every frame
+  generation mode (2x to 4x, automatic, adaptive pacing) and with Frame generation size. If it
+  can't be set up, the log says why and FSR 3 takes its place.
+- **Log**: the engine in use ("Framegen: MihawkGen ready for ...") and its GPU time per game frame
+  ("Framegen GPU cost (MihawkGen)"), every 120 frames as for FSR 3.
+- **Licence**: MihawkGen is GPL-3.0-or-later, like the FSR 3 port, so builds stay under the GPL 3.
+  Its library, shaders (with their sources) and trained network are in `third_party/mihawkgen`,
+  unchanged; the network is taken into the title when it is built.
+
 ## 0.2-alpha.91+0.6.0 (PS5X360E, on Xenia Edge)
 
 Phase F, part 2: two checks of the console's hardware, in the log with Diagnostics.

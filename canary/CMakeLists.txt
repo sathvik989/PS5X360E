@@ -108,8 +108,22 @@ if(CMAKE_CROSSCOMPILING)
     "${XBOX360PS5_ROOT}/platform/ps5/libc_bits.c"
     "${XBOX360PS5_ROOT}/platform/ps5/native_memory_calls.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/radv_dispatch.cpp"
-    "${XBOX360PS5_ROOT}/platform/ps5/vulkan_platform.cpp")
+    "${XBOX360PS5_ROOT}/platform/ps5/vulkan_platform.cpp"
+    # PS5X360E (alpha.92): MihawkGen, the second frame generation engine
+    # (third_party/mihawkgen, GPL-3.0-or-later, built unchanged).
+    "${XBOX360PS5_ROOT}/platform/ps5/mihawkgen_dispatch.cpp"
+    "${XBOX360PS5_ROOT}/platform/ps5/mihawkgen_lib_common.cpp"
+    "${XBOX360PS5_ROOT}/platform/ps5/mihawkgen_lib_vulkan.cpp"
+    "${XBOX360PS5_ROOT}/platform/ps5/mihawkgen_lib_neural.cpp"
+    "${XBOX360PS5_ROOT}/platform/ps5/mihawkgen_lib_splat.cpp"
+    "${XBOX360PS5_ROOT}/platform/ps5/mihawkgen_engine.cpp")
+  # The trained network, taken into the title by the assembler (.incbin).
+  set(XBOX360PS5_MIHAWKGEN_NETWORK "${XBOX360PS5_ROOT}/third_party/mihawkgen/framegen/models/network.fgw")
+  set_source_files_properties("${XBOX360PS5_ROOT}/platform/ps5/mihawkgen_engine.cpp" PROPERTIES
+    COMPILE_DEFINITIONS "MIHAWKGEN_NETWORK=\"${XBOX360PS5_MIHAWKGEN_NETWORK}\""
+    OBJECT_DEPENDS "${XBOX360PS5_MIHAWKGEN_NETWORK}")
   target_include_directories(xbox360ps5-title-objects PRIVATE
+    "${XBOX360PS5_ROOT}/third_party/mihawkgen/framegen/include"
     "${XBOX360PS5_ROOT}/include" "${XENIA_CANARY}" "${XENIA_CANARY}/src"
     "${XENIA_CANARY}/third_party" "${XENIA_CANARY}/third_party/fmt/include"
     "${XENIA_CANARY}/third_party/glslang"

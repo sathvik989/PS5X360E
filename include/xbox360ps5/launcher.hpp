@@ -55,6 +55,7 @@ struct Settings {
   int spin_yields = 0;             // 1: a guest spin over 0.2 ms gives its guest CPU to other threads (spin_hint_yields; alpha.89 test).
   int output_4k = 1;          // A game's picture to the screen at 3840x2160 (1) or 1920x1080 (0); menus stay 1080p (alpha69nice).
   int framegen_size = 0;      // Generated frames made at the game picture's size (0), 1440p (1) or 1080p (2) (alpha.76, again in alpha.90).
+  int framegen_engine = 0;    // alpha.92: what makes the generated frames: 0 FSR 3 (Sword's port), 1 MihawkGen (neural).
   int frame_pacing = 0;       // 0 shows the newest frame at each refresh, 1 paces a 30 FPS game to exactly 2 refreshes a frame.
   int image_filter = 0;       // How a game's picture is stretched to the screen: 0 plain, 1 CAS, 2 FSR.
   int antialiasing = 0;       // SMAA on the game's picture before the filter: 0 off, 1 SMAA, 2 SMAA+FXAA, 3 FXAA, 4 SMAA's edges.

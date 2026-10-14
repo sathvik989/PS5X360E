@@ -280,6 +280,10 @@ const std::vector<Option>& Options() {
       {"framegen_size", &S::framegen_size, 0, W::live, 0, true, "Tamanho da geração de quadros",
        "Os quadros gerados são feitos numa cópia menor da imagem do jogo e ampliados; os quadros do próprio jogo continuam no tamanho cheio. Em 3x, 1440p custa ao vídeo cerca de um quarto do tamanho cheio. Muda na hora.",
        {"Imagem do jogo", "1440p", "1080p"}},
+      // alpha.92: MihawkGen (github.com/mihawk-99/PS5_MihawkGen) beside FSR 3.
+      {"framegen_engine", &S::framegen_engine, 0, W::live, 0, true, "Motor da geração de quadros",
+       "O que faz os quadros gerados. FSR 3: o fluxo óptico da AMD (porte do Sword), como antes. MihawkGen: uma rede neural feita para o PS5 (432 mil parâmetros, de mihawk-99) que acha o movimento só pelas imagens do jogo; nos testes do autor as imagens dela ficam mais perto das reais que as do FSR 3, e custa ao vídeo cerca de 2,2 ms por quadro gerado em 4K. Só vale com a geração de quadros ligada. Muda na hora.",
+       {"FSR 3", "MihawkGen"}},
       {"frame_pacing", &S::frame_pacing, 0, W::live, 0, true, "Ritmo dos quadros",
        "Para jogos que rodam a 30 quadros: mostra cada quadro por exatamente duas atualizações da tela, para um movimento uniforme sem trancos. Jogos a 60 quadros ficam limitados a 30; deixe em Automático para eles.",
        {"Automático", "30 FPS uniforme"}},
@@ -595,6 +599,8 @@ void Settings::Apply() const {
     static constexpr uint32_t kFramegenHeights[] = {0, 1440, 1080};
     ps5x360::framegen::reduced_height.store(kFramegenHeights[std::clamp(framegen_size, 0, 2)]);
   }
+  // alpha.92: the engine, read by the presenter at each new frame.
+  ps5x360::framegen::engine.store(framegen_engine == 1 ? 1u : 0u);
   // alpha.89: kernel calls that keep their guest CPU 50 ms or more, logged
   // with Diagnostics.
   cvars::kernel_slow_call_ms = diagnostics ? 50 : 0;

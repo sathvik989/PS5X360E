@@ -17061,10 +17061,10 @@ index 000000000..fb2b12e0f
 +}  // namespace ps5x360::framegen
 diff --git a/src/xenia/ui/vulkan/framegen/framegen_config.hpp b/src/xenia/ui/vulkan/framegen/framegen_config.hpp
 new file mode 100644
-index 000000000..f5126ac78
+index 000000000..aba4cb768
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/framegen_config.hpp
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,180 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// The frame generation settings file (/app0/framegen.conf), shared by the launcher (which
 +// writes it), the presenter (which reads it once, before the swapchain) and the host test.
@@ -17100,6 +17100,11 @@ index 000000000..f5126ac78
 +// height and enlarged. Set live from the settings (Video > Frame generation
 +// size), read by the presenter at each new frame.
 +inline std::atomic<uint32_t> reduced_height{0};
++// PS5X360E (alpha.92): the engine that makes the generated pictures: 0 Sword's
++// FSR 3 port (vendor/ps5_framegen.h), 1 MihawkGen's network
++// (mihawk_engine.hpp). Set live from the settings (Video > Frame generation
++// engine); the presenter changes engine at the game's next frame.
++inline std::atomic<uint32_t> engine{0};
 +
 +struct Config {
 +  bool valid = false;        // line 1 is one of its two exact forms
@@ -17240,6 +17245,76 @@ index 000000000..f5126ac78
 +  return config.valid && config.enabled && (config.adaptive_pacing || config.target_fps);
 +}
 +}  // namespace ps5x360::framegen
+diff --git a/src/xenia/ui/vulkan/framegen/mihawk_engine.hpp b/src/xenia/ui/vulkan/framegen/mihawk_engine.hpp
+new file mode 100644
+index 000000000..92cf36869
+--- /dev/null
++++ b/src/xenia/ui/vulkan/framegen/mihawk_engine.hpp
+@@ -0,0 +1,64 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// PS5X360E (alpha.92): MihawkGen (https://github.com/mihawk-99/PS5_MihawkGen),
++// a neural frame interpolator for the PS5's GPU, as a second frame generation
++// engine beside Sword's FSR 3 port (vendor/ps5_framegen.h). It makes the
++// picture between two of the game's frames from their colour alone: a network
++// of 432,308 parameters estimates the motion and a mask at 288 rows and its
++// last pass warps and mixes the two frames at their full size.
++//
++// The engine is built in the PS5 title (platform/ps5/mihawkgen_engine.cpp,
++// with the library and its trained network in third_party/mihawkgen); the
++// presenter's frame generation (presenter_sidecar.hpp) drives it through this
++// interface the way it drives the FSR 3 interpolator.
++#pragma once
++#include <cstdint>
++#include <memory>
++#include <string>
++#include <vulkan/vulkan_core.h>
++
++namespace ps5x360::mihawk {
++
++class Engine {
++ public:
++  // The generated picture's format: the network's last pass writes RGBA8.
++  static constexpr VkFormat k_format = VK_FORMAT_R8G8B8A8_UNORM;
++  virtual ~Engine() = default;
++
++  // The game's frames: two images of the frame format given to Create, kept in
++  // VK_IMAGE_LAYOUT_GENERAL (usage: transfer source and destination, sampled).
++  // Each frame the caller calls prepare(), copies the frame into frame_image()
++  // and calls record(); after presenting, advance().
++  virtual VkImage snapshot_image(unsigned i) const = 0;
++  virtual VkImageView snapshot_view(unsigned i) const = 0;
++  // The generated picture, k_format, VK_IMAGE_LAYOUT_GENERAL (usage: storage,
++  // sampled, transfer source).
++  virtual VkImage output_image() const = 0;
++  virtual VkImageView output_view() const = 0;
++  virtual VkImage frame_image() const = 0;
++  virtual void prepare(VkCommandBuffer command) = 0;
++  // The pictures generated between two of the game's frames, 1 to 3: record()
++  // makes the first, a 1 / (n + 1) of the way, interpolate_next(i) the i-th of
++  // the others. Both include the barriers for the caller's transfer and
++  // fragment reads of the output; record() returns whether it made one (not
++  // with `reset`: the first frame, or one that does not follow the last).
++  virtual void set_generated(uint32_t n) = 0;
++  virtual uint32_t generated() const = 0;
++  virtual bool record(VkCommandBuffer command, bool reset) = 0;
++  virtual bool interpolate_next(VkCommandBuffer command, uint32_t i) = 0;
++  virtual void advance() = 0;
++  // The GPU time of the generated pictures of a frame (timestamps read back a
++  // few frames later, never waiting), since the last call: false when none.
++  virtual bool take_gpu_time(double& mean_ms, double& max_ms,
++                             uint32_t& count) = 0;
++};
++
++// The engine for frames of width x height in frame_format, or nullptr with
++// `error` saying why. The Vulkan calls are bound from the instance and device.
++std::unique_ptr<Engine> CreateEngine(VkInstance instance,
++                                     PFN_vkGetInstanceProcAddr get_instance_proc,
++                                     VkPhysicalDevice physical_device,
++                                     VkDevice device, uint32_t width,
++                                     uint32_t height, VkFormat frame_format,
++                                     std::string& error);
++
++}  // namespace ps5x360::mihawk
 diff --git a/src/xenia/ui/vulkan/framegen/pacing_adapter.hpp b/src/xenia/ui/vulkan/framegen/pacing_adapter.hpp
 new file mode 100644
 index 000000000..b78936006
@@ -17504,10 +17579,10 @@ index 000000000..b78936006
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp b/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp
 new file mode 100644
-index 000000000..3d75c0fac
+index 000000000..b9ec2aea6
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp
-@@ -0,0 +1,605 @@
+@@ -0,0 +1,708 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Included in exactly one presenter translation unit. No frozen class members.
 +#pragma once
@@ -17524,6 +17599,9 @@ index 000000000..3d75c0fac
 +#include "pacing_adapter.hpp"
 +#include "vendor/ps5_framegen.h"
 +#include "vendor/sword_loader.hpp"
++#if XE_PLATFORM_PS5
++#include "mihawk_engine.hpp"
++#endif
 +
 +namespace xe::ui::vulkan {
 +namespace {
@@ -17594,6 +17672,72 @@ index 000000000..3d75c0fac
 +  VulkanDevice* device = nullptr;
 +  Image images[3]{};  // Two private snapshots and one private midpoint.
 +  ps5::framegen::interpolator interpolation;
++  // PS5X360E (alpha.92): the engine in use, which Prepare builds (0 Sword's FSR
++  // 3 port above, 1 MihawkGen), and MihawkGen when it is the one. A MihawkGen
++  // that could not be made is not tried again: FSR 3 takes its place.
++  uint32_t engine = 0;
++  bool mihawk_failed = false;
++#if XE_PLATFORM_PS5
++  std::unique_ptr<ps5x360::mihawk::Engine> mihawk;
++  bool Mihawk() const { return mihawk != nullptr; }
++#else
++  bool Mihawk() const { return false; }
++#endif
++  // The engine's side of each step, for whichever is in use.
++  void EnginePrepare(VkCommandBuffer command) {
++#if XE_PLATFORM_PS5
++    if (mihawk) { mihawk->prepare(command); return; }
++#endif
++    interpolation.prepare(command);
++  }
++  VkImage EngineFrameImage() const {
++#if XE_PLATFORM_PS5
++    if (mihawk) return mihawk->frame_image();
++#endif
++    return interpolation.frame_image();
++  }
++  void EngineSetGenerated(uint32_t n) {
++#if XE_PLATFORM_PS5
++    if (mihawk) { mihawk->set_generated(n); return; }
++#endif
++    interpolation.set_generated(n);
++  }
++  uint32_t EngineGenerated() const {
++#if XE_PLATFORM_PS5
++    if (mihawk) return mihawk->generated();
++#endif
++    return interpolation.generated();
++  }
++  bool EngineRecord(VkCommandBuffer command, bool reset) {
++#if XE_PLATFORM_PS5
++    if (mihawk) return mihawk->record(command, reset);
++#endif
++    return interpolation.record(command, reset);
++  }
++  bool EngineInterpolateNext(VkCommandBuffer command, uint32_t picture) {
++#if XE_PLATFORM_PS5
++    if (mihawk) return mihawk->interpolate_next(command, picture);
++#endif
++    return interpolation.interpolate_next(command, picture);
++  }
++  void EngineAdvance() {
++#if XE_PLATFORM_PS5
++    if (mihawk) { mihawk->advance(); return; }
++#endif
++    interpolation.advance();
++  }
++  void EngineGpuCostLog() {
++    double mean = 0, max = 0, flow_mean = 0; uint32_t count = 0;
++#if XE_PLATFORM_PS5
++    if (mihawk) {
++      if (mihawk->take_gpu_time(mean, max, count))
++        XELOGW("Framegen GPU cost (MihawkGen): mean={}ms max={}ms per game frame, samples={}", mean, max, count);
++      return;
++    }
++#endif
++    if (interpolation.take_gpu_time(mean,max,count,flow_mean))
++      XELOGW("Framegen GPU cost: mean={}ms max={}ms flow={}ms samples={}",mean,max,flow_mean,count);
++  }
 +  ps5x360::framegen::Pacing pacing;
 +  VkDescriptorPool pool{};
 +  VkDescriptorSet sampled[3]{};
@@ -17778,7 +17922,11 @@ index 000000000..3d75c0fac
 +  void LogEnabled() {
 +    if (enabled_logged) return;
 +    enabled_logged = true;
-+    XELOGW("Framegen enabled (Sword FSR3 optical flow): selected_hz={}, FIFO required", display_hz);
++    XELOGW("Framegen enabled ({}): selected_hz={}, FIFO required",
++           ps5x360::framegen::engine.load(std::memory_order_relaxed) == 1
++               ? "MihawkGen neural network, FSR 3 if it can't be made"
++               : "Sword FSR3 optical flow",
++           display_hz);
 +    const auto& config = FramegenConfig();
 +    const char* const in_effect = config.multiplier == 0 ? "2x to 4x by the game's cadence"
 +        : config.multiplier == 3 ? "up to 3x" : config.multiplier == 4 ? "up to 4x" : "2x";
@@ -17805,6 +17953,9 @@ index 000000000..3d75c0fac
 +    if (!device) return;
 +    const auto& f = device->functions(); auto d = device->device();
 +    interpolation.destroy();
++#if XE_PLATFORM_PS5
++    mihawk.reset();
++#endif
 +    if (pool) f.vkDestroyDescriptorPool(d, pool, nullptr);
 +    pool = {}; for (auto& set : sampled) set = {};
 +    for (auto& i : images) i = {}; // Owned by the interpolator.
@@ -17839,12 +17990,16 @@ index 000000000..3d75c0fac
 +      work.height = want;
 +      work.width = std::max<uint32_t>(2, uint32_t((uint64_t(size.width) * want / size.height + 1) & ~1ull));
 +    }
++    // alpha.92: the engine asked for, unless MihawkGen could not be made.
++    const uint32_t want_engine =
++        ps5x360::framegen::engine.load(std::memory_order_relaxed) == 1 && !mihawk_failed ? 1u : 0u;
 +    if (initialized && size.width == source_extent.width && size.height == source_extent.height &&
-+        work.width == extent.width && work.height == extent.height) return true;
++        work.width == extent.width && work.height == extent.height && engine == want_engine) return true;
 +    // Observe already qualified the new extent. Recreate visual history without
 +    // discarding that producer cadence. Failure/teardown still resets pacing.
 +    DestroyImages(false); device = dev; extent = work; source_extent = size;
 +    reduced = work.width != size.width || work.height != size.height;
++    engine = want_engine;
 +    auto fail = [&] { DestroyImages(); failed = true; return false; };
 +    // Copy requires identical source/snapshot formats; no reinterpretation.
 +    if (source_format != VK_FORMAT_A2B10G10R10_UNORM_PACK32) return fail();
@@ -17911,10 +18066,36 @@ index 000000000..3d75c0fac
 +    const auto& ifn = dev->vulkan_instance()->functions();
 +    auto instance = dev->vulkan_instance()->instance();
 +    auto loader = reinterpret_cast<PFN_vkGetDeviceProcAddr>(ifn.vkGetInstanceProcAddr(instance,"vkGetDeviceProcAddr"));
-+    if (!loader || !ps5x360::sword_dispatch::Bind(instance,d,ifn.vkGetInstanceProcAddr)) return fail();
++    if (!loader) return fail();
 +    copy_image = reinterpret_cast<PFN_vkCmdCopyImage>(loader(d,"vkCmdCopyImage"));
 +    if (!copy_image) return fail();
 +    std::string error;
++#if XE_PLATFORM_PS5
++    // alpha.92: MihawkGen, when chosen; FSR 3 if it can't be made.
++    if (engine == 1) {
++      mihawk = ps5x360::mihawk::CreateEngine(instance, ifn.vkGetInstanceProcAddr, dev->physical_device(), d,
++                                             extent.width, extent.height, source_format, error);
++      if (mihawk) {
++        for (unsigned i=0;i<2;++i) { images[i].image=mihawk->snapshot_image(i); images[i].view=mihawk->snapshot_view(i); }
++        images[2].image=mihawk->output_image(); images[2].view=mihawk->output_view();
++        if (reduced) {
++          XELOGW("Framegen: MihawkGen ready for {}x{}, from the game's {}x{} (neural, 432,308 parameters; {})",
++                 extent.width, extent.height, size.width, size.height,
++                 ps5x360::framegen::ModeText(pacing.Multiplier()));
++        } else {
++          XELOGW("Framegen: MihawkGen ready for {}x{} (neural, 432,308 parameters; {})", size.width, size.height,
++                 ps5x360::framegen::ModeText(pacing.Multiplier()));
++        }
++      } else {
++        XELOGE("Framegen: MihawkGen setup failed ({}); FSR 3 takes its place", error);
++        mihawk_failed = true;
++        engine = 0;
++        error.clear();
++      }
++    }
++#endif
++    if (!Mihawk()) {
++    if (!ps5x360::sword_dispatch::Bind(instance,d,ifn.vkGetInstanceProcAddr)) return fail();
 +    if (!interpolation.create(dev->physical_device(),d,extent.width,extent.height,error,source_format)) {
 +      XELOGE("Framegen: Sword interpolator setup failed: {}",error);
 +      return fail();
@@ -17928,6 +18109,7 @@ index 000000000..3d75c0fac
 +    } else {
 +      XELOGW("Framegen: Sword FSR3 ready for {}x{} (6436210, {})",size.width,size.height,
 +             ps5x360::framegen::ModeText(pacing.Multiplier()));
++    }
 +    }
 +    VkDescriptorPoolSize counts[] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3},
 +                                    {VK_DESCRIPTOR_TYPE_SAMPLER, 3}};
@@ -17953,8 +18135,8 @@ index 000000000..3d75c0fac
 +  // The caller retires paint submissions before changing this serial sidecar.
 +  bool Record(VkCommandBuffer command, VkImage source, bool generate, bool adaptive_span = false) {
 +    const auto& f = device->functions();
-+    interpolation.prepare(command);
-+    uint32_t next = interpolation.frame_image() == images[0].image ? 0u : 1u;
++    EnginePrepare(command);
++    uint32_t next = EngineFrameImage() == images[0].image ? 0u : 1u;
 +    VkImageMemoryBarrier b{}; b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 +    b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 +    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -18026,22 +18208,18 @@ index 000000000..3d75c0fac
 +      // Modes: the pictures planned for this frame, set before the first is recorded (it is
 +      // made a 1 / (pictures + 1) of the way). One, at the middle, unless 3x or 4x applies.
 +      // Adaptive pacing sets the count whose fractions its outputs need.
-+      interpolation.set_generated(adaptive_span ? std::clamp<uint32_t>(plan.generated, 1, 3)
-+                                  : generate ? std::clamp<uint32_t>(pacing.Generated(), 1, 3) : 1);
-+      made = interpolation.record(command, !interpolation_history);
++      EngineSetGenerated(adaptive_span ? std::clamp<uint32_t>(plan.generated, 1, 3)
++                         : generate ? std::clamp<uint32_t>(pacing.Generated(), 1, 3) : 1);
++      made = EngineRecord(command, !interpolation_history);
 +      interpolation_history = true;
 +      if (made && reduced) EnlargeGenerated(command);
 +    } else { interpolation_history = false; }
 +    const bool generated = generate && history && made;
-+    pictures = generated ? interpolation.generated() : 0;
++    pictures = generated ? EngineGenerated() : 0;
 +    acquire_pending = generated || adaptive_span;
 +    current = next; history = true;
-+    interpolation.advance();
-+    if ((new_frames % 120) == 0) {
-+      double mean=0,max=0,flow_mean=0; uint32_t count=0;
-+      if (interpolation.take_gpu_time(mean,max,count,flow_mean))
-+        XELOGW("Framegen GPU cost: mean={}ms max={}ms flow={}ms samples={}",mean,max,flow_mean,count);
-+    }
++    EngineAdvance();
++    if ((new_frames % 120) == 0) EngineGpuCostLog();
 +    return generated;
 +  }
 +  // 3x and 4x: the next picture between the same two frames (1 to pictures - 1), into the
@@ -18053,7 +18231,7 @@ index 000000000..3d75c0fac
 +    reuse.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 +    device->functions().vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
 +        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&reuse,0,nullptr,0,nullptr);
-+    if (!interpolation.interpolate_next(command, picture)) return false;
++    if (!EngineInterpolateNext(command, picture)) return false;
 +    if (reduced) {
 +      // The paint of the picture before it reads full[2]: order the write after it.
 +      VkMemoryBarrier read{}; read.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;

@@ -10,6 +10,7 @@ PS5X360 brings together an emulator core and native PS5 platform work. Upstream 
 | Native runtime / Castation | [BrinooTk/castation](https://github.com/BrinooTk/castation), prepared runtime/toolchain used by this workspace; development checkout at `94dfef79479266c66d51b2d57314557c606dc1ce` |
 | PS5 native app boilerplate | [blackbearreloaded/ps5-native-app-boilerplate](https://github.com/blackbearreloaded/ps5-native-app-boilerplate), native application infrastructure used during bring-up |
 | Community game patches | [xenia-canary/game-patches](https://github.com/xenia-canary/game-patches), credit to each patch's named authors; the release includes a revision notice |
+| PS5 MihawkGen | [mihawk-99/PS5_MihawkGen](https://github.com/mihawk-99/PS5_MihawkGen), the MihawkGen frame generation engine (neural frame interpolation, its trained network and compute shaders) at `c57232a9f16bcb6df5fe07c9bb631518f2b1cc0e`, GPL-3.0-or-later; in `third_party/mihawkgen` |
 | Covers | XboxUnity, the cover service also used by Aurora |
 | Noto Sans | [Noto fonts](https://github.com/notofonts/noto-fonts), regular and semibold interface fonts; SIL Open Font License |
 | FFmpeg | XMA audio decoding; see the bundled FFmpeg license notices |
