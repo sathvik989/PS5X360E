@@ -3,6 +3,21 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.89+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Test: Performance > Give up the CPU in long spins** (off by default). A game thread waiting
+  for something (a GPU fence, a flag, a lock) spins, telling the CPU so with a hint
+  instruction. Under the emulator's scheduler the other threads on the same emulated CPU ran
+  only when its millisecond slice ended, and a higher-priority spinner kept them out for good.
+  On, a spin that has gone on for 0.2 ms gives the CPU to the other threads waiting on it (and
+  to those whose waits are due to be looked at again), as the console does when a thread asks
+  to give way; never while it holds the kernel's global lock or at DISPATCH_LEVEL, where the
+  console would not switch either. With Diagnostics, the scheduler line shows how often it did.
+- **Diagnostics: slow kernel calls.** A kernel call that keeps its emulated CPU 50 ms or more is
+  logged with the thread and the game code that called it. The time it spent waiting (parked,
+  or for an I/O worker) is left out, so what shows is host work done on the emulated CPU,
+  which holds up every other thread of that CPU: the next builds move that work off it.
+
 ## 0.2-alpha.88+0.6.0 (PS5X360E, on Xenia Edge)
 
 The first of the builds that fit the emulator to the PS5 itself (the platform layer).

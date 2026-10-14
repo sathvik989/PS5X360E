@@ -1653,6 +1653,33 @@ index b02ac0c9d..b7d7d0926 100644
        if (alertable_state_ && current_thread_) {
          auto& condition =
              static_cast<PosixCondition<Thread>&>(current_thread_->condition());
+diff --git a/src/xenia/cpu/backend/backend.cc b/src/xenia/cpu/backend/backend.cc
+index 9cec980ef..bc9e8e040 100644
+--- a/src/xenia/cpu/backend/backend.cc
++++ b/src/xenia/cpu/backend/backend.cc
+@@ -39,6 +39,7 @@ void* Backend::AllocThreadData() { return nullptr; }
+ void Backend::FreeThreadData(void* thread_data) {}
+ 
+ void (*preempt_yield_handler)(void* raw_context) = nullptr;
++void (*spin_hint_handler)(void* raw_context) = nullptr;
+ 
+ uint64_t TrapDebugPrint(void* raw_context) {
+   auto thread_state =
+diff --git a/src/xenia/cpu/backend/backend.h b/src/xenia/cpu/backend/backend.h
+index 468bbf328..c442af55c 100644
+--- a/src/xenia/cpu/backend/backend.h
++++ b/src/xenia/cpu/backend/backend.h
+@@ -221,6 +221,10 @@ uint64_t TrapDebugPrint(void* raw_context);
+ // JIT safepoint calls it with the PPCContext once the scheduler has raised the
+ // context's preempt_requested flag.
+ extern void (*preempt_yield_handler)(void* raw_context);
++// PS5X360E (alpha.89): registered by the cooperative scheduler when it starts,
++// null otherwise. Code compiled with spin_hint_yields calls it (through the
++// guest-to-host thunk) for each spin hint, db16cyc, instead of a pause.
++extern void (*spin_hint_handler)(void* raw_context);
+ 
+ }  // namespace backend
+ }  // namespace cpu
 diff --git a/src/xenia/cpu/backend/code_cache_base.h b/src/xenia/cpu/backend/code_cache_base.h
 index 13583c50f..8ed0b9ce9 100644
 --- a/src/xenia/cpu/backend/code_cache_base.h
@@ -1691,6 +1718,57 @@ index 67625137b..a06f2980f 100644
  #else
    __register_frame(unwind_execute_address);
    registered_frames_.push_back(unwind_execute_address);
+diff --git a/src/xenia/cpu/backend/x64/x64_sequences.cc b/src/xenia/cpu/backend/x64/x64_sequences.cc
+index 735b43826..e43a6f0c9 100644
+--- a/src/xenia/cpu/backend/x64/x64_sequences.cc
++++ b/src/xenia/cpu/backend/x64/x64_sequences.cc
+@@ -30,7 +30,9 @@
+ #include "xenia/base/assert.h"
+ #include "xenia/base/clock.h"
+ #include "xenia/base/logging.h"
++#include "xenia/base/platform.h"
+ #include "xenia/base/threading.h"
++#include "xenia/cpu/backend/backend.h"
+ #include "xenia/cpu/backend/x64/x64_emitter.h"
+ #include "xenia/cpu/backend/x64/x64_op.h"
+ #include "xenia/cpu/backend/x64/x64_tracers.h"
+@@ -54,6 +56,12 @@ DEFINE_bool(delay_via_maybeyield, false,
+             "implement the db16cyc instruction via MaybeYield, may improve "
+             "scheduling of guest threads",
+             "x64");
++DEFINE_bool(spin_hint_yields, false,
++            "PS5X360E (alpha.89): a guest spin (db16cyc) that has gone on for "
++            "0.2 ms gives its guest CPU to the other threads waiting for it, "
++            "as NtYieldExecution does, where the scheduler could preempt it. "
++            "Read as code is compiled.",
++            "x64");
+ namespace xe {
+ namespace cpu {
+ namespace backend {
+@@ -3778,6 +3786,14 @@ struct SET_ROUNDING_MODE_I32
+ EMITTER_OPCODE_TABLE(OPCODE_SET_ROUNDING_MODE, SET_ROUNDING_MODE_I32);
+ 
+ static void MaybeYieldForwarder(void* ctx) { xe::threading::MaybeYield(); }
++// PS5X360E (alpha.89): spin_hint_yields; a pause until the scheduler starts.
++static void SpinHintForwarder(void* ctx) {
++  if (auto handler = xe::cpu::backend::spin_hint_handler) {
++    handler(ctx);
++  } else {
++    xe::SpinPause();
++  }
++}
+ // ============================================================================
+ // OPCODE_DELAY_EXECUTION
+ // ============================================================================
+@@ -3787,6 +3803,8 @@ struct DELAY_EXECUTION
+     // todo: what if they dont have smt?
+     if (cvars::delay_via_maybeyield) {
+       e.CallNativeSafe((void*)MaybeYieldForwarder);
++    } else if (cvars::spin_hint_yields) {
++      e.CallNativeSafe((void*)SpinHintForwarder);
+     } else {
+       e.pause();
+     }
 diff --git a/src/xenia/cpu/thread.cc b/src/xenia/cpu/thread.cc
 index 8a3d4b8d3..1c9613cb6 100644
 --- a/src/xenia/cpu/thread.cc
@@ -8426,7 +8504,7 @@ index 108718adf..7e68a1f00 100644
      return true;
    }
 diff --git a/src/xenia/kernel/guest_scheduler.cc b/src/xenia/kernel/guest_scheduler.cc
-index c24087925..bc568b0bb 100644
+index c24087925..e9e08ed0c 100644
 --- a/src/xenia/kernel/guest_scheduler.cc
 +++ b/src/xenia/kernel/guest_scheduler.cc
 @@ -7,6 +7,7 @@
@@ -8437,7 +8515,127 @@ index c24087925..bc568b0bb 100644
  #include "xenia/kernel/guest_scheduler.h"
  
  #include <algorithm>
-@@ -1276,6 +1277,9 @@ void GuestScheduler::WakeForSignal(const XObject* object) {
+@@ -185,6 +186,83 @@ static void PreemptCurrentFiber(void* /*raw_context*/) {
+   }
+ }
+ 
++// PS5X360E (alpha.89): the JIT's spin hint handler (spin_hint_yields), called
++// for each db16cyc a fiber runs.
++static void SpinHintFromGuest(void* /*raw_context*/) {
++  xe::SpinPause();
++  XThread* self = XThread::GetCurrentFiberThread();
++  if (!self) {
++    return;
++  }
++  self->kernel_state()->guest_scheduler()->OnSpinHint(self);
++}
++
++// A spin is the guest waiting for something: a GPU fence, a flag another
++// thread sets, a lock. Most end within microseconds, the other side being on
++// another CPU or the GPU; one that has gone on for this long more likely waits
++// for a thread queued behind it on the same CPU, or holds up threads that
++// could run meanwhile (the safepoint preemption, a millisecond slice, keeps
++// strict priority). A gap this long between looks ends a spin.
++static constexpr uint64_t kSpinYieldAfterUs = 200;
++static constexpr uint64_t kSpinGapUs = 100;
++
++void GuestScheduler::OnSpinHint(XThread* self) {
++  auto& links = self->scheduler_links();
++  if (++links.spin_hints & 15) {
++    return;
++  }
++  const uint64_t now = Clock::host_tick_count_raw();
++  const double ticks_per_us = ticks_per_us_ > 0.0 ? ticks_per_us_ : 1000.0;
++  if (!links.spin_since_tick ||
++      now - links.spin_last_tick > uint64_t(ticks_per_us * kSpinGapUs)) {
++    links.spin_since_tick = now;
++  }
++  links.spin_last_tick = now;
++  if (now - links.spin_since_tick < uint64_t(ticks_per_us * kSpinYieldAfterUs) ||
++      shutting_down()) {
++    return;
++  }
++  const bool stats = cvars::guest_scheduler_stats;
++  if (stats) {
++    stats_.spin_hint_checks.fetch_add(1, std::memory_order_relaxed);
++  }
++  // As at a safepoint: a co-resident fiber would re-enter the recursive lock,
++  // and at DISPATCH_LEVEL the console does not switch threads.
++  if (xe::global_critical_region::is_held_by_current_thread()) {
++    if (stats) {
++      stats_.spin_hint_locked.fetch_add(1, std::memory_order_relaxed);
++    }
++    return;
++  }
++  auto* context = self->thread_state()->context();
++  const bool in_user_code = self->user_mode() && self->user_mode()->in_user_code;
++  if (!in_user_code) {
++    auto* kpcr = context->TranslateVirtualGPR<X_KPCR*>(context->r[13]);
++    if (kpcr->current_irql >= 2) {
++      if (stats) {
++        stats_.spin_hint_raised_irql.fetch_add(1, std::memory_order_relaxed);
++      }
++      return;
++    }
++  }
++  if (in_user_code) {
++    self->SaveInterruptedUserCr();
++  }
++  // As NtYieldExecution: any other ready thread on this CPU, even one of
++  // lower priority, and the waiters due to be looked at again.
++  const bool switched = YieldExecution(false);
++  if (in_user_code) {
++    self->RestoreInterruptedUserCr();
++  }
++  if (switched) {
++    if (stats) {
++      stats_.spin_hint_switches.fetch_add(1, std::memory_order_relaxed);
++    }
++    // Spin for as long again before the next.
++    links.spin_since_tick = links.spin_last_tick = Clock::host_tick_count_raw();
++  }
++}
++
+ // Raw host ticks per us for the watchdog's deadline math, 0 if unusable.
+ static double CalibrateTicksPerUs() {
+   // Median of three short samples. A single busy-spin sample can be stretched
+@@ -244,6 +322,8 @@ void GuestScheduler::EnsureStarted() {
+     return;
+   }
+   xe::cpu::backend::preempt_yield_handler = &PreemptCurrentFiber;
++  // PS5X360E (alpha.89): reached only from code compiled with spin_hint_yields.
++  xe::cpu::backend::spin_hint_handler = &SpinHintFromGuest;
+   // Not in the ctor, which runs before per-title cvar overrides are applied.
+   double ticks_per_us = CalibrateTicksPerUs();
+   ticks_per_us_ = ticks_per_us;
+@@ -344,6 +424,7 @@ void GuestScheduler::Shutdown() {
+   }
+   // Every dispatch thread has exited, so no fiber reaches a safepoint again.
+   xe::cpu::backend::preempt_yield_handler = nullptr;
++  xe::cpu::backend::spin_hint_handler = nullptr;
+   if (watchdog_thread_) {
+     xe::threading::Wait(watchdog_thread_.get(), false);
+     watchdog_thread_.reset();
+@@ -959,6 +1040,18 @@ void GuestScheduler::YieldToScheduler() {
+       xe::global_critical_region::is_held_by_current_thread()) {
+     ReportGlobalLockHazard();
+   }
++  // PS5X360E (alpha.89): the time this fiber is switched out, so a kernel
++  // call's time on its CPU can leave it out (kernel_slow_call_ms).
++  if (cvars::kernel_slow_call_ms) {
++    XThread* self = XThread::GetCurrentFiberThread();
++    const uint64_t before = Clock::QueryHostTickCount();
++    cpus_[t_current_cpu].idle_fiber->SwitchTo();
++    if (self) {
++      self->scheduler_links().switched_out_ticks +=
++          Clock::QueryHostTickCount() - before;
++    }
++    return;
++  }
+   cpus_[t_current_cpu].idle_fiber->SwitchTo();
+ }
+ 
+@@ -1276,6 +1369,9 @@ void GuestScheduler::WakeForSignal(const XObject* object) {
      return;
    }
    bool wake[kMaxCpus] = {};
@@ -8447,7 +8645,7 @@ index c24087925..bc568b0bb 100644
    {
      std::lock_guard<std::mutex> lock(lock_);
      // Wake the CPUs hosting a waiter whose wait includes this object. The
-@@ -1319,6 +1323,14 @@ void GuestScheduler::WakeForSignal(const XObject* object) {
+@@ -1319,6 +1415,14 @@ void GuestScheduler::WakeForSignal(const XObject* object) {
        wake[i] = true;
      }
    }
@@ -8462,7 +8660,7 @@ index c24087925..bc568b0bb 100644
    for (int i = 0; i < kMaxCpus; ++i) {
      if (wake[i] && cpus_[i].parked.load() && cpus_[i].ready_event) {
        cpus_[i].ready_event->Set();
-@@ -1536,6 +1548,10 @@ void GuestScheduler::RunLoop(int cpu_index) {
+@@ -1536,6 +1640,10 @@ void GuestScheduler::RunLoop(int cpu_index) {
    Profiler::ThreadEnter(
        ("GuestScheduler CPU " + std::to_string(cpu_index)).c_str());
    Cpu& cpu = cpus_[cpu_index];
@@ -8473,7 +8671,7 @@ index c24087925..bc568b0bb 100644
    // Adopt this host thread's stack as this CPU's idle fiber.
    cpu.idle_fiber = xe::threading::Fiber::CreateFromThread();
    XELOGI("GuestScheduler: CPU {} dispatch loop started", cpu_index);
-@@ -1548,6 +1564,17 @@ void GuestScheduler::RunLoop(int cpu_index) {
+@@ -1548,6 +1656,17 @@ void GuestScheduler::RunLoop(int cpu_index) {
      // busy fiber that rarely waits would starve them. The timer runs at what
      // the parked waiters actually need, a wake skips it entirely.
      uint64_t now = Clock::QueryHostUptimeMillis();
@@ -8491,12 +8689,16 @@ index c24087925..bc568b0bb 100644
      if (cpu.repoll_now.exchange(false, std::memory_order_relaxed) ||
          now >= cpu.next_timed_repoll_ms) {
        RereadyBlocked(cpu_index);
-@@ -1704,11 +1731,15 @@ void GuestScheduler::ReportStatsIfDue() {
+@@ -1704,11 +1823,19 @@ void GuestScheduler::ReportStatsIfDue() {
    uint64_t io_run = take(stats_.io_run_ns);
    uint64_t io_queue_max = take(stats_.io_queue_max_ns);
    uint64_t io_peak = take(stats_.io_peak_inflight);
 +  uint64_t signals_walked = take(stats_.signals_walked);
 +  uint64_t signals_woke = take(stats_.signals_woke);
++  uint64_t spin_checks = take(stats_.spin_hint_checks);
++  uint64_t spin_switches = take(stats_.spin_hint_switches);
++  uint64_t spin_locked = take(stats_.spin_hint_locked);
++  uint64_t spin_irql = take(stats_.spin_hint_raised_irql);
    double ticks_per_us = ticks_per_us_ > 0.0 ? ticks_per_us_ : 1.0;
    auto to_us = [ticks_per_us](uint64_t ticks) {
      return uint64_t(double(ticks) / ticks_per_us);
@@ -8508,7 +8710,7 @@ index c24087925..bc568b0bb 100644
        "GuestScheduler: repolls {}/s (rereadied {}), idle wakes {}, switches "
        "{}, skipped yields {}, yields down {} (starvation "
        "{}), background {} windows {} picks, ready wait avg "
-@@ -1719,6 +1750,47 @@ void GuestScheduler::ReportStatsIfDue() {
+@@ -1719,6 +1846,55 @@ void GuestScheduler::ReportStatsIfDue() {
        to_us(rw_max), io_calls, io_calls ? to_us(io_queue / io_calls) : 0,
        to_us(io_queue_max), io_calls ? to_us(io_run / io_calls) : 0,
        io_pool_size_.load(std::memory_order_relaxed), io_peak);
@@ -8516,6 +8718,14 @@ index c24087925..bc568b0bb 100644
 +  XELOGW("GuestScheduler: signals {}/s walked the waiters under the lock, {}/s "
 +         "woke a CPU",
 +         signals_walked, signals_woke);
++  // PS5X360E (alpha.89): spins over 0.2 ms (spin_hint_yields) and what came of
++  // them: the CPU given to other work, or kept (the global critical region
++  // held, DISPATCH_LEVEL, or nothing else to run).
++  if (spin_checks) {
++    XELOGW("GuestScheduler: long spins looked at {}/s: gave the CPU {}/s, held "
++           "the global lock {}/s, at DISPATCH_LEVEL {}/s",
++           spin_checks, spin_switches, spin_locked, spin_irql);
++  }
 +}
 +
 +// PS5X360E (alpha.87): the return addresses on a guest stack, nearest first:
@@ -8556,7 +8766,7 @@ index c24087925..bc568b0bb 100644
  }
  
  // Names what a fiber is parked on, for the no-progress dump.
-@@ -1892,44 +1964,91 @@ void GuestScheduler::WatchdogLoop() {
+@@ -1892,44 +2068,91 @@ void GuestScheduler::WatchdogLoop() {
      }
  
      uint64_t now = Clock::host_tick_count_raw();
@@ -8682,10 +8892,24 @@ index c24087925..bc568b0bb 100644
  }  // namespace kernel
  }  // namespace xe
 diff --git a/src/xenia/kernel/guest_scheduler.h b/src/xenia/kernel/guest_scheduler.h
-index 4b254e51a..e993144cb 100644
+index 4b254e51a..971574640 100644
 --- a/src/xenia/kernel/guest_scheduler.h
 +++ b/src/xenia/kernel/guest_scheduler.h
-@@ -174,6 +174,27 @@ class GuestScheduler {
+@@ -140,6 +140,13 @@ class GuestScheduler {
+   // YieldCurrentThread, returning false without a switch if nothing could run.
+   bool YieldExecution(bool quantum_end);
+ 
++  // PS5X360E (alpha.89): a spin hint (db16cyc) run by |self|, a fiber on this
++  // scheduler, with spin_hint_yields on. At every 16th, when other work waits
++  // on its CPU, it gives the CPU up as NtYieldExecution does, where a
++  // preemption could (not holding the global critical region, not at
++  // DISPATCH_LEVEL).
++  void OnSpinHint(XThread* self);
++
+   // Parks the running guest fiber on its CPU's blocked list and yields. Returns
+   // once the dispatcher re-readies it so the wait can re-poll. A single-object
+   // wait on an epoch-bumping type is re-readied only when the epoch moves past
+@@ -174,6 +181,27 @@ class GuestScheduler {
  
    KernelState* kernel_state() const { return kernel_state_; }
  
@@ -8713,7 +8937,7 @@ index 4b254e51a..e993144cb 100644
   private:
    // Xbox 360 logical CPU count, also the maximum number of dispatch threads.
    static constexpr int kMaxCpus = 6;
-@@ -199,6 +220,9 @@ class GuestScheduler {
+@@ -199,6 +227,9 @@ class GuestScheduler {
      std::atomic<uint32_t> ready_summary{0};
      // The fiber currently running on this CPU, for the preemption check.
      XThread* current_thread = nullptr;
@@ -8723,7 +8947,7 @@ index 4b254e51a..e993144cb 100644
      // Set under lock_ by a voluntary yield, so the next DequeueReady prefers
      // any other ready thread over the yielder, even a lower-priority one.
      XThread* yield_to_other = nullptr;
-@@ -208,6 +232,9 @@ class GuestScheduler {
+@@ -208,6 +239,9 @@ class GuestScheduler {
      XThread* suspended_tail = nullptr;
      XThread* exited_thread = nullptr;
      std::unique_ptr<xe::threading::Thread> host_thread;
@@ -8733,7 +8957,7 @@ index 4b254e51a..e993144cb 100644
      std::unique_ptr<xe::threading::Fiber> idle_fiber;
      std::unique_ptr<xe::threading::Event> ready_event;
      // Hint read lock-free by WakeAll so it only wakes CPUs with a parked
-@@ -378,6 +405,10 @@ class GuestScheduler {
+@@ -378,6 +412,17 @@ class GuestScheduler {
      // Most pool workers inside a call at once. Queue wait cannot show this.
      // An idle worker takes a call immediately, so it stays low either way.
      std::atomic<uint64_t> io_peak_inflight{0};
@@ -8741,11 +8965,18 @@ index 4b254e51a..e993144cb 100644
 +    // the blocked lists, and those of them that woke a CPU.
 +    std::atomic<uint64_t> signals_walked{0};
 +    std::atomic<uint64_t> signals_woke{0};
++    // PS5X360E (alpha.89): spin hints looked at (spin_hint_yields), those that
++    // gave the CPU to other work, and those that could not (the global
++    // critical region held, DISPATCH_LEVEL).
++    std::atomic<uint64_t> spin_hint_checks{0};
++    std::atomic<uint64_t> spin_hint_switches{0};
++    std::atomic<uint64_t> spin_hint_locked{0};
++    std::atomic<uint64_t> spin_hint_raised_irql{0};
    };
    Stats stats_;
    uint64_t stats_last_report_ms_ = 0;
 diff --git a/src/xenia/kernel/kernel_flags.cc b/src/xenia/kernel/kernel_flags.cc
-index 57b097c11..42a142055 100644
+index 57b097c11..48dc51218 100644
 --- a/src/xenia/kernel/kernel_flags.cc
 +++ b/src/xenia/kernel/kernel_flags.cc
 @@ -11,6 +11,8 @@
@@ -8757,10 +8988,19 @@ index 57b097c11..42a142055 100644
  DEFINE_bool(
      guest_scheduler, true,
      "Run guest threads as cooperative fibers driven by an in-kernel scheduler "
-@@ -24,3 +26,9 @@ DEFINE_uint32(
+@@ -24,3 +26,18 @@ DEFINE_uint32(
      "this long yields at its next JIT safepoint so co-resident fibers on the "
      "same dispatch thread make progress. Lower is fairer but switches more.",
      "Kernel");
++
++// PS5X360E (alpha.89): set by the PS5 build's Diagnostics (50).
++DEFINE_uint32(
++    kernel_slow_call_ms, 0,
++    "Log a kernel call that keeps its guest CPU this long (milliseconds): its "
++    "time from entry to return less the time its thread was switched out "
++    "(waiting, queued, or waiting for an I/O worker), so host work done on "
++    "the guest CPU shows and a wait does not. 0: off.",
++    "Kernel");
 +
 +#if XE_PLATFORM_PS5
 +DEFINE_bool(headless, false,
@@ -8768,10 +9008,10 @@ index 57b097c11..42a142055 100644
 +            "Kernel");
 +#endif
 diff --git a/src/xenia/kernel/kernel_flags.h b/src/xenia/kernel/kernel_flags.h
-index 54cab574f..a778345b4 100644
+index 54cab574f..035a1b2c4 100644
 --- a/src/xenia/kernel/kernel_flags.h
 +++ b/src/xenia/kernel/kernel_flags.h
-@@ -10,9 +10,14 @@
+@@ -10,9 +10,15 @@
  #ifndef XENIA_KERNEL_KERNEL_FLAGS_H_
  #define XENIA_KERNEL_KERNEL_FLAGS_H_
  #include "xenia/base/cvar.h"
@@ -8780,6 +9020,7 @@ index 54cab574f..a778345b4 100644
  DECLARE_bool(log_high_frequency_kernel_calls);
  DECLARE_bool(guest_scheduler);
  DECLARE_uint32(guest_scheduler_quantum_us);
++DECLARE_uint32(kernel_slow_call_ms);
 +#if XE_PLATFORM_PS5
 +// Xbox360PS5: the kernel's dialogs answer themselves (Xenia Canary's headless).
 +DECLARE_bool(headless);
@@ -9278,11 +9519,111 @@ index 000000000..819b273b9
 +}  // namespace xe
 +
 +#endif  // XENIA_KERNEL_UTIL_LDI_DECOMPRESSOR_H_
+diff --git a/src/xenia/kernel/util/shim_utils.cc b/src/xenia/kernel/util/shim_utils.cc
+index 68c0773ae..84b069f8b 100644
+--- a/src/xenia/kernel/util/shim_utils.cc
++++ b/src/xenia/kernel/util/shim_utils.cc
+@@ -8,11 +8,62 @@
+  */
+ 
+ #include "xenia/kernel/util/shim_utils.h"
++
++#include <atomic>
++
++#include "xenia/base/clock.h"
+ #include "xenia/kernel/xthread.h"
+ namespace xe {
+ namespace kernel {
+ namespace shim {
+ 
++// PS5X360E (alpha.89): kernel_slow_call_ms. Only a fiber's calls are timed,
++// as only a fiber's switched-out time is kept (GuestScheduler::
++// YieldToScheduler).
++void SlowKernelCallTimer::Begin() {
++  XThread* self = XThread::GetCurrentFiberThread();
++  if (!self) {
++    return;
++  }
++  switched_out_ = self->scheduler_links().switched_out_ticks;
++  start_ = Clock::QueryHostTickCount();
++  if (!start_) {
++    start_ = 1;
++  }
++}
++
++void SlowKernelCallTimer::Finish(const cpu::Export* export_entry,
++                                 const PPCContext* context) {
++  XThread* self = XThread::GetCurrentFiberThread();
++  if (!self) {
++    return;
++  }
++  const uint64_t wall = Clock::QueryHostTickCount() - start_;
++  const uint64_t away =
++      self->scheduler_links().switched_out_ticks - switched_out_;
++  const uint64_t held = wall > away ? wall - away : 0;
++  const double ms_per_tick = 1000.0 / double(Clock::QueryHostTickFrequency());
++  const double held_ms = double(held) * ms_per_tick;
++  if (held_ms < double(cvars::kernel_slow_call_ms)) {
++    return;
++  }
++  // The first few hundred; past that a count, now and then.
++  static std::atomic<uint32_t> slow_calls{0};
++  const uint32_t number = slow_calls.fetch_add(1, std::memory_order_relaxed);
++  if (number >= 300) {
++    if (number % 100 == 0) {
++      XELOGW("Slow kernel calls: {} so far (no longer each logged)", number);
++    }
++    return;
++  }
++  XELOGW(
++      "Slow kernel call: {} held guest CPU {} for {:.1f} ms ({:.1f} ms with "
++      "its waits) in thread {:08X} '{}', called from {:08X}",
++      export_entry->name, self->active_cpu(), held_ms,
++      double(wall) * ms_per_tick, self->thread_id(), self->thread_name(),
++      uint32_t(context->lr));
++}
++
+ thread_local StringBuffer string_buffer_;
+ 
+ StringBuffer* thread_local_string_buffer() { return &string_buffer_; }
 diff --git a/src/xenia/kernel/util/shim_utils.h b/src/xenia/kernel/util/shim_utils.h
-index 8cd62a259..170d3e0f8 100644
+index 8cd62a259..5f9bc1637 100644
 --- a/src/xenia/kernel/util/shim_utils.h
 +++ b/src/xenia/kernel/util/shim_utils.h
-@@ -570,18 +570,25 @@ struct ExportRegistrerHelper {
+@@ -528,6 +528,32 @@ XE_NOALIAS void PrintKernelCall(cpu::Export* export_entry,
+    always turned into strings except if kHighFrequency)
+ 
+ */
++// PS5X360E (alpha.89): with kernel_slow_call_ms set (the PS5 build's
++// Diagnostics), a kernel call that keeps its guest CPU that long is logged:
++// its time from entry to return less the time its fiber was switched out
++// (parked in a wait, queued, waiting for an I/O worker). A wait is not a slow
++// call then, while host work done on the guest CPU (a file system call made
++// there, decompressing, waiting for a host lock) is.
++class SlowKernelCallTimer {
++ public:
++  SlowKernelCallTimer() {
++    if (cvars::kernel_slow_call_ms) {
++      Begin();
++    }
++  }
++  void End(const cpu::Export* export_entry, const PPCContext* context) {
++    if (start_) {
++      Finish(export_entry, context);
++    }
++  }
++
++ private:
++  void Begin();
++  void Finish(const cpu::Export* export_entry, const PPCContext* context);
++  uint64_t start_ = 0;
++  uint64_t switched_out_ = 0;
++};
++
+ template <typename F, typename Tuple, std::size_t... I>
+ XE_FORCEINLINE static auto KernelTrampoline(F&& f, Tuple&& t,
+                                             std::index_sequence<I...>) {
+@@ -570,19 +596,28 @@ struct ExportRegistrerHelper {
              PrintKernelCall(export_entry, params);
            }
          }
@@ -9297,6 +9638,7 @@ index 8cd62a259..170d3e0f8 100644
 -          if (TAGS &
 -              (xe::cpu::ExportTag::kLog | xe::cpu::ExportTag::kLogResult)) {
 -            // TODO(benvanik): log result.
++        SlowKernelCallTimer slow_call_timer;
 +        // Xbox360PS5: a C++ exception thrown inside a kernel call (a
 +        // std::filesystem call that fails, a bad conversion) cannot unwind
 +        // through the generated guest code that called it, and the whole
@@ -9317,8 +9659,10 @@ index 8cd62a259..170d3e0f8 100644
 +                 export_entry->name, error.what());
 +          ppc_context->r[3] = 0xC0000001u;
          }
++        slow_call_timer.End(export_entry, ppc_context);
        }
      };
+     struct Y {
 diff --git a/src/xenia/kernel/xam/achievement_manager.cc b/src/xenia/kernel/xam/achievement_manager.cc
 index 2834a8813..89d6a6433 100644
 --- a/src/xenia/kernel/xam/achievement_manager.cc
@@ -12555,7 +12899,7 @@ index ca42c30ee..33d5a32ce 100644
        reinterpret_cast<std::atomic_uint8_t*>(&guest_thread->suspend_count)
            ->fetch_add(1);
 diff --git a/src/xenia/kernel/xthread.h b/src/xenia/kernel/xthread.h
-index d6d79c1a8..9a194dcb6 100644
+index d6d79c1a8..89e23cdc4 100644
 --- a/src/xenia/kernel/xthread.h
 +++ b/src/xenia/kernel/xthread.h
 @@ -21,9 +21,7 @@
@@ -12592,7 +12936,24 @@ index d6d79c1a8..9a194dcb6 100644
    // Xbox thread IDs:
    // 0 - core 0, thread 0 - user
    // 1 - core 0, thread 1 - user
-@@ -822,10 +837,11 @@ class XThread : public XObject, public cpu::Thread {
+@@ -745,6 +760,16 @@ class XThread : public XObject, public cpu::Thread {
+     // critical region. Diagnostic only - yielding there would let a co-resident
+     // fiber re-enter the recursive lock.
+     uint32_t preempt_defers_lock = 0;
++    // PS5X360E (alpha.89): spin hints (db16cyc) run, so spin_hint_yields
++    // looks for other work on this CPU at every 16th, and when (raw host
++    // ticks) the spin began and was last looked at.
++    uint32_t spin_hints = 0;
++    uint64_t spin_since_tick = 0;
++    uint64_t spin_last_tick = 0;
++    // PS5X360E (alpha.89): host ticks this fiber spent switched out (parked or
++    // queued) while kernel_slow_call_ms is set, so a kernel call's time on its
++    // CPU leaves out the time it waited.
++    uint64_t switched_out_ticks = 0;
+   };
+   SchedulerLinks& scheduler_links() { return scheduler_links_; }
+ 
+@@ -822,10 +847,11 @@ class XThread : public XObject, public cpu::Thread {
    // On Linux, C++ exceptions are used instead of setjmp/longjmp so that
    // destructors and RAII guards in host C++ frames are properly unwound.
    // JIT code has DWARF .eh_frame unwind info registered via __register_frame.

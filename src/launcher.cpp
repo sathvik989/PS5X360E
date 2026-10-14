@@ -48,6 +48,8 @@ DECLARE_bool(clock_lock_free);
 DECLARE_bool(content_delete_in_background);
 DECLARE_bool(module_load_offload);
 DECLARE_uint32(wait_reg_mem_spin_us);
+DECLARE_bool(spin_hint_yields);
+DECLARE_uint32(kernel_slow_call_ms);
 DECLARE_bool(guest_scheduler_stats);
 DECLARE_bool(texture_load_scaled_direct_copy);
 DECLARE_bool(gpu_section_timing);
@@ -263,6 +265,9 @@ const std::vector<Option>& Options() {
        off_on},
       {"module_load_offload", &S::module_load_offload, 1, W::start, 0, true, "Carregar código do jogo sem parar as outras tarefas (teste)",
        "Quando o jogo carrega uma parte do seu código do disco (antes do menu principal do NFS The Run), a leitura e a preparação ocupavam a CPU emulada, e as outras tarefas dessa CPU paravam, até a de que o vídeo dependia: pausas de 2 a 10 segundos. Ligado, esse trabalho vai para outra tarefa do emulador enquanto as do jogo continuam. Teste: compare a abertura ligado e desligado.",
+       off_on},
+      {"spin_yields", &S::spin_yields, 1, W::start, 0, true, "Ceder a CPU em esperas longas (teste)",
+       "Quando uma tarefa do jogo fica girando à espera de algo (o vídeo, outra tarefa) por mais de 0,2 ms, ela cede a CPU emulada às outras tarefas do jogo que esperam nessa mesma CPU, como o Xbox 360 faz quando uma tarefa pede para ceder a vez. Sem isso, as outras só rodam quando a fatia de tempo dela acaba. Teste: compare a mesma corrida ligado e desligado; com Diagnóstico, o registro mostra quantas vezes cedeu.",
        off_on},
       {"output_4k", &S::output_4k, 0, W::start, 1, true, "Saída de vídeo do jogo",
        "Tamanho da imagem enviada à TV durante o jogo. 4K: a imagem do jogo chega à tela em 3840x2160, e o 2x e o 3x mostram todo o detalhe. 1080p: como antes, a TV amplia. Os menus continuam em 1080p.",
@@ -556,6 +561,11 @@ void Settings::Apply() const {
   // in a WAIT_REG_MEM (read at each wait); the driver's half is set at start
   // (canary_game_main.cpp, platform/ps5/driver_wait.cpp).
   cvars::wait_reg_mem_spin_us = gpu_waits ? 200 : 0;
+  // alpha.89: read as guest code is compiled, so from the next start.
+  cvars::spin_hint_yields = spin_yields != 0;
+  // alpha.89: kernel calls that keep their guest CPU 50 ms or more, logged
+  // with Diagnostics.
+  cvars::kernel_slow_call_ms = diagnostics ? 50 : 0;
   // alpha.86: the scheduler's counters (signals through and past its lock,
   // offloaded I/O) once a second with Diagnostics.
   cvars::guest_scheduler_stats = diagnostics != 0;

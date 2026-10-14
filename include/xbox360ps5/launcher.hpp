@@ -52,6 +52,7 @@ struct Settings {
   int clock_lock_free = 0;    // 1: the guest clock read without its lock (clock_lock_free; alpha.85 test).
   int save_delete_background = 0;  // 1: a deleted save is moved aside and removed later (content_delete_in_background; alpha.87 test).
   int module_load_offload = 0;     // 1: a game module's read and precompile on an I/O worker (module_load_offload; alpha.87 test).
+  int spin_yields = 0;             // 1: a guest spin over 0.2 ms gives its guest CPU to other threads (spin_hint_yields; alpha.89 test).
   int output_4k = 1;          // A game's picture to the screen at 3840x2160 (1) or 1920x1080 (0); menus stay 1080p (alpha69nice).
   int frame_pacing = 0;       // 0 shows the newest frame at each refresh, 1 paces a 30 FPS game to exactly 2 refreshes a frame.
   int image_filter = 0;       // How a game's picture is stretched to the screen: 0 plain, 1 CAS, 2 FSR.
