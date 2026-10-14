@@ -8412,10 +8412,10 @@ index bf2533069..b2ddc8261 100644
      Shutdown();
      return false;
 diff --git a/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc b/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
-index d32d11d28..9e74d71c9 100644
+index d32d11d28..4cadac81e 100644
 --- a/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
-@@ -8,6 +8,9 @@
+@@ -8,14 +8,20 @@
   */
  
  #include "xenia/gpu/vulkan/vulkan_render_target_cache.h"
@@ -8423,9 +8423,10 @@ index d32d11d28..9e74d71c9 100644
 +#include "xbox360ps5/gpu_diagnostics.hpp"
 +#endif
  
++#include <atomic>
  #include <cstddef>
  #include <cstdint>
-@@ -15,7 +18,9 @@
+ #include <cstring>
  
  #include "third_party/glslang/SPIRV/GLSL.std.450.h"
  #include "xenia/base/assert.h"
@@ -8435,7 +8436,7 @@ index d32d11d28..9e74d71c9 100644
  #include "xenia/base/logging.h"
  #include "xenia/base/math.h"
  #include "xenia/base/profiling.h"
-@@ -33,6 +38,14 @@
+@@ -33,6 +39,14 @@
  
  DECLARE_bool(vulkan_dynamic_rendering);
  
@@ -8450,7 +8451,7 @@ index d32d11d28..9e74d71c9 100644
  namespace xe {
  namespace gpu {
  namespace vulkan {
-@@ -1078,6 +1091,11 @@ bool VulkanRenderTargetCache::Resolve(
+@@ -1078,6 +1092,11 @@ bool VulkanRenderTargetCache::Resolve(
      VulkanTextureCache& texture_cache, uint32_t& written_address_out,
      uint32_t& written_length_out, reg::RB_COPY_DEST_INFO* copy_dest_info_out,
      bool* written_scaled_out) {
@@ -8462,7 +8463,7 @@ index d32d11d28..9e74d71c9 100644
    SCOPE_profile_cpu_f("gpu");
    written_address_out = 0;
    written_length_out = 0;
-@@ -1984,6 +2002,9 @@ uint32_t VulkanRenderTargetCache::GetMaxRenderTargetHeight() const {
+@@ -1984,6 +2003,9 @@ uint32_t VulkanRenderTargetCache::GetMaxRenderTargetHeight() const {
  RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(
      RenderTargetKey key) {
    SCOPE_profile_cpu_f("gpu");
@@ -8472,7 +8473,50 @@ index d32d11d28..9e74d71c9 100644
    const ui::vulkan::VulkanDevice* const vulkan_device =
        command_processor_.GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
-@@ -2522,6 +2543,9 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+@@ -2058,6 +2080,42 @@ RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(
+   std::string debug_name = key.GetDebugName();
+   vulkan_device->SetObjectName(VK_OBJECT_TYPE_IMAGE, image, debug_name.c_str());
+ 
++#if XE_PLATFORM_PS5
++  // PS5X360E (alpha.91): whether the driver keeps it compressed (DCC for color,
++  // HTILE for depth), asked with vulkan_image_compression_report (Diagnostics):
++  // the first 300 render targets, then a count every 100.
++  {
++    bool compressed = false;
++    if (vulkan_device->QueryImageCompression(
++            image,
++            key.is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT
++                         : VK_IMAGE_ASPECT_COLOR_BIT,
++            compressed)) {
++      static std::atomic<uint32_t> asked{0}, compressed_count{0};
++      const uint32_t number = asked.fetch_add(1, std::memory_order_relaxed) + 1;
++      const uint32_t compressed_so_far =
++          compressed_count.fetch_add(compressed ? 1 : 0,
++                                     std::memory_order_relaxed) +
++          (compressed ? 1 : 0);
++      if (number <= 300) {
++        XELOGW(
++            "Render target compression: {}x{} {} {}x MSAA{}: {}",
++            image_create_info.extent.width, image_create_info.extent.height,
++            key.GetFormatName(), uint32_t(image_create_info.samples),
++            (image_create_info.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT)
++                ? ", also viewed as another format"
++                : "",
++            compressed ? (key.is_depth ? "compressed (HTILE)"
++                                       : "compressed (DCC)")
++                       : "not compressed");
++      } else if (number % 100 == 0) {
++        XELOGW("Render target compression: {} of {} render targets compressed",
++               compressed_so_far, number);
++      }
++    }
++  }
++#endif
++
+   // Create the image views.
+ 
+   VkImageViewCreateInfo view_create_info;
+@@ -2522,6 +2580,9 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
      return pipeline_it->second[0] != VK_NULL_HANDLE ? pipeline_it->second.data()
                                                      : nullptr;
    }
@@ -8482,7 +8526,7 @@ index d32d11d28..9e74d71c9 100644
  
    const ui::vulkan::VulkanDevice* const vulkan_device =
        command_processor_.GetVulkanDevice();
-@@ -2796,7 +2820,13 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+@@ -2796,7 +2857,13 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
    pipeline_create_info.subpass = 0;
    pipeline_create_info.basePipelineHandle = VK_NULL_HANDLE;
    pipeline_create_info.basePipelineIndex = -1;
@@ -8497,7 +8541,7 @@ index d32d11d28..9e74d71c9 100644
                                      &pipeline_create_info, nullptr,
                                      &pipelines[0]) != VK_SUCCESS) {
      XELOGE(
-@@ -2821,7 +2851,7 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+@@ -2821,7 +2888,7 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
                : i;
        sample_id_specialization_constant = host_sample_index;
        sample_mask = uint32_t(1) << host_sample_index;
@@ -8506,7 +8550,7 @@ index d32d11d28..9e74d71c9 100644
                                          &pipeline_create_info, nullptr,
                                          &pipelines[i]) != VK_SUCCESS) {
          XELOGE(
-@@ -2837,6 +2867,11 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+@@ -2837,6 +2904,11 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
        }
      }
    }
@@ -8518,7 +8562,7 @@ index d32d11d28..9e74d71c9 100644
    return transfer_pipelines_.emplace(key, pipelines).first->second.data();
  }
  
-@@ -2845,6 +2880,11 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
+@@ -2845,6 +2917,11 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
      const std::vector<Transfer>* render_target_transfers,
      const uint64_t* render_target_resolve_clear_values,
      const Transfer::Rectangle* resolve_clear_rectangle) {
@@ -8530,7 +8574,7 @@ index d32d11d28..9e74d71c9 100644
    SCOPE_profile_cpu_f("gpu");
    assert_true(GetPath() == Path::kHostRenderTargets);
  
-@@ -3770,11 +3810,93 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
+@@ -3770,11 +3847,93 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
    command_processor_.PopDebugMarker();
  }
  
@@ -8624,7 +8668,7 @@ index d32d11d28..9e74d71c9 100644
  
    EdramDumpShaderOptions shader_options;
    shader_options.spirv_version = spirv_version_;
-@@ -3800,7 +3922,14 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(EdramDumpShaderKey key) {
+@@ -3800,7 +3959,14 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(EdramDumpShaderKey key) {
    VkPipeline pipeline = ui::vulkan::util::CreateComputePipeline(
        command_processor_.GetVulkanDevice(),
        key.is_depth ? dump_pipeline_layout_depth_ : dump_pipeline_layout_color_,
@@ -55519,10 +55563,46 @@ index 000000000..20b96e6ad
 +
 +#endif
 diff --git a/src/xenia/ui/vulkan/vulkan_device.cc b/src/xenia/ui/vulkan/vulkan_device.cc
-index 18ac55375..83ed579d6 100644
+index 18ac55375..d5fbca75c 100644
 --- a/src/xenia/ui/vulkan/vulkan_device.cc
 +++ b/src/xenia/ui/vulkan/vulkan_device.cc
-@@ -814,6 +814,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -10,6 +10,7 @@
+ #include "xenia/ui/vulkan/vulkan_device.h"
+ 
+ #include "xenia/base/assert.h"
++#include "xenia/base/cvar.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/base/platform.h"
+ 
+@@ -19,6 +20,15 @@
+ #include <unordered_map>
+ #include <vector>
+ 
++// PS5X360E (alpha.91): asks the driver whether each render target is kept
++// compressed (Diagnostics), through VK_EXT_image_compression_control, enabled
++// only for this.
++DEFINE_bool(vulkan_image_compression_report, false,
++            "Log whether the driver compresses each render target (DCC for "
++            "color, HTILE for depth); enables VK_EXT_image_compression_control "
++            "to ask.",
++            "Vulkan");
++
+ namespace xe {
+ namespace ui {
+ namespace vulkan {
+@@ -247,6 +257,11 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+     if (get_physical_device_properties2_supported) {
+       XE_UI_VULKAN_STRUCT_EXTENSION(EXT_external_memory_host)
+     }
++    // #339. PS5X360E (alpha.91): only to ask whether images are compressed.
++    if (get_physical_device_properties2_supported &&
++        cvars::vulkan_image_compression_report) {
++      XE_UI_VULKAN_STRUCT_EXTENSION(EXT_image_compression_control)
++    }
+   }
+ 
+ #undef XE_UI_VULKAN_STRUCT_EXTENSION
+@@ -814,6 +829,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
      XE_UI_VULKAN_FEATURE(sparseBinding)
      XE_UI_VULKAN_FEATURE(sparseResidencyBuffer)
    }
@@ -55533,8 +55613,52 @@ index 18ac55375..83ed579d6 100644
  
    if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
      if (with_gpu_emulation) {
+@@ -1103,6 +1122,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+     }
+   }
+ 
++  // PS5X360E (alpha.91): the compression query.
++  if (device->extensions_.ext_EXT_image_compression_control) {
++    device->vkGetImageSubresourceLayout2EXT_ =
++        PFN_vkGetImageSubresourceLayout2EXT(ifn.vkGetDeviceProcAddr(
++            device->device_, "vkGetImageSubresourceLayout2EXT"));
++    if (!device->vkGetImageSubresourceLayout2EXT_) {
++      device->extensions_.ext_EXT_image_compression_control = false;
++    }
++  }
++
+   // Optional host-pointer import function - failing to load disables zero-copy.
+   if (device->extensions_.ext_EXT_external_memory_host) {
+     device->vkGetMemoryHostPointerPropertiesEXT_ =
+@@ -1265,6 +1294,26 @@ void VulkanDevice::LogFaultInfo() {
+   }
+ }
+ 
++bool VulkanDevice::QueryImageCompression(VkImage image,
++                                         VkImageAspectFlagBits aspect,
++                                         bool& compressed) const {
++  if (!vkGetImageSubresourceLayout2EXT_ || image == VK_NULL_HANDLE) {
++    return false;
++  }
++  VkImageSubresource2EXT subresource = {};
++  subresource.sType = VK_STRUCTURE_TYPE_IMAGE_SUBRESOURCE_2_EXT;
++  subresource.imageSubresource.aspectMask = aspect;
++  VkImageCompressionPropertiesEXT compression = {};
++  compression.sType = VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_PROPERTIES_EXT;
++  VkSubresourceLayout2EXT layout = {};
++  layout.sType = VK_STRUCTURE_TYPE_SUBRESOURCE_LAYOUT_2_EXT;
++  layout.pNext = &compression;
++  vkGetImageSubresourceLayout2EXT_(device_, image, &subresource, &layout);
++  compressed =
++      !(compression.imageCompressionFlags & VK_IMAGE_COMPRESSION_DISABLED_EXT);
++  return true;
++}
++
+ }  // namespace vulkan
+ }  // namespace ui
+ }  // namespace xe
 diff --git a/src/xenia/ui/vulkan/vulkan_device.h b/src/xenia/ui/vulkan/vulkan_device.h
-index 7fd2cefe7..5f2f0bbd2 100644
+index 7fd2cefe7..4cf5a2bcd 100644
 --- a/src/xenia/ui/vulkan/vulkan_device.h
 +++ b/src/xenia/ui/vulkan/vulkan_device.h
 @@ -16,6 +16,12 @@
@@ -55550,7 +55674,31 @@ index 7fd2cefe7..5f2f0bbd2 100644
  
  namespace xe {
  namespace ui {
-@@ -381,7 +387,7 @@ class VulkanDevice {
+@@ -251,6 +257,10 @@ class VulkanDevice {
+     // VK_EXT_external_memory_host (#179). Imports guest RAM as device memory so
+     // the shared-memory buffer can alias guest RAM directly (zero-copy).
+     bool ext_EXT_external_memory_host = false;
++    // PS5X360E (alpha.91): VK_EXT_image_compression_control (#339), enabled
++    // only with vulkan_image_compression_report, to ask whether the driver
++    // compresses an image.
++    bool ext_EXT_image_compression_control = false;
+   };
+ 
+   const Extensions& extensions() const { return extensions_; }
+@@ -261,6 +271,12 @@ class VulkanDevice {
+     return vkGetMemoryHostPointerPropertiesEXT_;
+   }
+ 
++  // PS5X360E (alpha.91): whether the driver keeps an image compressed (DCC for
++  // color, HTILE for depth) in `compressed`. False when it can't be asked
++  // (VK_EXT_image_compression_control not enabled).
++  bool QueryImageCompression(VkImage image, VkImageAspectFlagBits aspect,
++                             bool& compressed) const;
++
+   VkDevice device() const { return device_; }
+ 
+   struct Functions {
+@@ -381,7 +397,7 @@ class VulkanDevice {
                                 const VkSubmitInfo* const submits,
                                 const VkFence fence) {
      const VkResult submit_result =
@@ -55559,6 +55707,16 @@ index 7fd2cefe7..5f2f0bbd2 100644
      if (submit_result == VK_ERROR_DEVICE_LOST) {
        if (SetLost()) {
          LogFaultInfo();
+@@ -420,6 +436,9 @@ class VulkanDevice {
+   // is enabled. Null otherwise.
+   PFN_vkGetMemoryHostPointerPropertiesEXT vkGetMemoryHostPointerPropertiesEXT_ =
+       nullptr;
++  // PS5X360E (alpha.91): VK_EXT_image_compression_control's query, or null.
++  PFN_vkGetImageSubresourceLayout2EXT vkGetImageSubresourceLayout2EXT_ =
++      nullptr;
+   // Set when LogFaultInfo() has already logged - prevents repeat logging from
+   // multiple device-loss observers.
+   std::atomic_flag fault_info_logged_ = ATOMIC_FLAG_INIT;
 diff --git a/src/xenia/ui/vulkan/vulkan_gpu_completion_timeline.cc b/src/xenia/ui/vulkan/vulkan_gpu_completion_timeline.cc
 index 5de4363c0..4834334ba 100644
 --- a/src/xenia/ui/vulkan/vulkan_gpu_completion_timeline.cc

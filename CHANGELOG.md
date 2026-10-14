@@ -3,6 +3,25 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.91+0.6.0 (PS5X360E, on Xenia Edge)
+
+Phase F, part 2: two checks of the console's hardware, in the log with Diagnostics.
+
+- **Are the render targets kept compressed?** The GPU can keep a picture compressed while it
+  draws and reads it (DCC for colour, HTILE for depth), which saves memory bandwidth, the
+  limit at 3x. The PS5's driver allows it, and by its rules Xenia's usual render targets (8-bit,
+  10-bit, and 10-bit float kept as 16-bit float) qualify. 16- and 32-bit float targets can't:
+  Xenia also views them as integers to move their bits exactly, and on this GPU generation the
+  driver can't keep a picture compressed across float and integer views. With Diagnostics, the
+  log now asks the driver about each render target ("Render target compression: ...", the first
+  300, then a running count), so the games themselves show what is compressed.
+- **Where the memory protection time goes.** In alpha.89's 3x race the emulator changed the
+  protection of the game's memory about 1,100 times a second (each change about 45 us on the
+  console) and took about 800 write faults a second. The summary now also gives how many changes
+  began where the one before ended, or within 64 KiB of it, which one call could have covered,
+  and how long the fault handler took per fault. That decides whether merging them is worth
+  doing.
+
 ## 0.2-alpha.90+0.6.0 (PS5X360E, on Xenia Edge)
 
 The first build of Phase F, which fits the emulator to the PS5's own CPU.

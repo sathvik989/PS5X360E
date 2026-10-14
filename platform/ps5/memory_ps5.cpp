@@ -34,6 +34,11 @@ std::atomic<unsigned long long> protect_calls{0}, protect_syscalls{0}, protect_n
 // The same, for the protections that open pages for writing (after a fault)
 // and for the pages each kind covered.
 std::atomic<unsigned long long> open_syscalls{0}, open_nanoseconds{0}, protect_pages{0};
+// alpha.91: kernel protections that began where the one before ended (or
+// within 64 KiB after it) with the same protection, within a millisecond: one
+// call could have covered both. And the time the fault handler took
+// (platform/ps5/exception_handler.cpp).
+std::atomic<unsigned long long> protect_continued{0}, protect_near{0}, fault_nanoseconds{0};
 }
 namespace xe::memory {
 namespace {
@@ -231,6 +236,20 @@ bool Apply(uintptr_t base, View& view, size_t first_guest, size_t guest_count) {
     ++xbox360ps5::protect_syscalls;
     xbox360ps5::protect_nanoseconds += taken;
     xbox360ps5::protect_pages += end - page;
+    {
+      // Under `guard`, as every caller of Apply is.
+      static uintptr_t last_end = 0;
+      static int last_bits = -1;
+      static uint64_t last_at = 0;
+      const uintptr_t at = base + page * kPage;
+      if (int(bits) == last_bits && before - last_at < 1000000 && at >= last_end) {
+        if (at == last_end) ++xbox360ps5::protect_continued;
+        else if (at - last_end <= 0x10000) ++xbox360ps5::protect_near;
+      }
+      last_end = base + end * kPage;
+      last_bits = bits;
+      last_at = before + uint64_t(taken);
+    }
     if (bits & 2) { ++xbox360ps5::open_syscalls; xbox360ps5::open_nanoseconds += taken; }
     if (result) { Note("protect", base + page * kPage, (end - page) * kPage, result); good = false; }
     else std::fill(view.host.begin() + page, view.host.begin() + end, bits);

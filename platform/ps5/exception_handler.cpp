@@ -2,6 +2,7 @@
 // Xenia signal transport using the SDK's BSD ABI. Unknown signal-context
 // layouts are rejected. Native ABI/recovery require hardware verification.
 #include "xenia/base/exception_handler.h"
+#include "xenia/base/clock.h"
 #include "xenia/base/host_thread_context.h"
 #include "xenia/base/logging.h"
 #include <array>
@@ -11,7 +12,7 @@
 #include <signal.h>
 #include <ucontext.h>
 #include <unistd.h>
-namespace xbox360ps5 { extern std::atomic<unsigned long long> fault_count; }
+namespace xbox360ps5 { extern std::atomic<unsigned long long> fault_count, fault_nanoseconds; }
 namespace xe {
 namespace {
 struct Entry {
@@ -40,6 +41,12 @@ void forward(int number, siginfo_t* info, void* context) {
 }
 void callback(int number, siginfo_t* info, void* raw_context) {
   ++xbox360ps5::fault_count;
+  // alpha.91: the time spent in here (the page opened, the GPU's copies of it
+  // dropped), nanoseconds from the time-stamp counter (no system call).
+  struct Timed {
+    const uint64_t start = xe::Clock::QueryHostTickCount();
+    ~Timed() { xbox360ps5::fault_nanoseconds += xe::Clock::QueryHostTickCount() - start; }
+  } timed;
 #if XE_PLATFORM_PS5
   // The console's ucontext has 48 bytes between uc_sigmask and uc_mcontext that
   // the upstream payload SDK header omits; the SDK fork's header has them.

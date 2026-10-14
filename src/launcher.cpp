@@ -52,6 +52,7 @@ DECLARE_uint32(wait_reg_mem_spin_us);
 DECLARE_bool(spin_hint_yields);
 DECLARE_bool(x64_ps5_zen2_features);
 DECLARE_bool(precompile_module_initializers);
+DECLARE_bool(vulkan_image_compression_report);
 DECLARE_uint32(kernel_slow_call_ms);
 DECLARE_bool(guest_scheduler_stats);
 DECLARE_bool(texture_load_scaled_direct_copy);
@@ -602,6 +603,9 @@ void Settings::Apply() const {
   cvars::guest_scheduler_stats = diagnostics != 0;
   cvars::texture_load_scaled_direct_copy = rendered_texture_copy != 0;
   cvars::gpu_section_timing = diagnostics != 0;
+  // alpha.91: with Diagnostics, whether the driver compresses each render
+  // target (read when the GPU device is created).
+  cvars::vulkan_image_compression_report = diagnostics != 0;
   xbox360ps5::gpu_diag::detail_enabled = diagnostics != 0;
   cvars::clear_memory_page_state = clear_pages != 0;
   // The core falls back to host render targets by itself when the device lacks

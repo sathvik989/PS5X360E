@@ -107,6 +107,7 @@ int sceSystemServiceHideSplashScreen();
 namespace xbox360ps5 {
 extern std::atomic<unsigned long long> protect_calls, protect_syscalls, protect_nanoseconds, fault_count;
 extern std::atomic<unsigned long long> open_syscalls, open_nanoseconds, protect_pages;
+extern std::atomic<unsigned long long> protect_continued, protect_near, fault_nanoseconds;
 }
 namespace {
 using xbox360ps5::Tr;
@@ -2284,6 +2285,21 @@ int main(int argc, char** argv) {
                        double(all - open - closes) / summary_samples, double(time - open_time - spent) / (summary_samples * 1e6), double(open - opens) / summary_samples,
                        double(open_time - open_spent) / (summary_samples * 1e6), double(fault - faults) / summary_samples);
                 closes = all - open; opens = open; spent = time - open_time; open_spent = open_time; faults = fault;
+                // alpha.91: how many of those one call could have covered, and
+                // what each fault cost in the handler.
+                {
+                  static unsigned long long continued = 0, nearby = 0, fault_spent = 0, faults_before = 0;
+                  const unsigned long long c = xbox360ps5::protect_continued, n = xbox360ps5::protect_near,
+                                           f = xbox360ps5::fault_nanoseconds;
+                  const unsigned long long fault_delta = fault - faults_before;
+                  XELOGW("Performance: memory protections that continued the one before {:.0f}/s, began within 64 KiB "
+                         "of its end {:.0f}/s (one call could have covered them); faults {:.1f} ms/s in the handler "
+                         "({:.0f} us each)",
+                         double(c - continued) / summary_samples, double(n - nearby) / summary_samples,
+                         double(f - fault_spent) / (summary_samples * 1e6),
+                         fault_delta ? double(f - fault_spent) / 1e3 / double(fault_delta) : 0.0);
+                  continued = c; nearby = n; fault_spent = f; faults_before = fault;
+                }
                 // Which watches the closes armed: for CPU writes (uploads to the GPU) or for CPU reads (GPU output).
                 static unsigned long long write_arms = 0, read_arms = 0;
                 const unsigned long long w = xe::memory_watch_arms[0].load(), r = xe::memory_watch_arms[1].load();
