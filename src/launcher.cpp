@@ -45,8 +45,8 @@ DECLARE_bool(vulkan_async_submission);
 DECLARE_bool(shared_memory_zero_copy);
 DECLARE_bool(rt_pipeline_warm_up);
 DECLARE_bool(clock_lock_free);
-DECLARE_bool(content_io_unlocked);
-DECLARE_bool(guest_scheduler_fast_signal);
+DECLARE_bool(content_delete_in_background);
+DECLARE_bool(module_load_offload);
 DECLARE_bool(guest_scheduler_stats);
 DECLARE_bool(texture_load_scaled_direct_copy);
 DECLARE_bool(gpu_section_timing);
@@ -257,11 +257,11 @@ const std::vector<Option>& Options() {
       {"clock_lock_free", &S::clock_lock_free, 1, W::start, 0, true, "Relógio do console sem trava (teste)",
        "As tarefas do jogo leem o relógio do console emulado o tempo todo, e cada leitura espera numa trava compartilhada: numa corrida do NFS The Run, quatro das seis CPUs emuladas passavam de um quinto a um terço do tempo esperando nela. Ligado, cada leitura calcula a hora sozinha, sem esperar. Teste: compare a mesma corrida ligado e desligado.",
        off_on},
-      {"content_io_unlocked", &S::content_io_unlocked, 1, W::start, 0, true, "Salvar sem parar o jogo (teste)",
-       "Quando o jogo salva, o emulador cria pastas e arquivos no armazenamento do PS5 segurando uma trava que todas as tarefas do jogo usam: se o armazenamento demora, o jogo inteiro para até terminar (no NFS The Run, quase todas as paradas em carregamentos). Ligado, esse trabalho é feito fora da trava e as outras tarefas continuam. Teste: compare os mesmos carregamentos ligado e desligado.",
+      {"save_delete_background", &S::save_delete_background, 1, W::start, 0, true, "Apagar salvamentos em segundo plano (teste)",
+       "Quando o jogo apaga um salvamento para gravar de novo, o armazenamento do PS5 levou de meio segundo a seis segundos, e o jogo inteiro esperou (no NFS The Run, as paradas nos carregamentos). Ligado, a pasta é tirada do lugar na hora e apagada depois, por conta própria. Teste: compare os mesmos carregamentos ligado e desligado.",
        off_on},
-      {"fast_signal", &S::fast_signal, 1, W::start, 0, true, "Avisos entre tarefas sem trava (teste)",
-       "Cada vez que uma tarefa do jogo avisa outra (um evento, um semáforo), o emulador pega uma trava que todas as CPUs emuladas também usam para trocar de tarefa; no NFS The Run com o relógio sem trava, ela virou a maior espera. Ligado, um aviso que nenhuma tarefa está esperando não passa pela trava. Teste: compare a mesma corrida ligado e desligado.",
+      {"module_load_offload", &S::module_load_offload, 1, W::start, 0, true, "Carregar código do jogo sem parar as outras tarefas (teste)",
+       "Quando o jogo carrega uma parte do seu código do disco (antes do menu principal do NFS The Run), a leitura e a preparação ocupavam a CPU emulada, e as outras tarefas dessa CPU paravam, até a de que o vídeo dependia: pausas de 2 a 10 segundos. Ligado, esse trabalho vai para outra tarefa do emulador enquanto as do jogo continuam. Teste: compare a abertura ligado e desligado.",
        off_on},
       {"output_4k", &S::output_4k, 0, W::start, 1, true, "Saída de vídeo do jogo",
        "Tamanho da imagem enviada à TV durante o jogo. 4K: a imagem do jogo chega à tela em 3840x2160, e o 2x e o 3x mostram todo o detalhe. 1080p: como antes, a TV amplia. Os menus continuam em 1080p.",
@@ -542,10 +542,9 @@ void Settings::Apply() const {
   // alpha.85: read when the emulator sets its clock up, so a change mid-game
   // waits for the restart the option asks for.
   cvars::clock_lock_free = clock_lock_free != 0;
-  // alpha.86: content_io_unlocked is read at each save call; the fast signal
-  // when the guest scheduler starts.
-  cvars::content_io_unlocked = content_io_unlocked != 0;
-  cvars::guest_scheduler_fast_signal = fast_signal != 0;
+  // alpha.87: both read when used (a delete, a module load).
+  cvars::content_delete_in_background = save_delete_background != 0;
+  cvars::module_load_offload = module_load_offload != 0;
   // alpha.86: the scheduler's counters (signals through and past its lock,
   // offloaded I/O) once a second with Diagnostics.
   cvars::guest_scheduler_stats = diagnostics != 0;

@@ -3,6 +3,28 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.87+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Removed: alpha.86's Save without stopping the game and Thread signals without lock.** Both
+  made NFS The Run worse (tests on October 14). The game waits for its own save, so taking the
+  file work off the global lock could not shorten the pause, and on a helper thread each step
+  took about a second longer. Lock-free signals worked (about 450,000 a second went past the
+  lock, no wake was lost) but those runs had 9-10 s pauses before the main menu instead of 2-4 s.
+  The save and scheduler counters they brought stay in Diagnostics.
+- **Test: Performance > Delete saves in the background** (off by default). Deleting a save's
+  folder took from 0.6 s to 6.3 s on the PS5's storage while the game waited (most of the
+  loading pauses). On, the folder is moved aside at once (one file-system call) and deleted
+  later on a thread of its own; what an exit leaves behind goes at the next start.
+- **Test: Performance > Load game code without stopping other threads** (off by default).
+  Before NFS The Run's main menu the game loads more of its code from the disc; reading it and
+  precompiling it held that emulated CPU, so its other threads stopped, among them one the GPU
+  was waiting for (the 2-10 s pause). On, the read and the precompile run on an I/O worker
+  while the loading thread waits and the others run.
+- **Diagnostics and logs**: every content (save) call over 50 ms and each slow file step inside
+  it (deleting, making and reading in folders, the header); how long each game module took to
+  read, decrypt and set up; and in the guest scheduler's report of a CPU that did not switch
+  threads, whether that CPU holds the global lock and the guest calls it is in.
+
 ## 0.2-alpha.86+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Test: Performance > Save without stopping the game** (off by default). A title's content

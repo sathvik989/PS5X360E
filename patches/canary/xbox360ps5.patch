@@ -1042,7 +1042,7 @@ index a335d5e4d..f63c82ffc 100644
  uint32_t ToPosixProtectFlags(PageAccess access) {
    switch (access) {
 diff --git a/src/xenia/base/mutex.cc b/src/xenia/base/mutex.cc
-index 848edcc8c..4daa5de66 100644
+index 848edcc8c..6e8ffb86d 100644
 --- a/src/xenia/base/mutex.cc
 +++ b/src/xenia/base/mutex.cc
 @@ -10,7 +10,7 @@
@@ -1063,7 +1063,7 @@ index 848edcc8c..4daa5de66 100644
  
  namespace {
  
-@@ -312,6 +312,159 @@ void xe_fast_mutex::lock() { os_unfair_lock_lock(&lock_); }
+@@ -312,6 +312,161 @@ void xe_fast_mutex::lock() { os_unfair_lock_lock(&lock_); }
  void xe_fast_mutex::unlock() { os_unfair_lock_unlock(&lock_); }
  bool xe_fast_mutex::try_lock() { return os_unfair_lock_trylock(&lock_); }
  
@@ -1189,6 +1189,8 @@ index 848edcc8c..4daa5de66 100644
 +  return owner_.load(std::memory_order_relaxed) == ps5_thread_id();
 +}
 +
++uint64_t global_mutex_thread_id() { return ps5_thread_id(); }
++
 +void xe_fast_mutex::lock() {
 +  if (!ps5_spin_mutexes.load(std::memory_order_relaxed)) {
 +    blocking_.lock();
@@ -1224,7 +1226,7 @@ index 848edcc8c..4daa5de66 100644
  global_mutex_type& global_critical_region::mutex() {
    static global_mutex_type global_mutex;
 diff --git a/src/xenia/base/mutex.h b/src/xenia/base/mutex.h
-index 3c34646c7..bd96237e9 100644
+index 3c34646c7..46bab16ef 100644
 --- a/src/xenia/base/mutex.h
 +++ b/src/xenia/base/mutex.h
 @@ -83,7 +83,7 @@ class xe_unlikely_mutex {
@@ -1236,7 +1238,7 @@ index 3c34646c7..bd96237e9 100644
  
  #define XE_LINUX_MUTEX_SPINCOUNT 128
  
-@@ -199,6 +199,55 @@ using xe_mutex = xe_fast_mutex;
+@@ -199,6 +199,60 @@ using xe_mutex = xe_fast_mutex;
  
  // Rarely-contended lock: a plain std::mutex is sufficient.
  using xe_unlikely_mutex = std::mutex;
@@ -1270,8 +1272,13 @@ index 3c34646c7..bd96237e9 100644
 +  void unlock();
 +  bool try_lock();
 +  bool is_held_by_current_thread() const;
++  // PS5X360E (alpha.87): the owner's id as global_mutex_thread_id gives it, 0
++  // when free, for the guest scheduler's stall report.
++  uint64_t owner() const { return owner_.load(std::memory_order_relaxed); }
 +};
 +using global_mutex_type = xe_global_mutex;
++// PS5X360E (alpha.87): the calling thread's id in xe_global_mutex::owner terms.
++uint64_t global_mutex_thread_id();
 +
 +class alignas(64) xe_fast_mutex {
 +  std::mutex blocking_;
@@ -8301,7 +8308,7 @@ index 108718adf..7e68a1f00 100644
      return true;
    }
 diff --git a/src/xenia/kernel/guest_scheduler.cc b/src/xenia/kernel/guest_scheduler.cc
-index c24087925..f01ab1f02 100644
+index c24087925..bc568b0bb 100644
 --- a/src/xenia/kernel/guest_scheduler.cc
 +++ b/src/xenia/kernel/guest_scheduler.cc
 @@ -7,6 +7,7 @@
@@ -8312,39 +8319,7 @@ index c24087925..f01ab1f02 100644
  #include "xenia/kernel/guest_scheduler.h"
  
  #include <algorithm>
-@@ -44,9 +45,18 @@ DEFINE_bool(
-     "behind the single I/O worker.",
-     "Kernel");
- 
-+DEFINE_bool(
-+    guest_scheduler_fast_signal, false,
-+    "Xbox360PS5: a signal to an object no guest thread is waiting on (an "
-+    "event set, a semaphore released) skips the scheduler's lock, which every "
-+    "CPU also takes to switch threads. Taken when the scheduler starts.",
-+    "Kernel");
-+
- namespace xe {
- namespace kernel {
- 
-+std::atomic<bool> GuestScheduler::fast_signal_{false};
-+
- // Logical CPU index of the host thread currently executing, or -1 on any
- // non-dispatch thread. Set by each CPU's RunLoop.
- static thread_local int t_current_cpu = -1;
-@@ -244,6 +254,12 @@ void GuestScheduler::EnsureStarted() {
-     return;
-   }
-   xe::cpu::backend::preempt_yield_handler = &PreemptCurrentFiber;
-+  // Before any fiber exists, so no wait or signal straddles the change.
-+  fast_signal_.store(cvars::guest_scheduler_fast_signal,
-+                     std::memory_order_relaxed);
-+  if (cvars::guest_scheduler_fast_signal) {
-+    XELOGW("GuestScheduler: signals to objects nothing waits on skip the lock");
-+  }
-   // Not in the ctor, which runs before per-title cvar overrides are applied.
-   double ticks_per_us = CalibrateTicksPerUs();
-   ticks_per_us_ = ticks_per_us;
-@@ -1276,6 +1292,9 @@ void GuestScheduler::WakeForSignal(const XObject* object) {
+@@ -1276,6 +1277,9 @@ void GuestScheduler::WakeForSignal(const XObject* object) {
      return;
    }
    bool wake[kMaxCpus] = {};
@@ -8354,7 +8329,7 @@ index c24087925..f01ab1f02 100644
    {
      std::lock_guard<std::mutex> lock(lock_);
      // Wake the CPUs hosting a waiter whose wait includes this object. The
-@@ -1319,6 +1338,14 @@ void GuestScheduler::WakeForSignal(const XObject* object) {
+@@ -1319,6 +1323,14 @@ void GuestScheduler::WakeForSignal(const XObject* object) {
        wake[i] = true;
      }
    }
@@ -8369,23 +8344,18 @@ index c24087925..f01ab1f02 100644
    for (int i = 0; i < kMaxCpus; ++i) {
      if (wake[i] && cpus_[i].parked.load() && cpus_[i].ready_event) {
        cpus_[i].ready_event->Set();
-@@ -1326,6 +1353,15 @@ void GuestScheduler::WakeForSignal(const XObject* object) {
-   }
- }
- 
-+void GuestScheduler::NoteUnwatchedSignal(bool skipped) {
-+  if (cvars::guest_scheduler_stats) {
-+    stats_.signals_unwatched.fetch_add(1, std::memory_order_relaxed);
-+    if (skipped) {
-+      stats_.signals_lock_free.fetch_add(1, std::memory_order_relaxed);
-+    }
-+  }
-+}
-+
- void GuestScheduler::NotifyThreadExited(XThread* thread) {
-   if (!OnDispatchThread("NotifyThreadExited")) {
-     return;
-@@ -1548,6 +1584,17 @@ void GuestScheduler::RunLoop(int cpu_index) {
+@@ -1536,6 +1548,10 @@ void GuestScheduler::RunLoop(int cpu_index) {
+   Profiler::ThreadEnter(
+       ("GuestScheduler CPU " + std::to_string(cpu_index)).c_str());
+   Cpu& cpu = cpus_[cpu_index];
++#if XE_PLATFORM_PS5
++  cpu.host_thread_id.store(xe::global_mutex_thread_id(),
++                           std::memory_order_relaxed);
++#endif
+   // Adopt this host thread's stack as this CPU's idle fiber.
+   cpu.idle_fiber = xe::threading::Fiber::CreateFromThread();
+   XELOGI("GuestScheduler: CPU {} dispatch loop started", cpu_index);
+@@ -1548,6 +1564,17 @@ void GuestScheduler::RunLoop(int cpu_index) {
      // busy fiber that rarely waits would starve them. The timer runs at what
      // the parked waiters actually need, a wake skips it entirely.
      uint64_t now = Clock::QueryHostUptimeMillis();
@@ -8403,14 +8373,12 @@ index c24087925..f01ab1f02 100644
      if (cpu.repoll_now.exchange(false, std::memory_order_relaxed) ||
          now >= cpu.next_timed_repoll_ms) {
        RereadyBlocked(cpu_index);
-@@ -1704,11 +1751,17 @@ void GuestScheduler::ReportStatsIfDue() {
+@@ -1704,11 +1731,15 @@ void GuestScheduler::ReportStatsIfDue() {
    uint64_t io_run = take(stats_.io_run_ns);
    uint64_t io_queue_max = take(stats_.io_queue_max_ns);
    uint64_t io_peak = take(stats_.io_peak_inflight);
 +  uint64_t signals_walked = take(stats_.signals_walked);
 +  uint64_t signals_woke = take(stats_.signals_woke);
-+  uint64_t signals_unwatched = take(stats_.signals_unwatched);
-+  uint64_t signals_lock_free = take(stats_.signals_lock_free);
    double ticks_per_us = ticks_per_us_ > 0.0 ? ticks_per_us_ : 1.0;
    auto to_us = [ticks_per_us](uint64_t ticks) {
      return uint64_t(double(ticks) / ticks_per_us);
@@ -8422,21 +8390,55 @@ index c24087925..f01ab1f02 100644
        "GuestScheduler: repolls {}/s (rereadied {}), idle wakes {}, switches "
        "{}, skipped yields {}, yields down {} (starvation "
        "{}), background {} windows {} picks, ready wait avg "
-@@ -1719,6 +1772,13 @@ void GuestScheduler::ReportStatsIfDue() {
+@@ -1719,6 +1750,47 @@ void GuestScheduler::ReportStatsIfDue() {
        to_us(rw_max), io_calls, io_calls ? to_us(io_queue / io_calls) : 0,
        to_us(io_queue_max), io_calls ? to_us(io_run / io_calls) : 0,
        io_pool_size_.load(std::memory_order_relaxed), io_peak);
 +  // Xbox360PS5 (alpha.86): what the cooperative signals cost in the lock.
-+  XELOGW(
-+      "GuestScheduler: signals {}/s to objects nothing waited on, {}/s of "
-+      "them past the lock (fast signal {}); {}/s walked the waiters under it, "
-+      "{}/s woke a CPU",
-+      signals_unwatched, signals_lock_free, fast_signal() ? "on" : "off",
-+      signals_walked, signals_woke);
++  XELOGW("GuestScheduler: signals {}/s walked the waiters under the lock, {}/s "
++         "woke a CPU",
++         signals_walked, signals_woke);
++}
++
++// PS5X360E (alpha.87): the return addresses on a guest stack, nearest first:
++// each frame keeps the caller's stack pointer at its own, and the caller's
++// return address 8 bytes below that. A running fiber's stack is read as it
++// changes, so a frame can be stale; addresses are checked against the heaps.
++static std::string GuestCallersText(const cpu::ppc::PPCContext* context) {
++  Memory* memory = context->processor ? context->processor->memory() : nullptr;
++  if (!memory) {
++    return "-";
++  }
++  auto readable = [&](uint32_t address) {
++    if (address < 0x1000 || address >= 0xFFFFF000 || (address & 3)) {
++      return false;
++    }
++    auto* heap = memory->LookupHeap(address);
++    uint32_t protect = 0;
++    return heap && heap->QueryProtect(address, &protect) &&
++           (protect & kMemoryProtectRead);
++  };
++  auto load = [&](uint32_t address) {
++    return xe::load_and_swap<uint32_t>(memory->TranslateVirtual(address));
++  };
++  std::string out;
++  uint32_t sp = uint32_t(context->r[1]);
++  for (int depth = 0; depth < 12; ++depth) {
++    if (!readable(sp)) {
++      break;
++    }
++    const uint32_t next_sp = load(sp);
++    if (next_sp <= sp || !readable(next_sp - 8)) {
++      break;
++    }
++    out += fmt::format("{}{:08X}", out.empty() ? "" : ",", load(next_sp - 8));
++    sp = next_sp;
++  }
++  return out.empty() ? "-" : out;
  }
  
  // Names what a fiber is parked on, for the no-progress dump.
-@@ -1892,44 +1952,76 @@ void GuestScheduler::WatchdogLoop() {
+@@ -1892,44 +1964,91 @@ void GuestScheduler::WatchdogLoop() {
      }
  
      uint64_t now = Clock::host_tick_count_raw();
@@ -8497,11 +8499,25 @@ index c24087925..f01ab1f02 100644
 +                                     note.guest_objects[n]);
 +          }
 +        }
++        // PS5X360E (alpha.87): who holds the global lock, which keeps a fiber
++        // on its CPU (lock_defers), and the guest calls it is in.
++        std::string global_lock = "not tracked";
++#if XE_PLATFORM_PS5
++        {
++          const uint64_t owner = xe::global_critical_region::mutex().owner();
++          const uint64_t mine =
++              cpus_[i].host_thread_id.load(std::memory_order_relaxed);
++          global_lock = !owner          ? "free"
++                        : owner == mine ? "held by this CPU"
++                                        : "held elsewhere";
++        }
++#endif
 +        XELOGW(
 +            "GuestScheduler: CPU {} has not switched fibers in {} watchdog "
 +            "ticks. Running tid={:08X} '{}' prio={} last_safepoint={:08X} "
 +            "lr={:08X} irql={} preempt_requested={} irql_defers={} "
-+            "lock_defers={} ready_summary={:#x} wait={} host_wait={}",
++            "lock_defers={} ready_summary={:#x} wait={} host_wait={} "
++            "global_lock={} guest_callers={}",
 +            i, stall_ticks_[i], running->thread_id(), running->thread_name(),
 +            ClampPriority(running->priority()),
 +            uint32_t(context->last_safepoint_pc), uint32_t(context->lr),
@@ -8509,7 +8525,8 @@ index c24087925..f01ab1f02 100644
 +            running->scheduler_links().preempt_defers_irql,
 +            running->scheduler_links().preempt_defers_lock,
 +            cpus_[i].ready_summary.load(),
-+            FormatWaitShape(running->scheduler_links()), host_wait);
++            FormatWaitShape(running->scheduler_links()), host_wait,
++            global_lock, GuestCallersText(context));
        }
 -      if (++stall_ticks_[i] < kStallReportTicks || stall_reported_[i]) {
 -        continue;
@@ -8547,27 +8564,10 @@ index c24087925..f01ab1f02 100644
  }  // namespace kernel
  }  // namespace xe
 diff --git a/src/xenia/kernel/guest_scheduler.h b/src/xenia/kernel/guest_scheduler.h
-index 4b254e51a..9edbdab95 100644
+index 4b254e51a..e993144cb 100644
 --- a/src/xenia/kernel/guest_scheduler.h
 +++ b/src/xenia/kernel/guest_scheduler.h
-@@ -88,6 +88,16 @@ class GuestScheduler {
-   // which remains the backstop throughout.
-   void WakeForSignal(const XObject* object);
- 
-+  // Xbox360PS5 (alpha.86): guest_scheduler_fast_signal, latched when the
-+  // scheduler starts. A signal to an object no fiber waits on then skips
-+  // WakeForSignal (XObject::WakeCooperativeWaiters).
-+  static bool fast_signal() {
-+    return fast_signal_.load(std::memory_order_relaxed);
-+  }
-+  // Counts a signal to an object with no waiter registered for
-+  // guest_scheduler_stats, |skipped| when it went past the lock.
-+  void NoteUnwatchedSignal(bool skipped);
-+
-   // Whether an offloaded call may overlap the others. Set from the device, see
-   // vfs::Device::supports_concurrent_io.
-   enum class BlockingCallClass {
-@@ -174,7 +184,29 @@ class GuestScheduler {
+@@ -174,6 +174,27 @@ class GuestScheduler {
  
    KernelState* kernel_state() const { return kernel_state_; }
  
@@ -8593,11 +8593,19 @@ index 4b254e51a..9edbdab95 100644
 +  static std::atomic<void (*)(int)> stall_hook;
 +
   private:
-+  static std::atomic<bool> fast_signal_;
    // Xbox 360 logical CPU count, also the maximum number of dispatch threads.
    static constexpr int kMaxCpus = 6;
-   // Re-poll cadence for waiters that resolve only by polling: ungated waits
-@@ -208,6 +240,9 @@ class GuestScheduler {
+@@ -199,6 +220,9 @@ class GuestScheduler {
+     std::atomic<uint32_t> ready_summary{0};
+     // The fiber currently running on this CPU, for the preemption check.
+     XThread* current_thread = nullptr;
++    // PS5X360E (alpha.87): this CPU's dispatch thread as the global mutex
++    // names its owner, so the stall report can say whether it holds it.
++    std::atomic<uint64_t> host_thread_id{0};
+     // Set under lock_ by a voluntary yield, so the next DequeueReady prefers
+     // any other ready thread over the yielder, even a lower-priority one.
+     XThread* yield_to_other = nullptr;
+@@ -208,6 +232,9 @@ class GuestScheduler {
      XThread* suspended_tail = nullptr;
      XThread* exited_thread = nullptr;
      std::unique_ptr<xe::threading::Thread> host_thread;
@@ -8607,18 +8615,14 @@ index 4b254e51a..9edbdab95 100644
      std::unique_ptr<xe::threading::Fiber> idle_fiber;
      std::unique_ptr<xe::threading::Event> ready_event;
      // Hint read lock-free by WakeAll so it only wakes CPUs with a parked
-@@ -378,6 +413,14 @@ class GuestScheduler {
+@@ -378,6 +405,10 @@ class GuestScheduler {
      // Most pool workers inside a call at once. Queue wait cannot show this.
      // An idle worker takes a call immediately, so it stays low either way.
      std::atomic<uint64_t> io_peak_inflight{0};
-+    // Xbox360PS5 (alpha.86): cooperative signals. Those that took the lock and
-+    // walked the blocked lists, those of them that woke a CPU, those to an
-+    // object with no waiter registered, and those of them the fast path sent
-+    // past the lock.
++    // Xbox360PS5 (alpha.86): cooperative signals that took the lock and walked
++    // the blocked lists, and those of them that woke a CPU.
 +    std::atomic<uint64_t> signals_walked{0};
 +    std::atomic<uint64_t> signals_woke{0};
-+    std::atomic<uint64_t> signals_unwatched{0};
-+    std::atomic<uint64_t> signals_lock_free{0};
    };
    Stats stats_;
    uint64_t stats_last_report_ms_ = 0;
@@ -8665,10 +8669,27 @@ index 54cab574f..a778345b4 100644
  
  #endif  // XENIA_KERNEL_KERNEL_FLAGS_H_
 diff --git a/src/xenia/kernel/kernel_state.cc b/src/xenia/kernel/kernel_state.cc
-index c6895e607..b655347ee 100644
+index c6895e607..3b66cffa2 100644
 --- a/src/xenia/kernel/kernel_state.cc
 +++ b/src/xenia/kernel/kernel_state.cc
-@@ -44,6 +44,13 @@ DEFINE_uint32(kernel_build_version, 1888, "Define current kernel version",
+@@ -14,6 +14,7 @@
+ #include "xenia/kernel/kernel_state.h"
+ 
+ #include "xenia/base/byte_stream.h"
++#include "xenia/base/clock.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/emulator.h"
+ #include "xenia/hid/input_system.h"
+@@ -34,6 +35,8 @@
+ 
+ #include "third_party/mbedtls/include/mbedtls/sha1.h"
+ 
++DECLARE_bool(module_load_offload);
++
+ DEFINE_bool(apply_title_update, true, "Apply title updates.", "Kernel");
+ DEFINE_bool(allow_incompatible_title_update, false,
+             "Allow title updates with mismatched signatures to be applied.",
+@@ -44,6 +47,13 @@ DEFINE_uint32(kernel_build_version, 1888, "Define current kernel version",
  
  DECLARE_string(cl);
  
@@ -8682,7 +8703,7 @@ index c6895e607..b655347ee 100644
  namespace xe {
  namespace kernel {
  
-@@ -464,6 +471,18 @@ object_ref<KernelModule> KernelState::GetKernelModule(
+@@ -464,6 +474,18 @@ object_ref<KernelModule> KernelState::GetKernelModule(
    return nullptr;
  }
  
@@ -8701,7 +8722,7 @@ index c6895e607..b655347ee 100644
  object_ref<XModule> KernelState::GetModule(const std::string_view name,
                                             bool user_only) {
    if (name.empty()) {
-@@ -485,10 +504,18 @@ object_ref<XModule> KernelState::GetModule(const std::string_view name,
+@@ -485,10 +507,18 @@ object_ref<XModule> KernelState::GetModule(const std::string_view name,
      }
    }
  
@@ -8722,7 +8743,7 @@ index c6895e607..b655347ee 100644
    if (entry) {
      path = entry->absolute_path();
    }
-@@ -659,18 +686,11 @@ void KernelState::LoadKernelModule(object_ref<KernelModule> kernel_module) {
+@@ -659,18 +689,11 @@ void KernelState::LoadKernelModule(object_ref<KernelModule> kernel_module) {
  object_ref<UserModule> KernelState::LoadUserModule(
      const std::string_view raw_name, bool call_entry) {
    // Some games try to load relative to launch module, others specify full path.
@@ -8746,9 +8767,18 @@ index c6895e607..b655347ee 100644
  
    object_ref<UserModule> module;
    {
-@@ -745,8 +765,14 @@ X_RESULT KernelState::FinishLoadingUserModule(
+@@ -739,18 +762,47 @@ object_ref<UserModule> KernelState::LoadUserModuleFromMemory(
+ 
+ X_RESULT KernelState::FinishLoadingUserModule(
+     const object_ref<UserModule> module, bool call_entry) {
++  // Xbox360PS5 (alpha.87): see UserModule::LoadFromFile.
++  const uint64_t start_ms = Clock::QueryHostUptimeMillis();
+   // TODO(Gliniak): Apply custom patches here
+   X_RESULT result = module->LoadContinue();
+   if (XFAILED(result)) {
      return result;
    }
++  const uint64_t continued_ms = Clock::QueryHostUptimeMillis();
    module->Dump();
 -  emulator_->patcher()->ApplyPatchesForTitle(memory_, module->title_id(),
 -                                             module->hash());
@@ -8761,9 +8791,34 @@ index c6895e607..b655347ee 100644
 +    emulator_->patcher()->ApplyPatchesForTitle(memory_, module->title_id(), module->hash());
 +  }
    emulator_->on_patch_apply();
++  const uint64_t patched_ms = Clock::QueryHostUptimeMillis();
++  bool offloaded_precompile = false;
    if (module->xex_module()) {
-     module->xex_module()->Precompile();
-@@ -791,7 +817,8 @@ X_RESULT KernelState::ApplyTitleUpdate(
+-    module->xex_module()->Precompile();
++    // Xbox360PS5 (alpha.87): module_load_offload, as for the module's read.
++    // Compiling needs no guest thread, and its workers are host threads.
++    if (cvars::module_load_offload) {
++      offloaded_precompile =
++          GuestScheduler::CurrentThreadOffloadsBlockingCalls();
++      RunBlockingIo([&] { module->xex_module()->Precompile(); },
++                    GuestScheduler::BlockingCallClass::kConcurrent);
++    } else {
++      module->xex_module()->Precompile();
++    }
+   }
++  const uint64_t precompiled_ms = Clock::QueryHostUptimeMillis();
++  XELOGW("Module: {} set up in {} ms (imports and sections {} ms, patches {} "
++         "ms, precompile {} ms{}){}",
++         module->name(), precompiled_ms - start_ms, continued_ms - start_ms,
++         patched_ms - continued_ms, precompiled_ms - patched_ms,
++         offloaded_precompile ? " on an I/O worker" : "",
++         module->is_dll_module() && module->entry_point() && call_entry
++             ? "; its entry point runs next"
++             : "");
+ 
+   if (module->is_dll_module() && module->entry_point() && call_entry) {
+     // Call DllMain(DLL_PROCESS_ATTACH):
+@@ -791,7 +843,8 @@ X_RESULT KernelState::ApplyTitleUpdate(
        XELOGW(
            "Skipping incompatible title update for {} due to signature mismatch",
            title_module->name());
@@ -8773,7 +8828,7 @@ index c6895e607..b655347ee 100644
          emulator_->display_window()->app_context().CallInUIThread([&]() {
            new xe::ui::HostNotificationWindow(
                emulator_->imgui_drawer(), "Warning!",
-@@ -809,7 +836,7 @@ X_RESULT KernelState::ApplyTitleUpdate(
+@@ -809,7 +862,7 @@ X_RESULT KernelState::ApplyTitleUpdate(
  
      // First module that is loaded is always main executable. That way we can
      // prevent random message spam in case of loading/unloading.
@@ -8782,6 +8837,99 @@ index c6895e607..b655347ee 100644
        emulator_->display_window()->app_context().CallInUIThread([&]() {
          new xe::ui::HostNotificationWindow(
              emulator_->imgui_drawer(), "Warning!",
+diff --git a/src/xenia/kernel/user_module.cc b/src/xenia/kernel/user_module.cc
+index 4885040d1..a8b29379e 100644
+--- a/src/xenia/kernel/user_module.cc
++++ b/src/xenia/kernel/user_module.cc
+@@ -10,11 +10,14 @@
+ #include "xenia/kernel/user_module.h"
+ 
+ #include "xenia/base/byte_stream.h"
++#include "xenia/base/clock.h"
+ #include "xenia/base/filesystem.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/base/xxhash.h"
+ #include "xenia/cpu/elf_module.h"
+ #include "xenia/emulator.h"
++#include "xenia/kernel/guest_scheduler.h"
++#include "xenia/kernel/kernel_state.h"
+ 
+ DECLARE_bool(dump_xex);
+ 
+@@ -23,6 +26,13 @@ DEFINE_bool(dump_module_images, false,
+             "<name>.<base_address>.bin in the current directory",
+             "Kernel");
+ 
++DEFINE_bool(module_load_offload, false,
++            "Xbox360PS5: a game module's file is read, and its code "
++            "precompiled, on an I/O worker while the loading guest thread "
++            "waits, so the other guest threads on its CPU keep running. "
++            "Inline when the global lock is held.",
++            "Kernel");
++
+ namespace xe {
+ namespace kernel {
+ 
+@@ -98,6 +108,11 @@ X_STATUS UserModule::LoadFromFile(const std::string_view path) {
+   path_ = fs_entry->absolute_path();
+   name_ = utf8::find_base_name_from_guest_path(path_);
+ 
++  // Xbox360PS5 (alpha.87): how long each part of a load keeps the calling
++  // thread's guest CPU, which runs nothing else meanwhile.
++  const uint64_t start_ms = Clock::QueryHostUptimeMillis();
++  uint64_t read_ms = 0;
++  bool offloaded_read = false;
+   // If the FS supports mapping, map the file in and load from that.
+   if (fs_entry->can_map()) {
+     // Map.
+@@ -105,6 +120,7 @@ X_STATUS UserModule::LoadFromFile(const std::string_view path) {
+     if (!mmap) {
+       return result;
+     }
++    read_ms = Clock::QueryHostUptimeMillis() - start_ms;
+ 
+     // Load the module.
+     result = LoadFromMemory(mmap->data(), mmap->size());
+@@ -121,11 +137,25 @@ X_STATUS UserModule::LoadFromFile(const std::string_view path) {
+     // Read entire file into memory.
+     // Ugh.
+     size_t bytes_read = 0;
+-    result = file->ReadSync(std::span<uint8_t>(buffer.data(), buffer.size()), 0,
+-                            &bytes_read);
++    auto read = [&] {
++      result = file->ReadSync(
++          std::span<uint8_t>(buffer.data(), buffer.size()), 0, &bytes_read);
++    };
++    // Xbox360PS5 (alpha.87): module_load_offload. A read from a slow disc
++    // image otherwise holds this guest CPU for its whole length.
++    if (cvars::module_load_offload) {
++      offloaded_read =
++          GuestScheduler::CurrentThreadOffloadsBlockingCalls();
++      kernel_state()->RunBlockingIo(
++          read, GuestScheduler::BlockingCallClass::kConcurrent);
++    } else {
++      read();
++    }
+     if (XFAILED(result)) {
++      file->Destroy();
+       return result;
+     }
++    read_ms = Clock::QueryHostUptimeMillis() - start_ms;
+ 
+     // Load the module.
+     result = LoadFromMemory(buffer.data(), bytes_read);
+@@ -133,6 +163,11 @@ X_STATUS UserModule::LoadFromFile(const std::string_view path) {
+     // Close the file.
+     file->Destroy();
+   }
++  const uint64_t total_ms = Clock::QueryHostUptimeMillis() - start_ms;
++  XELOGW("Module: {} ({:.1f} MiB) read in {} ms{}, loaded (decrypted, "
++         "decompressed, imports) in {} ms",
++         name_, double(fs_entry->size()) / (1024.0 * 1024.0), read_ms,
++         offloaded_read ? " on an I/O worker" : "", total_ms - read_ms);
+   return result;
+ }
+ 
 diff --git a/src/xenia/kernel/util/ldi_decompressor.cc b/src/xenia/kernel/util/ldi_decompressor.cc
 new file mode 100644
 index 000000000..b6a4f1997
@@ -9240,22 +9388,27 @@ index 6f9e52008..461ce5698 100644
  
  }  // namespace apps
 diff --git a/src/xenia/kernel/xam/content_manager.cc b/src/xenia/kernel/xam/content_manager.cc
-index 3fec23c43..145e08a1f 100644
+index 3fec23c43..28f952887 100644
 --- a/src/xenia/kernel/xam/content_manager.cc
 +++ b/src/xenia/kernel/xam/content_manager.cc
-@@ -9,7 +9,11 @@
+@@ -9,29 +9,186 @@
  
  #include "xenia/kernel/xam/content_manager.h"
  
 +#include <atomic>
 +#include <chrono>
++#include <condition_variable>
++#include <deque>
++#include <mutex>
 +
  #include "third_party/fmt/include/fmt/format.h"
 +#include "xenia/base/clock.h"
  #include "xenia/base/filesystem.h"
  #include "xenia/base/logging.h"
  #include "xenia/base/string.h"
-@@ -18,11 +22,20 @@
++#include "xenia/base/threading.h"
+ #include "xenia/emulator.h"
+ #include "xenia/kernel/kernel_state.h"
  #include "xenia/kernel/xam/user_profile.h"
  #include "xenia/kernel/xfile.h"
  #include "xenia/kernel/xobject.h"
@@ -9265,44 +9418,55 @@ index 3fec23c43..145e08a1f 100644
  
  DECLARE_int32(license_mask);
  
-+DEFINE_bool(content_io_unlocked, false,
-+            "Xbox360PS5: a title's content (save) calls do their file work - "
-+            "checking, creating and deleting folders, mounting a package, "
-+            "writing its header - without holding the global lock, and on the "
-+            "I/O worker when a guest thread calls, so the title's other "
-+            "threads keep running while the host file system is slow.",
++DEFINE_bool(content_delete_in_background, false,
++            "Xbox360PS5: deleting a title's content (a save) moves its folder "
++            "aside at once and removes it on a thread of its own. The title "
++            "waits for the delete, and on the console's storage it took from "
++            "half a second to six seconds.",
 +            "Kernel");
 +
  namespace xe {
  namespace kernel {
  namespace xam {
-@@ -30,7 +43,89 @@ namespace xam {
+ 
  static const char* kGameContentHeaderDirName = "Headers";
  static const char* kSpaFilename = "spa.bin";
++// Xbox360PS5 (alpha.87): content_delete_in_background puts deleted content
++// here, in the content root so it is on the same file system (a move, not a
++// copy). Profile and title scans of the root match hex names only.
++static const char* kDeletedContentDirName = "deleted-content";
  
--static int content_device_id_ = 0;
-+// Xbox360PS5 (alpha.86): atomic, as content_io_unlocked prepares packages
-+// outside the global lock that used to guard it.
-+static std::atomic<int> content_device_id_{0};
-+
+ static int content_device_id_ = 0;
+ 
 +namespace {
-+// Xbox360PS5 (alpha.86): a content call slower than this is logged. On the
-+// PS5 a save's file work under the global lock froze titles for seconds.
++// Xbox360PS5 (alpha.86-87): a content call, or one file step of it, slower
++// than this is logged. On the console a save's file work took up to seconds,
++// and the title waited for it.
 +constexpr uint64_t kSlowContentMs = 50;
++
++uint64_t ContentNowMs() { return Clock::QueryHostUptimeMillis(); }
++
++void LogSlowContentStep(const char* what, const std::filesystem::path& path,
++                        uint64_t start_ms, const std::string& extra = {}) {
++  const uint64_t took = ContentNowMs() - start_ms;
++  if (took >= kSlowContentMs) {
++    XELOGW("Content: {} took {} ms{} ({})", what, took, extra,
++           xe::path_to_utf8(path));
++  }
++}
++
 +class SlowContentLog {
 + public:
 +  SlowContentLog(const char* what, std::string_view name)
-+      : what_(what), name_(name), start_ms_(Clock::QueryHostUptimeMillis()) {}
++      : what_(what), name_(name), start_ms_(ContentNowMs()) {}
 +  ~SlowContentLog() {
-+    const uint64_t took = Clock::QueryHostUptimeMillis() - start_ms_;
++    const uint64_t took = ContentNowMs() - start_ms_;
 +    if (took < kSlowContentMs) {
 +      return;
 +    }
 +    XThread* thread = XThread::GetCurrentFiberThread();
-+    XELOGW("Content: {} '{}' took {} ms ({}; {})", what_, name_, took,
-+           thread ? thread->thread_name() : std::string("host thread"),
-+           cvars::content_io_unlocked ? "file work outside the global lock"
-+                                      : "file work under the global lock");
++    XELOGW("Content: {} '{}' took {} ms ({})", what_, name_, took,
++           thread ? thread->thread_name() : std::string("host thread"));
 +  }
 +
 + private:
@@ -9310,87 +9474,130 @@ index 3fec23c43..145e08a1f 100644
 +  std::string name_;
 +  uint64_t start_ms_;
 +};
-+}  // namespace
 +
-+ContentPackage::ContentPackage(KernelState* kernel_state,
-+                               const std::string_view root_name,
-+                               const XCONTENT_AGGREGATE_DATA& data)
-+    : kernel_state_(kernel_state),
-+      root_name_(root_name),
-+      license_(cvars::license_mask) {
-+  device_path_ = fmt::format("\\Device\\Content\\{0}\\", ++content_device_id_);
-+  content_data_ = data;
-+}
++// Xbox360PS5 (alpha.87): removes content moved aside by DeleteContent, on a
++// thread of its own, first whatever an earlier session left there. Never
++// destroyed: the thread may still be deleting when the emulator exits, and
++// what it leaves goes next time.
++class ContentTrash {
++ public:
++  static ContentTrash& Get() {
++    static ContentTrash* trash = new ContentTrash();
++    return *trash;
++  }
 +
-+std::unique_ptr<ContentPackage> ContentPackage::Prepare(
-+    KernelState* kernel_state, const std::string_view root_name,
-+    const XCONTENT_AGGREGATE_DATA& data,
-+    const std::filesystem::path& package_path,
-+    const std::string_view root_path) {
-+  std::unique_ptr<ContentPackage> package(
-+      new ContentPackage(kernel_state, root_name, data));
-+  package->registered_ = false;
-+  package->root_path_ = std::string(root_path);
-+  // As the constructor below, without registering anything yet.
-+  std::error_code error;
-+  if (std::filesystem::is_directory(package_path, error)) {
-+    auto device = std::make_unique<vfs::HostPathDevice>(package->device_path_,
-+                                                        package_path, false);
-+    package->mounted_ = device->Initialize();
-+    package->pending_device_ = std::move(device);
-+  } else {
-+    auto device = vfs::XContentContainerDevice::CreateContentDevice(
-+        package->device_path_, package_path);
-+    if (device && device->Initialize()) {
-+      package->license_ = device->license_mask();
-+      package->mounted_ = true;
-+      package->pending_device_ = std::move(device);
-+    } else {
-+      XELOGE("{}: Cannot mount content container {}", __func__, package_path);
++  // Moves |path| into |trash_root|; false (nothing moved) if it could not be.
++  bool Discard(const std::filesystem::path& path,
++               const std::filesystem::path& trash_root) {
++    std::error_code error;
++    std::filesystem::create_directories(trash_root, error);
++    if (error) {
++      XELOGW("Content: cannot make {} ({}); deleting in place",
++             xe::path_to_utf8(trash_root), error.message());
++      return false;
++    }
++    // Unique across sessions, as an earlier one may have left entries.
++    const auto stamp = std::chrono::system_clock::now().time_since_epoch();
++    const auto target =
++        trash_root /
++        fmt::format("{:X}-{}-{}",
++                    uint64_t(std::chrono::duration_cast<
++                                 std::chrono::microseconds>(stamp)
++                                 .count()),
++                    serial_.fetch_add(1), xe::path_to_utf8(path.filename()));
++    std::filesystem::rename(path, target, error);
++    if (error) {
++      XELOGW("Content: cannot move {} aside ({}); deleting in place",
++             xe::path_to_utf8(path), error.message());
++      return false;
++    }
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (!thread_) {
++      sweep_root_ = trash_root;
++      xe::threading::Thread::CreationParameters params;
++      thread_ = xe::threading::Thread::Create(params, [this] { Run(); });
++      if (thread_) {
++        thread_->set_name("Content trash");
++      }
++    }
++    queue_.push_back(target);
++    wake_.notify_one();
++    return true;
++  }
++
++ private:
++  void Run() {
++    // Leftovers of earlier sessions, and anything queued meanwhile, which is
++    // harmless to remove twice.
++    {
++      std::error_code error;
++      std::vector<std::filesystem::path> earlier;
++      for (std::filesystem::directory_iterator it(sweep_root_, error), end;
++           !error && it != end; it.increment(error)) {
++        earlier.push_back(it->path());
++      }
++      for (const auto& path : earlier) {
++        Remove(path);
++      }
++    }
++    while (true) {
++      std::filesystem::path path;
++      {
++        std::unique_lock<std::mutex> lock(mutex_);
++        wake_.wait(lock, [this] { return !queue_.empty(); });
++        path = std::move(queue_.front());
++        queue_.pop_front();
++      }
++      Remove(path);
 +    }
 +  }
-+  return package;
-+}
 +
-+void ContentPackage::Register() {
-+  if (registered_) {
-+    return;
++  static void Remove(const std::filesystem::path& path) {
++    const uint64_t start = ContentNowMs();
++    std::error_code error;
++    const auto removed = std::filesystem::remove_all(path, error);
++    const uint64_t took = ContentNowMs() - start;
++    if (error) {
++      XELOGW("Content: background delete of {} failed after {} ms: {}",
++             xe::path_to_utf8(path), took, error.message());
++    } else if (took >= kSlowContentMs) {
++      XELOGW("Content: background delete of {} entries took {} ms ({})",
++             removed, took, xe::path_to_utf8(path));
++    }
 +  }
-+  auto fs = kernel_state_->file_system();
-+  if (pending_device_) {
-+    fs->RegisterDevice(std::move(pending_device_));
-+  }
-+  fs->RegisterSymbolicLink(root_name_ + ":",
-+                           xe::utf8::join_guest_paths(device_path_, root_path_));
-+  registered_ = true;
-+}
- 
++
++  std::mutex mutex_;
++  std::condition_variable wake_;
++  std::deque<std::filesystem::path> queue_;
++  std::filesystem::path sweep_root_;
++  std::unique_ptr<xe::threading::Thread> thread_;
++  std::atomic<uint32_t> serial_{0};
++};
++}  // namespace
++
  ContentPackage::ContentPackage(KernelState* kernel_state,
                                 const std::string_view root_name,
-@@ -67,6 +162,10 @@ ContentPackage::ContentPackage(KernelState* kernel_state,
- }
+                                const XCONTENT_AGGREGATE_DATA& data,
+@@ -44,10 +201,14 @@ ContentPackage::ContentPackage(KernelState* kernel_state,
+   content_data_ = data;
  
- ContentPackage::~ContentPackage() {
-+  if (!registered_) {
-+    // Prepared and dropped: its device was never made visible.
-+    return;
-+  }
    auto fs = kernel_state_->file_system();
-   fs->UnregisterSymbolicLink(root_name_ + ":");
-   fs->UnregisterDevice(device_path_);
-@@ -346,12 +445,22 @@ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
++  // Xbox360PS5 (alpha.87): reading the folder in is file work too.
++  const uint64_t mount_start = ContentNowMs();
+   if (std::filesystem::is_directory(package_path)) {
+     auto device = std::make_unique<vfs::HostPathDevice>(device_path_,
+                                                         package_path, false);
+     mounted_ = device->Initialize();
++    LogSlowContentStep("reading the content folder in", package_path,
++                       mount_start);
+     fs->RegisterDevice(std::move(device));
+   } else {
+     // A title can install content by copying the package file itself, so a
+@@ -346,12 +507,14 @@ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
  
  bool ContentManager::ContentExists(const uint64_t xuid,
                                     const XCONTENT_AGGREGATE_DATA& data) {
 +  SlowContentLog slow("ContentExists", data.file_name());
-+  if (cvars::content_io_unlocked) {
-+    bool exists = false;
-+    RunFileIo([&] {
-+      std::error_code error;
-+      exists = std::filesystem::exists(ResolvePackagePath(xuid, data), error);
-+    });
-+    return exists;
-+  }
    auto path = ResolvePackagePath(xuid, data);
    return std::filesystem::exists(path);
  }
@@ -9401,78 +9608,60 @@ index 3fec23c43..145e08a1f 100644
    if (data.title_id == -1) {
      data.title_id = kernel_state_->title_id();
    }
-@@ -363,23 +472,34 @@ X_RESULT ContentManager::WriteContentHeaderFile(const uint64_t xuid,
- 
-   auto header_path = ResolvePackageHeaderPath(data.file_name(), used_xuid,
+@@ -365,18 +528,24 @@ X_RESULT ContentManager::WriteContentHeaderFile(const uint64_t xuid,
                                                data.title_id, data.content_type);
--  auto parent_path = header_path.parent_path();
--
--  if (!std::filesystem::exists(parent_path)) {
--    if (!std::filesystem::create_directories(parent_path)) {
--      return X_STATUS_ACCESS_DENIED;
-+  X_RESULT result = X_STATUS_NO_SUCH_FILE;
-+  auto write = [&] {
-+    auto parent_path = header_path.parent_path();
-+
-+    if (!std::filesystem::exists(parent_path)) {
-+      if (!std::filesystem::create_directories(parent_path)) {
-+        result = X_STATUS_ACCESS_DENIED;
-+        return;
-+      }
+   auto parent_path = header_path.parent_path();
+ 
++  uint64_t step_start = ContentNowMs();
+   if (!std::filesystem::exists(parent_path)) {
+     if (!std::filesystem::create_directories(parent_path)) {
+       return X_STATUS_ACCESS_DENIED;
      }
--  }
- 
--  xe::filesystem::CreateEmptyFile(header_path);
-+    xe::filesystem::CreateEmptyFile(header_path);
- 
--  if (std::filesystem::exists(header_path)) {
--    auto file = xe::filesystem::OpenFile(header_path, "wb");
--    fwrite(&data, 1, sizeof(XCONTENT_AGGREGATE_DATA), file);
--    fclose(file);
--    return X_STATUS_SUCCESS;
-+    if (std::filesystem::exists(header_path)) {
-+      auto file = xe::filesystem::OpenFile(header_path, "wb");
-+      fwrite(&data, 1, sizeof(XCONTENT_AGGREGATE_DATA), file);
-+      fclose(file);
-+      result = X_STATUS_SUCCESS;
-+    }
-+  };
-+  if (cvars::content_io_unlocked) {
-+    if (!RunFileIo(write)) {
-+      return X_STATUS_ACCESS_DENIED;
-+    }
-+  } else {
-+    write();
++    LogSlowContentStep("making the header folder", parent_path, step_start);
    }
--  return X_STATUS_NO_SUCH_FILE;
-+  return result;
- }
  
- X_RESULT ContentManager::ReadContentHeaderFile(
-@@ -417,6 +537,10 @@ X_RESULT ContentManager::ReadContentHeaderFile(
++  step_start = ContentNowMs();
+   xe::filesystem::CreateEmptyFile(header_path);
++  LogSlowContentStep("creating the header file", header_path, step_start);
+ 
+   if (std::filesystem::exists(header_path)) {
++    step_start = ContentNowMs();
+     auto file = xe::filesystem::OpenFile(header_path, "wb");
+     fwrite(&data, 1, sizeof(XCONTENT_AGGREGATE_DATA), file);
+     fclose(file);
++    LogSlowContentStep("writing the header", header_path, step_start);
+     return X_STATUS_SUCCESS;
+   }
+   return X_STATUS_NO_SUCH_FILE;
+@@ -417,6 +586,7 @@ X_RESULT ContentManager::ReadContentHeaderFile(
  X_RESULT ContentManager::CreateContent(const std::string_view root_name,
                                         const uint64_t xuid,
                                         const XCONTENT_AGGREGATE_DATA& data) {
 +  SlowContentLog slow("CreateContent", data.file_name());
-+  if (cvars::content_io_unlocked) {
-+    return CreateContentUnlocked(root_name, xuid, data);
-+  }
    auto global_lock = global_critical_region_.Acquire();
  
    if (open_packages_.count(string_key_insensitive(root_name))) {
-@@ -450,6 +574,11 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
+@@ -430,9 +600,11 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name,
+     return X_ERROR_ALREADY_EXISTS;
+   }
+ 
++  const uint64_t step_start = ContentNowMs();
+   if (!std::filesystem::create_directories(package_path)) {
+     return X_ERROR_ACCESS_DENIED;
+   }
++  LogSlowContentStep("making the content folder", package_path, step_start);
+ 
+   auto package = ResolvePackage(root_name, xuid, data);
+   if (!package) {
+@@ -450,6 +622,7 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
                                       const XCONTENT_AGGREGATE_DATA& data,
                                       uint32_t& content_license,
                                       const uint32_t disc_number) {
 +  SlowContentLog slow("OpenContent", data.file_name());
-+  if (cvars::content_io_unlocked) {
-+    return OpenContentUnlocked(root_name, xuid, data, content_license,
-+                               disc_number);
-+  }
    auto global_lock = global_critical_region_.Acquire();
  
    if (open_packages_.count(string_key_insensitive(root_name))) {
-@@ -493,6 +622,7 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
+@@ -493,6 +666,7 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
  }
  
  X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
@@ -9480,343 +9669,58 @@ index 3fec23c43..145e08a1f 100644
    auto global_lock = global_critical_region_.Acquire();
  
    // 415607D6 - Uses XamContentCreate with name "save", but XamContentClose with
-@@ -513,41 +643,64 @@ X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
+@@ -513,6 +687,7 @@ X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
  X_RESULT ContentManager::GetContentThumbnail(
      const uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
      std::vector<uint8_t>* buffer) {
--  auto global_lock = global_critical_region_.Acquire();
--
--  auto package_path = ResolvePackagePath(xuid, data);
--  auto thumb_path = package_path / vfs::kPackageThumbnailFileName;
--  if (std::filesystem::exists(thumb_path)) {
--    auto file = xe::filesystem::OpenFile(thumb_path, "rb");
--    size_t file_len = std::filesystem::file_size(thumb_path);
--    buffer->resize(file_len);
--    fread(const_cast<uint8_t*>(buffer->data()), 1, buffer->size(), file);
--    fclose(file);
--    return X_ERROR_SUCCESS;
--  } else {
--    return X_ERROR_FILE_NOT_FOUND;
 +  SlowContentLog slow("GetContentThumbnail", data.file_name());
-+  auto read = [&]() -> X_RESULT {
-+    auto package_path = ResolvePackagePath(xuid, data);
-+    auto thumb_path = package_path / vfs::kPackageThumbnailFileName;
-+    if (std::filesystem::exists(thumb_path)) {
-+      auto file = xe::filesystem::OpenFile(thumb_path, "rb");
-+      size_t file_len = std::filesystem::file_size(thumb_path);
-+      buffer->resize(file_len);
-+      fread(const_cast<uint8_t*>(buffer->data()), 1, buffer->size(), file);
-+      fclose(file);
-+      return X_ERROR_SUCCESS;
-+    } else {
-+      return X_ERROR_FILE_NOT_FOUND;
-+    }
-+  };
-+  if (cvars::content_io_unlocked) {
-+    // Touches only the host folder, nothing the global lock guards.
-+    X_RESULT result = X_ERROR_FILE_NOT_FOUND;
-+    RunFileIo([&] { result = read(); });
-+    return result;
-   }
-+  auto global_lock = global_critical_region_.Acquire();
-+  return read();
- }
+   auto global_lock = global_critical_region_.Acquire();
  
+   auto package_path = ResolvePackagePath(xuid, data);
+@@ -532,6 +707,7 @@ X_RESULT ContentManager::GetContentThumbnail(
  X_RESULT ContentManager::SetContentThumbnail(
      const uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
      std::vector<uint8_t> buffer) {
--  auto global_lock = global_critical_region_.Acquire();
--  auto package_path = ResolvePackagePath(xuid, data);
--  std::filesystem::create_directories(package_path);
--  if (std::filesystem::exists(package_path)) {
--    auto thumb_path = package_path / vfs::kPackageThumbnailFileName;
--    auto file = xe::filesystem::OpenFile(thumb_path, "wb");
--    fwrite(buffer.data(), 1, buffer.size(), file);
--    fclose(file);
--    return X_ERROR_SUCCESS;
--  } else {
--    return X_ERROR_FILE_NOT_FOUND;
 +  SlowContentLog slow("SetContentThumbnail", data.file_name());
-+  auto write = [&]() -> X_RESULT {
-+    auto package_path = ResolvePackagePath(xuid, data);
-+    std::filesystem::create_directories(package_path);
-+    if (std::filesystem::exists(package_path)) {
-+      auto thumb_path = package_path / vfs::kPackageThumbnailFileName;
-+      auto file = xe::filesystem::OpenFile(thumb_path, "wb");
-+      fwrite(buffer.data(), 1, buffer.size(), file);
-+      fclose(file);
-+      return X_ERROR_SUCCESS;
-+    } else {
-+      return X_ERROR_FILE_NOT_FOUND;
-+    }
-+  };
-+  if (cvars::content_io_unlocked) {
-+    // Touches only the host folder, nothing the global lock guards.
-+    X_RESULT result = X_ERROR_FILE_NOT_FOUND;
-+    RunFileIo([&] { result = write(); });
-+    return result;
-   }
-+  auto global_lock = global_critical_region_.Acquire();
-+  return write();
- }
+   auto global_lock = global_critical_region_.Acquire();
+   auto package_path = ResolvePackagePath(xuid, data);
+   std::filesystem::create_directories(package_path);
+@@ -548,6 +724,7 @@ X_RESULT ContentManager::SetContentThumbnail(
  
  X_RESULT ContentManager::DeleteContent(const uint64_t xuid,
                                         const XCONTENT_AGGREGATE_DATA& data) {
 +  SlowContentLog slow("DeleteContent", data.file_name());
-+  if (cvars::content_io_unlocked) {
-+    return DeleteContentUnlocked(xuid, data);
-+  }
    auto global_lock = global_critical_region_.Acquire();
  
    if (IsContentOpen(data)) {
-@@ -563,6 +716,165 @@ X_RESULT ContentManager::DeleteContent(const uint64_t xuid,
+@@ -556,7 +733,26 @@ X_RESULT ContentManager::DeleteContent(const uint64_t xuid,
    }
- }
  
-+// Xbox360PS5 (alpha.86): content_io_unlocked. The checks of open_packages_
-+// stay under the global lock, which is all it guards here; the host file work
-+// between them does not hold it. On the console a save takes its time on the
-+// thread that asked for it while the title goes on; here, under the lock, every
-+// guest thread that looked up a handle waited for the PS5's file system too.
-+
-+bool ContentManager::RunFileIo(const std::function<void()>& work) {
-+  bool completed = true;
-+  // On the I/O worker when a guest fiber calls (its CPU runs other fibers
-+  // meanwhile), inline otherwise. A throw must not reach the worker's loop.
-+  kernel_state_->RunBlockingIo(
-+      [&] {
-+        try {
-+          work();
-+        } catch (const std::exception& error) {
-+          XELOGE("Content: file work failed: {}", error.what());
-+          completed = false;
-+        }
-+      },
-+      GuestScheduler::BlockingCallClass::kConcurrent, false);
-+  return completed;
-+}
-+
-+X_RESULT ContentManager::CreateContentUnlocked(
-+    const std::string_view root_name, const uint64_t xuid,
-+    const XCONTENT_AGGREGATE_DATA& data) {
-+  {
-+    auto global_lock = global_critical_region_.Acquire();
-+    if (open_packages_.count(string_key_insensitive(root_name))) {
-+      // Already content open with this root name.
-+      return X_ERROR_ALREADY_EXISTS;
-+    }
-+  }
-+
-+  X_RESULT result = X_ERROR_SUCCESS;
-+  std::unique_ptr<ContentPackage> package;
-+  if (!RunFileIo([&] {
-+        auto package_path = ResolvePackagePath(xuid, data);
-+        std::error_code error;
-+        if (std::filesystem::exists(package_path, error)) {
-+          // Exists, must not!
-+          result = X_ERROR_ALREADY_EXISTS;
-+          return;
-+        }
-+        if (!std::filesystem::create_directories(package_path, error)) {
-+          result = X_ERROR_ACCESS_DENIED;
-+          return;
-+        }
-+        package = ContentPackage::Prepare(kernel_state_, root_name, data,
-+                                          package_path, "");
-+        if (!package->is_mounted()) {
-+          package.reset();
-+          result = X_ERROR_ACCESS_DENIED;
-+        }
-+      })) {
-+    return X_ERROR_ACCESS_DENIED;
-+  }
-+  if (result != X_ERROR_SUCCESS) {
-+    return result;
-+  }
-+
-+  auto global_lock = global_critical_region_.Acquire();
-+  if (open_packages_.count(string_key_insensitive(root_name))) {
-+    // Another call opened this root name meanwhile; this one never registered.
-+    return X_ERROR_ALREADY_EXISTS;
-+  }
-+  package->Register();
-+  open_packages_.insert(
-+      {string_key_insensitive::create(root_name), package.release()});
-+  return X_ERROR_SUCCESS;
-+}
-+
-+X_RESULT ContentManager::OpenContentUnlocked(
-+    const std::string_view root_name, const uint64_t xuid,
-+    const XCONTENT_AGGREGATE_DATA& data, uint32_t& content_license,
-+    const uint32_t disc_number) {
-+  {
-+    auto global_lock = global_critical_region_.Acquire();
-+    if (open_packages_.count(string_key_insensitive(root_name))) {
-+      // Already content open with this root name.
-+      return X_ERROR_ALREADY_EXISTS;
-+    }
-+  }
-+
-+  X_RESULT result = X_ERROR_SUCCESS;
-+  std::unique_ptr<ContentPackage> package;
-+  const uint32_t title_id = kernel_state_->title_id();
-+  if (!RunFileIo([&] {
-+        auto package_path = ResolvePackagePath(xuid, data);
-+        std::error_code error;
-+        if (!std::filesystem::exists(package_path, error)) {
-+          // Does not exist, must be created.
-+          result = X_ERROR_FILE_NOT_FOUND;
-+          return;
-+        }
-+        // A multi-disc title's update ships as one package holding a discNNN
-+        // directory per disc; mount the one this disc needs.
-+        const std::string root_path =
-+            disc_number != -1 ? fmt::format("disc{:03}", disc_number) : "";
-+        package = ContentPackage::Prepare(kernel_state_, root_name, data,
-+                                          package_path, root_path);
-+        if (!package->is_mounted()) {
-+          package.reset();
-+          result = X_ERROR_FILE_NOT_FOUND;
-+          return;
-+        }
-+        package->LoadPackageLicenseMask(ResolvePackageHeaderPath(
-+            data.file_name(), xuid, title_id, data.content_type));
-+      })) {
-+    return X_ERROR_FILE_NOT_FOUND;
-+  }
-+  if (result != X_ERROR_SUCCESS) {
-+    return result;
-+  }
-+
-+  content_license = package->GetPackageLicense();
-+  if (static_cast<uint32_t>(cvars::license_mask) > 0) {
-+    content_license |= cvars::license_mask;
-+  }
-+
-+  auto global_lock = global_critical_region_.Acquire();
-+  if (open_packages_.count(string_key_insensitive(root_name))) {
-+    return X_ERROR_ALREADY_EXISTS;
-+  }
-+  package->Register();
-+
-+  // Check for SPA file in package. Check it only for DLCs
-+  if (data.content_type == XContentType::kMarketplaceContent) {
-+    std::string spa_path = fmt::format("{}:\\{}", root_name, kSpaFilename);
-+    auto spa_update = kernel_state_->file_system()->ResolvePath(spa_path);
-+    if (spa_update) {
-+      UpdateSpaData(spa_update);
-+    }
-+  }
-+
-+  open_packages_.insert(
-+      {string_key_insensitive::create(root_name), package.release()});
-+  return X_ERROR_SUCCESS;
-+}
-+
-+X_RESULT ContentManager::DeleteContentUnlocked(
-+    const uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data) {
-+  {
-+    auto global_lock = global_critical_region_.Acquire();
-+    if (IsContentOpen(data)) {
-+      // TODO(Gliniak): Get real error code for this case.
-+      return X_ERROR_ACCESS_DENIED;
-+    }
-+  }
-+  bool removed = false;
-+  RunFileIo([&] {
+   auto package_path = ResolvePackagePath(xuid, data);
+-  if (std::filesystem::remove_all(package_path) > 0) {
++  // Xbox360PS5 (alpha.87): a move is one file system call; the title sees
++  // the content gone as before, and the folder is removed afterwards.
++  if (cvars::content_delete_in_background) {
 +    std::error_code error;
-+    const auto count =
-+        std::filesystem::remove_all(ResolvePackagePath(xuid, data), error);
-+    removed = !error && count > 0;
-+  });
-+  return removed ? X_ERROR_SUCCESS : X_ERROR_FILE_NOT_FOUND;
-+}
-+
- std::filesystem::path ContentManager::ResolveGameUserContentPath(
-     const uint64_t xuid) {
-   auto xuid_str = fmt::format("{:016X}", xuid);
-diff --git a/src/xenia/kernel/xam/content_manager.h b/src/xenia/kernel/xam/content_manager.h
-index 9ebdd08c4..ec3c80895 100644
---- a/src/xenia/kernel/xam/content_manager.h
-+++ b/src/xenia/kernel/xam/content_manager.h
-@@ -10,6 +10,7 @@
- #ifndef XENIA_KERNEL_XAM_CONTENT_MANAGER_H_
- #define XENIA_KERNEL_XAM_CONTENT_MANAGER_H_
- 
-+#include <functional>
- #include <memory>
- #include <string>
- #include <unordered_map>
-@@ -20,6 +21,7 @@
- #include "xenia/base/mutex.h"
- #include "xenia/base/string_key.h"
- #include "xenia/base/string_util.h"
-+#include "xenia/vfs/device.h"
- #include "xenia/vfs/entry.h"
- #include "xenia/xbox.h"
- 
-@@ -204,6 +206,17 @@ class ContentPackage {
-                  const std::string_view root_path = "");
-   ~ContentPackage();
- 
-+  // Xbox360PS5 (alpha.86): the device made and mounted (scanning the folder or
-+  // reading the container, the slow part) without registering it, so it can
-+  // run without the global lock; Register() under the lock afterwards. A
-+  // package never registered unregisters nothing.
-+  static std::unique_ptr<ContentPackage> Prepare(
-+      KernelState* kernel_state, const std::string_view root_name,
-+      const XCONTENT_AGGREGATE_DATA& data,
-+      const std::filesystem::path& package_path,
-+      const std::string_view root_path);
-+  void Register();
-+
-   void LoadPackageLicenseMask(const std::filesystem::path header_path);
- 
-   const XCONTENT_AGGREGATE_DATA& GetPackageContentData() const {
-@@ -218,12 +231,19 @@ class ContentPackage {
-   const std::string& device_path() const { return device_path_; }
- 
-  private:
-+  ContentPackage(KernelState* kernel_state, const std::string_view root_name,
-+                 const XCONTENT_AGGREGATE_DATA& data);
-+
-   KernelState* kernel_state_;
-   std::string root_name_;
-   std::string device_path_;
-   XCONTENT_AGGREGATE_DATA content_data_;
-   uint32_t license_;
-   bool mounted_ = false;
-+  // Xbox360PS5 (alpha.86): a Prepare()d package until Register().
-+  std::unique_ptr<vfs::Device> pending_device_;
-+  std::string root_path_;
-+  bool registered_ = true;
- };
- 
- class ContentManager {
-@@ -287,6 +307,23 @@ class ContentManager {
-       const uint64_t xuid,
-       uint32_t base_title_id = kCurrentlyRunningTitleId) const;
- 
-+  // Xbox360PS5 (alpha.86): content_io_unlocked. The calls below with their file
-+  // work (checking, creating and deleting folders, mounting, the header) done
-+  // outside the global lock, and on the I/O worker when a guest fiber calls,
-+  // so the rest of the title keeps running meanwhile. RunFileIo returns false
-+  // when the work threw.
-+  bool RunFileIo(const std::function<void()>& work);
-+  X_RESULT CreateContentUnlocked(const std::string_view root_name,
-+                                 const uint64_t xuid,
-+                                 const XCONTENT_AGGREGATE_DATA& data);
-+  X_RESULT OpenContentUnlocked(const std::string_view root_name,
-+                               const uint64_t xuid,
-+                               const XCONTENT_AGGREGATE_DATA& data,
-+                               uint32_t& content_license,
-+                               const uint32_t disc_number);
-+  X_RESULT DeleteContentUnlocked(const uint64_t xuid,
-+                                 const XCONTENT_AGGREGATE_DATA& data);
-+
-   bool UpdateSpaData(vfs::Entry* spa_file_update);
- 
-   KernelState* kernel_state_;
++    if (!std::filesystem::exists(package_path, error)) {
++      return X_ERROR_FILE_NOT_FOUND;
++    }
++    const uint64_t step_start = ContentNowMs();
++    if (ContentTrash::Get().Discard(package_path,
++                                    root_path_ / kDeletedContentDirName)) {
++      LogSlowContentStep("moving the content folder aside", package_path,
++                         step_start);
++      return X_ERROR_SUCCESS;
++    }
++  }
++  const uint64_t step_start = ContentNowMs();
++  const auto removed = std::filesystem::remove_all(package_path);
++  LogSlowContentStep("deleting the content folder", package_path, step_start,
++                     fmt::format(", {} entries", removed));
++  if (removed > 0) {
+     return X_ERROR_SUCCESS;
+   } else {
+     return X_ERROR_FILE_NOT_FOUND;
 diff --git a/src/xenia/kernel/xam/profile_manager.cc b/src/xenia/kernel/xam/profile_manager.cc
 index a5cb274ef..fe9b9aea7 100644
 --- a/src/xenia/kernel/xam/profile_manager.cc
@@ -12221,50 +12125,10 @@ index 501821580..43026cb63 100644
    assert(buffer_ptr);
    assert(fetch_ptr);
 diff --git a/src/xenia/kernel/xobject.cc b/src/xenia/kernel/xobject.cc
-index 27b8bf7f5..650e2bb2c 100644
+index 27b8bf7f5..924072a35 100644
 --- a/src/xenia/kernel/xobject.cc
 +++ b/src/xenia/kernel/xobject.cc
-@@ -451,6 +451,18 @@ std::vector<XObject::SignalRecord> XObject::RecentCooperativeSignals(
- 
- void XObject::WakeCooperativeWaiters() {
-   cooperative_signal_epoch_.fetch_add(1);
-+  // Xbox360PS5 (alpha.86): guest_scheduler_fast_signal. With no waiter
-+  // registered there is nothing for WakeForSignal to find, and it takes the
-+  // scheduler's lock every dispatch thread also takes to switch fibers. Read
-+  // after the bump above, see AddCooperativeWatcher. The ring below then only
-+  // holds signals something waited for, the ones a stall report pairs.
-+  if (cooperative_watchers() == 0) {
-+    const bool skip = GuestScheduler::fast_signal();
-+    kernel_state()->guest_scheduler()->NoteUnwatchedSignal(skip);
-+    if (skip) {
-+      return;
-+    }
-+  }
-   RecordCooperativeSignal(this);
-   // Wake only the CPUs that can act on this signal instead of every CPU with
-   // any blocked thread - broadcast wakes on every semaphore release were most
-@@ -465,6 +477,8 @@ void XObject::EnterCooperativeWait(XThread* thread) {
-   if (!thread) {
-     return;
-   }
-+  // Before CooperativeWait samples the epoch, see AddCooperativeWatcher.
-+  AddCooperativeWatcher();
-   CooperativeWaitBegin(thread);
-   thread->set_cooperative_wait_object(this);
- }
-@@ -473,7 +487,10 @@ void XObject::LeaveCooperativeWait(XThread* thread) {
-   if (!thread) {
-     return;
-   }
--  thread->set_cooperative_wait_object(nullptr);
-+  // Uncounted once, by whichever of the fiber and a terminate gets here first.
-+  if (thread->release_cooperative_wait_object(this)) {
-+    RemoveCooperativeWatcher();
-+  }
-   CooperativeWaitEnd(thread);
- }
- 
-@@ -496,6 +513,24 @@ xe::threading::WaitHandle* XObject::GetWaitHandleForCurrentThread(size_t slot) {
+@@ -496,6 +496,24 @@ xe::threading::WaitHandle* XObject::GetWaitHandleForCurrentThread(size_t slot) {
    return GetWaitHandle();
  }
  
@@ -12289,7 +12153,7 @@ index 27b8bf7f5..650e2bb2c 100644
  X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode,
                         uint32_t alertable, uint64_t* opt_timeout,
                         bool interruptible) {
-@@ -579,6 +614,8 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode,
+@@ -579,6 +597,8 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode,
                          TimeoutTicksToMs(*opt_timeout)))
                    : std::chrono::milliseconds::max();
  
@@ -12298,7 +12162,7 @@ index 27b8bf7f5..650e2bb2c 100644
    X_KTHREAD* kthread = WaitEnter(wait_reason, processor_mode, alertable);
    xe::threading::WaitResult result;
    const bool infinite = timeout_ms == std::chrono::milliseconds::max();
-@@ -719,6 +756,7 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object,
+@@ -719,6 +739,7 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object,
                          TimeoutTicksToMs(*opt_timeout)))
                    : std::chrono::milliseconds::max();
  
@@ -12306,37 +12170,7 @@ index 27b8bf7f5..650e2bb2c 100644
    X_KTHREAD* kthread = WaitEnter(wait_reason, processor_mode, alertable);
    const uint64_t deadline_ms =
        timeout_ms == std::chrono::milliseconds::max()
-@@ -830,6 +868,17 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
-                       : XThread::CooperativeWaitKind::kMultiAll,
-             handle_ids, count, gateable_set ? objects : nullptr);
-       }
-+      // Xbox360PS5 (alpha.86): a tracked set is what WakeForSignal matches, so
-+      // its members count this waiter until the wait returns, from before
-+      // CooperativeWait samples the set's epoch (see AddCooperativeWatcher). A
-+      // fiber terminated inside the wait never uncounts, which only costs
-+      // those objects the lock-free signal.
-+      const bool watching = self && gateable_set;
-+      if (watching) {
-+        for (uint32_t i = 0; i < count; ++i) {
-+          objects[i]->AddCooperativeWatcher();
-+        }
-+      }
-       X_STATUS status = CooperativeWait(
-           scheduler, self, kthread, nullptr, alertable != 0, deadline_ms,
-           [&](bool parked) -> std::optional<X_STATUS> {
-@@ -905,6 +954,11 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
-                 return X_STATUS_ABANDONED_WAIT_0;
-             }
-           });
-+      if (watching) {
-+        for (uint32_t i = 0; i < count; ++i) {
-+          objects[i]->RemoveCooperativeWatcher();
-+        }
-+      }
-       if (status != X_STATUS_KERNEL_APC) {
-         return status;
-       }
-@@ -917,6 +971,7 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
+@@ -917,6 +938,7 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
                          TimeoutTicksToMs(*opt_timeout)))
                    : std::chrono::milliseconds::max();
  
@@ -12344,38 +12178,6 @@ index 27b8bf7f5..650e2bb2c 100644
    X_KTHREAD* kthread = WaitEnter(wait_reason, processor_mode, alertable);
    const uint64_t deadline_ms =
        timeout_ms == std::chrono::milliseconds::max()
-diff --git a/src/xenia/kernel/xobject.h b/src/xenia/kernel/xobject.h
-index 5f29e629e..cf739fb37 100644
---- a/src/xenia/kernel/xobject.h
-+++ b/src/xenia/kernel/xobject.h
-@@ -306,6 +306,18 @@ class XObject {
-   // primitive is signaled, never before.
-   void WakeCooperativeWaiters();
- 
-+  // Xbox360PS5 (alpha.86): the cooperative waits registered on this object
-+  // (its single waiters and the tracked multi-wait sets holding it), the ones
-+  // GuestScheduler::WakeForSignal can find. A waiter counts itself before it
-+  // samples the signal epoch and uncounts after its wait, and a signal bumps
-+  // the epoch before it reads the count, so with guest_scheduler_fast_signal a
-+  // signal that reads 0 skips the scheduler's lock: any waiter it missed saw
-+  // the new epoch before it polled. A count left behind by a fiber terminated
-+  // mid-wait only sends this object's signals the locked way.
-+  void AddCooperativeWatcher() { cooperative_watchers_.fetch_add(1); }
-+  void RemoveCooperativeWatcher() { cooperative_watchers_.fetch_sub(1); }
-+  uint32_t cooperative_watchers() const { return cooperative_watchers_.load(); }
-+
-   // Ring of the most recent cooperative wakes, dumped by the scheduler's
-   // no-progress report. A wedge is diagnosed by pairing what the parked fibers
-   // wait on against what was last signalled, and the old boot-window trace ran
-@@ -362,6 +374,8 @@ class XObject {
-   std::atomic<uint32_t> priority_increment_{0};
- 
-   std::atomic<uint32_t> cooperative_signal_epoch_{0};
-+  // Xbox360PS5 (alpha.86): see AddCooperativeWatcher.
-+  std::atomic<uint32_t> cooperative_watchers_{0};
- 
-   // Host objects are persisted through resets/etc.
-   bool host_object_ = false;
 diff --git a/src/xenia/kernel/xsocket.cc b/src/xenia/kernel/xsocket.cc
 index a8eac6cbe..c9d3cfd7b 100644
 --- a/src/xenia/kernel/xsocket.cc
@@ -12635,7 +12437,7 @@ index ca42c30ee..33d5a32ce 100644
        reinterpret_cast<std::atomic_uint8_t*>(&guest_thread->suspend_count)
            ->fetch_add(1);
 diff --git a/src/xenia/kernel/xthread.h b/src/xenia/kernel/xthread.h
-index d6d79c1a8..c46f03b29 100644
+index d6d79c1a8..9a194dcb6 100644
 --- a/src/xenia/kernel/xthread.h
 +++ b/src/xenia/kernel/xthread.h
 @@ -21,9 +21,7 @@
@@ -12672,21 +12474,7 @@ index d6d79c1a8..c46f03b29 100644
    // Xbox thread IDs:
    // 0 - core 0, thread 0 - user
    // 1 - core 0, thread 1 - user
-@@ -678,6 +693,13 @@ class XThread : public XObject, public cpu::Thread {
-   void set_cooperative_wait_object(XObject* object) {
-     cooperative_wait_object_.store(object, std::memory_order_release);
-   }
-+  // Xbox360PS5 (alpha.86): clears the registration if it is still |object|'s,
-+  // true for the one caller that cleared it. The fiber leaving its wait and a
-+  // terminate abandoning it can both try; only one may uncount the waiter.
-+  bool release_cooperative_wait_object(XObject* object) {
-+    return cooperative_wait_object_.compare_exchange_strong(
-+        object, nullptr, std::memory_order_acq_rel);
-+  }
- 
-   // Intrusive scheduler links, owned exclusively by GuestScheduler and only
-   // touched under its lock. Embedding them here keeps the queue operations
-@@ -822,10 +844,11 @@ class XThread : public XObject, public cpu::Thread {
+@@ -822,10 +837,11 @@ class XThread : public XObject, public cpu::Thread {
    // On Linux, C++ exceptions are used instead of setjmp/longjmp so that
    // destructors and RAII guards in host C++ frames are properly unwound.
    // JIT code has DWARF .eh_frame unwind info registered via __register_frame.
