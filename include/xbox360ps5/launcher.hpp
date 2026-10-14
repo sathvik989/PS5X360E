@@ -54,6 +54,7 @@ struct Settings {
   int module_load_offload = 0;     // 1: a game module's read and precompile on an I/O worker (module_load_offload; alpha.87 test).
   int spin_yields = 0;             // 1: a guest spin over 0.2 ms gives its guest CPU to other threads (spin_hint_yields; alpha.89 test).
   int output_4k = 1;          // A game's picture to the screen at 3840x2160 (1) or 1920x1080 (0); menus stay 1080p (alpha69nice).
+  int framegen_size = 0;      // Generated frames made at the game picture's size (0), 1440p (1) or 1080p (2) (alpha.76, again in alpha.90).
   int frame_pacing = 0;       // 0 shows the newest frame at each refresh, 1 paces a 30 FPS game to exactly 2 refreshes a frame.
   int image_filter = 0;       // How a game's picture is stretched to the screen: 0 plain, 1 CAS, 2 FSR.
   int antialiasing = 0;       // SMAA on the game's picture before the filter: 0 off, 1 SMAA, 2 SMAA+FXAA, 3 FXAA, 4 SMAA's edges.
@@ -74,6 +75,8 @@ struct Settings {
   int gpu_core = 0;             // PS5X360E: the GPU command thread on a core of its own.
   int thread_layout = 0;        // alpha.88: every thread on fixed CPUs by its role (platform/ps5/thread_place.cpp; test).
   int gpu_waits = 0;            // alpha.88: shorter driver sleeps, counter clock, WAIT_REG_MEM watch (platform/ps5/driver_wait.cpp; test).
+  int jit_zen2 = 0;             // alpha.90: the recompiler uses the PS5's Zen 2 instruction set (x64_ps5_zen2_features; test).
+  int precompile_initializers = 0;  // alpha.90: a loaded module's static initializers compiled ahead (precompile_module_initializers; test).
   int audio_reserve = 0;        // PS5X360E: sound held in reserve before playing (alpha.58; off since alpha.62).
   int zero_copy = 0;            // PS5X360E: the GPU reads guest RAM in place (Edge's shared_memory_zero_copy).
   int submit_thread = 1;        // PS5X360E: Vulkan submissions recorded and submitted on their own thread.

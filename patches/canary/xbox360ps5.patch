@@ -1315,6 +1315,69 @@ index 39de6837e..ba44b677c 100644
  #else
  #error Unsupported target OS.
  #endif
+diff --git a/src/xenia/base/platform_amd64.cc b/src/xenia/base/platform_amd64.cc
+index 0c6834c1f..dac11cfbc 100644
+--- a/src/xenia/base/platform_amd64.cc
++++ b/src/xenia/base/platform_amd64.cc
+@@ -45,10 +45,25 @@ DEFINE_int64(x64_extension_mask, -1LL,
+              "turns all of them off at once. The features actually in use are "
+              "written to the log at startup.\n",
+              "x64");
++#if XE_PLATFORM_PS5
++// PS5X360E (alpha.90): the console's CPU is a Zen 2. The PS5 target builds the
++// emulator itself for it (AVX2, FMA, BMI1/2, LZCNT, MOVBE and F16C appear
++// thousands of times in a build that runs), so the recompiler may use the same
++// set whatever CPUID reports under the console's hypervisor.
++DEFINE_bool(x64_ps5_zen2_features, false,
++            "PS5: the recompiler uses the console CPU's Zen 2 instruction set "
++            "(AVX2, FMA, LZCNT, BMI1, BMI2, PREFETCHW, MOVBE and AMD's fast "
++            "jumps) whatever CPUID reports, and nothing Zen 2 lacks.",
++            "x64");
++#endif
+ namespace xe {
+ namespace amd64 {
+ static uint64_t g_feature_flags = 0U;
+ static bool g_did_initialize_feature_flags = false;
++#if XE_PLATFORM_PS5
++// PS5X360E (alpha.90): what CPUID reported, before the Zen 2 set.
++static uint64_t g_reported_flags = 0U;
++#endif
+ uint64_t GetFeatureFlags() {
+   if (!g_did_initialize_feature_flags) {
+     InitFeatureFlags();
+@@ -204,10 +219,32 @@ void InitFeatureFlags() {
+       detected_flags_ |= kX64FastRepMovs;
+     }
+   }
++#if XE_PLATFORM_PS5
++  g_reported_flags = detected_flags_;
++  if (cvars::x64_ps5_zen2_features) {
++    constexpr uint64_t kZen2 = kX64EmitAVX2 | kX64EmitFMA | kX64EmitLZCNT |
++                               kX64EmitBMI1 | kX64EmitBMI2 | kX64EmitPrefetchW |
++                               kX64EmitMovbe | kX64FastJrcx | kX64FastLoop |
++                               kX64FlagsIndependentVars;
++    // Zen 2 has no GFNI, AVX-512, XOP, FMA4, TBM or MOVDIR64B; fast REP MOVSB
++    // is kept only if the CPU reports it.
++    detected_flags_ = kZen2 | (detected_flags_ & kX64FastRepMovs);
++  }
++#endif
+   g_feature_flags =
+       detected_flags_ & static_cast<uint64_t>(cvars::x64_extension_mask);
+   g_did_initialize_feature_flags = true;
+   LogFeatureFlags(detected_flags_, g_feature_flags);
+ }
++#if XE_PLATFORM_PS5
++// In the normal log, when the recompiler starts: what the console's CPUID gave
++// and what the recompiler uses.
++void LogRecompilerFeatures() {
++  const uint64_t active = GetFeatureFlags();
++  XELOGW("Recompiler CPU features: CPUID reports {}; in use {}{}",
++         FormatFeatureList(g_reported_flags), FormatFeatureList(active),
++         cvars::x64_ps5_zen2_features ? " (the PS5's Zen 2 set)" : "");
++}
++#endif
+ }  // namespace amd64
+ }  // namespace xe
 diff --git a/src/xenia/base/profiling.cc b/src/xenia/base/profiling.cc
 index 508890179..87b96ed6d 100644
 --- a/src/xenia/base/profiling.cc
@@ -1699,6 +1762,48 @@ index 13583c50f..8ed0b9ce9 100644
    static constexpr uintptr_t kGeneratedCodeExecuteBase = 0xA0000000;
    static_assert(kGeneratedCodeSize < 0x80000000);
    static_assert(kGeneratedCodeExecuteBase + kGeneratedCodeSize <
+diff --git a/src/xenia/cpu/backend/x64/x64_backend.cc b/src/xenia/cpu/backend/x64/x64_backend.cc
+index 55f3e6b18..d815d82d4 100644
+--- a/src/xenia/cpu/backend/x64/x64_backend.cc
++++ b/src/xenia/cpu/backend/x64/x64_backend.cc
+@@ -36,6 +36,15 @@
+ 
+ DECLARE_bool(record_mmio_access_exceptions);
+ 
++#if XE_PLATFORM_PS5
++namespace xe::amd64 {
++// PS5X360E (alpha.90): base/platform_amd64.cc; one warning line with CPUID's
++// features and those the recompiler uses (declared here so the platform header
++// every file includes stays as it is).
++void LogRecompilerFeatures();
++}  // namespace xe::amd64
++#endif
++
+ DEFINE_int64(max_stackpoints, 65536,
+              "Max number of host->guest stack mappings we can record.", "x64");
+ 
+@@ -256,12 +265,21 @@ bool X64Backend::Initialize(Processor* processor) {
+ #endif
+ 
+   // Need movbe to do advanced LOAD/STORE tricks.
++#if XE_PLATFORM_PS5
++  // PS5X360E (alpha.90): taken from the recompiler's feature flags, which are
++  // CPUID's under the mask as below unless x64_ps5_zen2_features gives the
++  // console's Zen 2 set.
++  machine_info_.supports_extended_load_store =
++      (amd64::GetFeatureFlags() & kX64EmitMovbe) != 0;
++  amd64::LogRecompilerFeatures();
++#else
+   if (cvars::x64_extension_mask & kX64EmitMovbe) {
+     machine_info_.supports_extended_load_store =
+         cpu.has(Xbyak::util::Cpu::tMOVBE);
+   } else {
+     machine_info_.supports_extended_load_store = false;
+   }
++#endif
+ 
+   auto& gprs = machine_info_.register_sets[0];
+   gprs.id = 0;
 diff --git a/src/xenia/cpu/backend/x64/x64_code_cache_posix.cc b/src/xenia/cpu/backend/x64/x64_code_cache_posix.cc
 index 67625137b..a06f2980f 100644
 --- a/src/xenia/cpu/backend/x64/x64_code_cache_posix.cc
@@ -1769,6 +1874,142 @@ index 735b43826..e43a6f0c9 100644
      } else {
        e.pause();
      }
+diff --git a/src/xenia/cpu/processor.cc b/src/xenia/cpu/processor.cc
+index 7f5c296ef..d1d0eb841 100644
+--- a/src/xenia/cpu/processor.cc
++++ b/src/xenia/cpu/processor.cc
+@@ -10,6 +10,7 @@
+ #include "xenia/cpu/processor.h"
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <condition_variable>
+ #include <cstdio>
+ #include <cstring>
+@@ -20,6 +21,7 @@
+ #include "xenia/base/atomic.h"
+ #include "xenia/base/byte_order.h"
+ #include "xenia/base/byte_stream.h"
++#include "xenia/base/clock.h"
+ #include "xenia/base/cvar.h"
+ #include "xenia/base/debugging.h"
+ #include "xenia/base/exception_handler.h"
+@@ -71,6 +73,23 @@ using xe::kernel::XThread;
+ 
+ using namespace xe::literals;
+ 
++namespace {
++// PS5X360E (alpha.90): set on the threads of ResolveFunctionsInParallel, whose
++// compiles count as ahead of time in compile_totals().
++thread_local bool compiling_ahead = false;
++uint64_t CompileClockNs() {
++#if XE_PLATFORM_PS5
++  // Nanoseconds from the time-stamp counter (base/clock_posix.cc); the
++  // system's clock is a system call of about a microsecond there.
++  return Clock::QueryHostTickCount();
++#else
++  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                      std::chrono::steady_clock::now().time_since_epoch())
++                      .count());
++#endif
++}
++}  // namespace
++
+ class BuiltinModule : public Module {
+  public:
+   explicit BuiltinModule(Processor* processor)
+@@ -838,6 +857,7 @@ size_t Processor::ResolveFunctionsInParallel(
+       std::string name = "Precompile " + std::to_string(i);
+       xe::threading::set_name(name);
+       Profiler::ThreadEnter(name.c_str());
++      compiling_ahead = true;
+       work();
+       Profiler::ThreadExit();
+     });
+@@ -846,7 +866,10 @@ size_t Processor::ResolveFunctionsInParallel(
+     }
+   }
+   if (threads.empty()) {
++    const bool was_ahead = compiling_ahead;
++    compiling_ahead = true;
+     work();
++    compiling_ahead = was_ahead;
+   }
+   for (auto& thread : threads) {
+     xe::threading::Wait(thread.get(), false);
+@@ -916,8 +939,25 @@ bool Processor::DemandFunction(Function* function) {
+   if (symbol_status == Symbol::Status::kNew) {
+     // Symbol is undefined, so define now.
+     assert_true(function->is_guest());
+-    if (!frontend_->DefineFunction(static_cast<GuestFunction*>(function),
+-                                   debug_info_flags_)) {
++    // PS5X360E (alpha.90): counted for compile_totals().
++    const uint64_t compile_start = CompileClockNs();
++    const bool defined = frontend_->DefineFunction(
++        static_cast<GuestFunction*>(function), debug_info_flags_);
++    const uint64_t compile_ns = CompileClockNs() - compile_start;
++    if (compiling_ahead) {
++      compiled_ahead_.fetch_add(1, std::memory_order_relaxed);
++      compiled_ahead_ns_.fetch_add(compile_ns, std::memory_order_relaxed);
++    } else {
++      compiled_on_demand_.fetch_add(1, std::memory_order_relaxed);
++      compiled_on_demand_ns_.fetch_add(compile_ns, std::memory_order_relaxed);
++      uint64_t longest =
++          longest_on_demand_compile_ns_.load(std::memory_order_relaxed);
++      while (compile_ns > longest &&
++             !longest_on_demand_compile_ns_.compare_exchange_weak(
++                 longest, compile_ns, std::memory_order_relaxed)) {
++      }
++    }
++    if (!defined) {
+       function->set_status(Symbol::Status::kFailed);
+       return false;
+     }
+diff --git a/src/xenia/cpu/processor.h b/src/xenia/cpu/processor.h
+index 89caf025e..605da1d28 100644
+--- a/src/xenia/cpu/processor.h
++++ b/src/xenia/cpu/processor.h
+@@ -153,6 +153,29 @@ class Processor {
+   // before a change may have been dropped before it could be cached.
+   uint64_t code_sweep_count() const { return code_sweep_count_.load(); }
+ 
++  // PS5X360E (alpha.90): guest functions compiled so far and the time spent
++  // compiling them (host nanoseconds), ahead (the precompile workers) and on
++  // demand (a guest thread calling code not yet compiled, which waits for it).
++  struct CompileTotals {
++    uint64_t ahead_functions = 0, ahead_ns = 0;
++    uint64_t on_demand_functions = 0, on_demand_ns = 0;
++  };
++  CompileTotals compile_totals() const {
++    CompileTotals totals;
++    totals.ahead_functions = compiled_ahead_.load(std::memory_order_relaxed);
++    totals.ahead_ns = compiled_ahead_ns_.load(std::memory_order_relaxed);
++    totals.on_demand_functions =
++        compiled_on_demand_.load(std::memory_order_relaxed);
++    totals.on_demand_ns =
++        compiled_on_demand_ns_.load(std::memory_order_relaxed);
++    return totals;
++  }
++  // The longest single on-demand compile since the last call (nanoseconds).
++  uint64_t TakeLongestOnDemandCompileNs() {
++    return longest_on_demand_compile_ns_.exchange(0,
++                                                  std::memory_order_relaxed);
++  }
++
+   // The exclusive end of the swept range an address falls in, or 0 for none.
+   uint32_t SweptCodeEnd(uint32_t address);
+ 
+@@ -407,6 +430,10 @@ class Processor {
+   // Bumped by each sweep before it drops anything, and by a compile dropped as
+   // it publishes.
+   std::atomic<uint64_t> code_sweep_count_{0};
++  // PS5X360E (alpha.90): compile_totals().
++  std::atomic<uint64_t> compiled_ahead_{0}, compiled_ahead_ns_{0};
++  std::atomic<uint64_t> compiled_on_demand_{0}, compiled_on_demand_ns_{0};
++  std::atomic<uint64_t> longest_on_demand_compile_ns_{0};
+   // A compile reads the code outside the lock, and a sweep in the meantime
+   // can't find it to drop. So the sweep count at the start of each compile of
+   // dynamic code in flight is kept, and the key ranges swept since the oldest
 diff --git a/src/xenia/cpu/thread.cc b/src/xenia/cpu/thread.cc
 index 8a3d4b8d3..1c9613cb6 100644
 --- a/src/xenia/cpu/thread.cc
@@ -1868,10 +2109,38 @@ index ddb026c91..2557c64b9 100644
               granularity;  // now we have a ctx ptr with the e0 constant in low,
                             // and one page allocated before it
 diff --git a/src/xenia/cpu/xex_module.cc b/src/xenia/cpu/xex_module.cc
-index 2353ed14e..12eb382c2 100644
+index 2353ed14e..1ecc998a5 100644
 --- a/src/xenia/cpu/xex_module.cc
 +++ b/src/xenia/cpu/xex_module.cc
-@@ -1464,6 +1464,11 @@ void XexInfoCache::Init(XexModule* xexmod) {
+@@ -53,6 +53,17 @@ DEFINE_bool(
+     "CPU");
+ UPDATE_from_bool(enable_early_precompilation, 2026, 9, 14, 13, false);
+ 
++// PS5X360E (alpha.90): a module the game loads later (a DLL: NFS The Run's
++// main module after the logo) had only its discovered functions compiled
++// ahead; its entry point then ran its static initializers, compiling each
++// function they reached on the one guest CPU that loads it. On, they and what
++// they call are compiled ahead too, in parallel, as for the executable
++// (Emulator::CompleteLaunch).
++DEFINE_bool(precompile_module_initializers, false,
++            "Compile the static initializers of a module the game loads (and "
++            "what they call) ahead, in parallel, before its entry point runs.",
++            "CPU");
++
+ DECLARE_bool(allow_plugins);
+ 
+ DECLARE_bool(disable_context_promotion);
+@@ -1211,6 +1222,9 @@ void XexModule::Precompile() {
+   // Emulator::CompleteLaunch compiles the executable after plugins patch it.
+   if (!is_executable()) {
+     PrecompileDiscoveredFunctions();
++    if (cvars::precompile_module_initializers) {
++      PrecompileStaticInitializers();
++    }
+   }
+ }
+ bool XexModule::Unload() {
+@@ -1464,6 +1478,11 @@ void XexInfoCache::Init(XexModule* xexmod) {
  
    infocache_path.append(xexmod->image_sha_str_);
  
@@ -1883,7 +2152,7 @@ index 2353ed14e..12eb382c2 100644
    std::filesystem::create_directories(infocache_path);
    infocache_path.append("executable_addr_flags.bin");
  
-@@ -1505,6 +1510,11 @@ void XexInfoCache::Init(XexModule* xexmod) {
+@@ -1505,6 +1524,11 @@ void XexInfoCache::Init(XexModule* xexmod) {
        try_open();
      }
    }
@@ -1895,6 +2164,67 @@ index 2353ed14e..12eb382c2 100644
  }
  InfoCacheFlags* XexModule::GetInstructionAddressFlags(uint32_t guest_addr) {
    if (guest_addr < low_address_ || guest_addr > high_address_) {
+@@ -1526,11 +1550,30 @@ void XexModule::PrecompileDiscoveredFunctions() {
+                                 return !ContainsAddress(address);
+                               }),
+                others.end());
++  // PS5X360E (alpha.90): the analysis and the compiling apart, and how much
++  // compiling the workers did between them (wall time against summed time
++  // says how well it ran in parallel).
++  const auto analyzed_time = std::chrono::steady_clock::now();
++  const size_t found = others.size();
++  const Processor::CompileTotals before = processor_->compile_totals();
+   size_t compiled = processor_->ResolveFunctionsInParallel(std::move(others));
++  const Processor::CompileTotals after = processor_->compile_totals();
+   auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+       std::chrono::steady_clock::now() - start_time);
+   XELOGI("Precompiled {} discovered functions in {} ms", compiled,
+          elapsed.count());
++  XELOGW(
++      "Module: {}: {} functions found by analysis in {} ms; compiled ahead in "
++      "{} ms ({} new, {:.0f} ms of compiling summed over the workers)",
++      name(), found,
++      std::chrono::duration_cast<std::chrono::milliseconds>(analyzed_time -
++                                                            start_time)
++          .count(),
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now() - analyzed_time)
++          .count(),
++      after.ahead_functions - before.ahead_functions,
++      double(after.ahead_ns - before.ahead_ns) / 1e6);
+ }
+ void XexModule::PrecompileKnownFunctions() {
+   if (!cvars::enable_early_precompilation) {
+@@ -1682,9 +1725,13 @@ void XexModule::PrecompileStaticInitializers() {
+   auto start_time = std::chrono::steady_clock::now();
+   std::vector<uint32_t> initializers = FindStaticInitializers();
+   if (initializers.empty()) {
++    // PS5X360E (alpha.90): said, as a module's may not be found.
++    XELOGW("Module: {}: no static initializers found to compile ahead",
++           name());
+     return;
+   }
+   size_t initializer_count = initializers.size();
++  const Processor::CompileTotals before = processor_->compile_totals();
+ 
+   // Lazy compiles during static init can reorder the threads it starts.
+   auto add_callees = [this](Function* function, std::vector<uint32_t>& found) {
+@@ -1715,6 +1762,15 @@ void XexModule::PrecompileStaticInitializers() {
+   XELOGI(
+       "Precompiled {} static initializers and callees ({} functions) in {} ms",
+       initializer_count, compiled, elapsed.count());
++  // PS5X360E (alpha.90): in the normal log.
++  const Processor::CompileTotals after = processor_->compile_totals();
++  XELOGW(
++      "Module: {}: {} static initializers and what they call ({} functions, {} "
++      "new) compiled ahead in {} ms ({:.0f} ms of compiling summed over the "
++      "workers)",
++      name(), initializer_count, compiled,
++      after.ahead_functions - before.ahead_functions, elapsed.count(),
++      double(after.ahead_ns - before.ahead_ns) / 1e6);
+ }
+ 
+ std::vector<uint32_t> XexModule::PreanalyzeCode() {
 diff --git a/src/xenia/cpu/xex_module.h b/src/xenia/cpu/xex_module.h
 index 36156c80c..6c120eda9 100644
 --- a/src/xenia/cpu/xex_module.h
@@ -9028,7 +9358,7 @@ index 54cab574f..035a1b2c4 100644
  
  #endif  // XENIA_KERNEL_KERNEL_FLAGS_H_
 diff --git a/src/xenia/kernel/kernel_state.cc b/src/xenia/kernel/kernel_state.cc
-index c6895e607..3b66cffa2 100644
+index c6895e607..66a286f61 100644
 --- a/src/xenia/kernel/kernel_state.cc
 +++ b/src/xenia/kernel/kernel_state.cc
 @@ -14,6 +14,7 @@
@@ -9177,7 +9507,29 @@ index c6895e607..3b66cffa2 100644
  
    if (module->is_dll_module() && module->entry_point() && call_entry) {
      // Call DllMain(DLL_PROCESS_ATTACH):
-@@ -791,7 +843,8 @@ X_RESULT KernelState::ApplyTitleUpdate(
+@@ -763,9 +815,21 @@ X_RESULT KernelState::FinishLoadingUserModule(
+ 
+     module->is_attached_ = true;
+ 
++    // Xbox360PS5 (alpha.90): how long the entry point (the module's static
++    // initializers) ran, and the guest code compiled on demand meanwhile (by
++    // it, mostly; other guest threads compile too).
++    const uint64_t entry_start_ms = Clock::QueryHostUptimeMillis();
++    const cpu::Processor::CompileTotals before = processor()->compile_totals();
+     auto thread_state = XThread::GetCurrentThread()->thread_state();
+     processor()->Execute(thread_state, module->entry_point(), args,
+                          xe::countof(args));
++    const cpu::Processor::CompileTotals after = processor()->compile_totals();
++    XELOGW(
++        "Module: {}'s entry point ran in {} ms; {} functions were compiled on "
++        "demand meanwhile ({:.0f} ms)",
++        module->name(), Clock::QueryHostUptimeMillis() - entry_start_ms,
++        after.on_demand_functions - before.on_demand_functions,
++        double(after.on_demand_ns - before.on_demand_ns) / 1e6);
+   }
+   return result;
+ }
+@@ -791,7 +855,8 @@ X_RESULT KernelState::ApplyTitleUpdate(
        XELOGW(
            "Skipping incompatible title update for {} due to signature mismatch",
            title_module->name());
@@ -9187,7 +9539,7 @@ index c6895e607..3b66cffa2 100644
          emulator_->display_window()->app_context().CallInUIThread([&]() {
            new xe::ui::HostNotificationWindow(
                emulator_->imgui_drawer(), "Warning!",
-@@ -809,7 +862,7 @@ X_RESULT KernelState::ApplyTitleUpdate(
+@@ -809,7 +874,7 @@ X_RESULT KernelState::ApplyTitleUpdate(
  
      // First module that is loaded is always main executable. That way we can
      // prevent random message spam in case of loading/unloading.
@@ -16665,10 +17017,10 @@ index 000000000..fb2b12e0f
 +}  // namespace ps5x360::framegen
 diff --git a/src/xenia/ui/vulkan/framegen/framegen_config.hpp b/src/xenia/ui/vulkan/framegen/framegen_config.hpp
 new file mode 100644
-index 000000000..60a7b26c3
+index 000000000..f5126ac78
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/framegen_config.hpp
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,175 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// The frame generation settings file (/app0/framegen.conf), shared by the launcher (which
 +// writes it), the presenter (which reads it once, before the swapchain) and the host test.
@@ -16691,12 +17043,20 @@ index 000000000..60a7b26c3
 +// With lines 2 and 3 missing, the settings are the ones of the builds before modes: one
 +// generated picture between two of the game's, on the 60 Hz output.
 +#pragma once
++#include <atomic>
 +#include <algorithm>
 +#include <cstdint>
 +#include <cstring>
 +#include <string>
 +
 +namespace ps5x360::framegen {
++// PS5X360E (alpha.76): frame generation on a smaller copy of the game's
++// picture when it is taller than this (0: the picture's own size). The game's
++// own frames are still shown at full size; the generated ones are made at this
++// height and enlarged. Set live from the settings (Video > Frame generation
++// size), read by the presenter at each new frame.
++inline std::atomic<uint32_t> reduced_height{0};
++
 +struct Config {
 +  bool valid = false;        // line 1 is one of its two exact forms
 +  bool enabled = false;      // line 1 is ps5_frame_interpolation=true
@@ -17100,10 +17460,10 @@ index 000000000..b78936006
 +}
 diff --git a/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp b/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp
 new file mode 100644
-index 000000000..45de8c918
+index 000000000..3d75c0fac
 --- /dev/null
 +++ b/src/xenia/ui/vulkan/framegen/presenter_sidecar.hpp
-@@ -0,0 +1,460 @@
+@@ -0,0 +1,605 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Included in exactly one presenter translation unit. No frozen class members.
 +#pragma once
@@ -17195,6 +17555,14 @@ index 000000000..45de8c918
 +  VkDescriptorSet sampled[3]{};
 +  PFN_vkCmdCopyImage copy_image = nullptr;
 +  VkExtent2D extent{};
++  // alpha.76: frame generation on a smaller copy. `extent` is then the
++  // interpolator's size and `source_extent` the game's picture; the game's
++  // frames are copied whole into full[0] / full[1] and the generated picture is
++  // enlarged into full[2], which the paint samples as it would the snapshots.
++  VkExtent2D source_extent{};
++  bool reduced = false, full_layout_pending = false;
++  Image full[3]{};
++  uint32_t reduced_logged = UINT32_MAX;
 +  uint32_t current = 0;
 +  bool interpolation_history = false;
 +  bool history = false, initialized = false, failed = false;
@@ -17396,9 +17764,16 @@ index 000000000..45de8c918
 +    if (pool) f.vkDestroyDescriptorPool(d, pool, nullptr);
 +    pool = {}; for (auto& set : sampled) set = {};
 +    for (auto& i : images) i = {}; // Owned by the interpolator.
++    for (auto& i : full) {
++      if (i.view) f.vkDestroyImageView(d, i.view, nullptr);
++      if (i.image) f.vkDestroyImage(d, i.image, nullptr);
++      if (i.memory) f.vkFreeMemory(d, i.memory, nullptr);
++      i = {};
++    }
++    reduced = full_layout_pending = false;
 +    interpolation_history = initialized = history = false; serial = 0; current = 0;
 +    pictures = 0; acquire_pending = false;
-+    extent = {};
++    extent = {}; source_extent = {};
 +  }
 +  ~FramegenSidecar() {
 +    if (paints || enabled_logged) {
@@ -17413,10 +17788,19 @@ index 000000000..45de8c918
 +  bool Prepare(VulkanDevice* dev, VkExtent2D size, VkFormat source_format,
 +               VkDescriptorSetLayout sampled_layout) {
 +    if (failed) return false;
-+    if (initialized && size.width == extent.width && size.height == extent.height) return true;
++    // alpha.76: the size to generate at.
++    VkExtent2D work = size;
++    const uint32_t want = ps5x360::framegen::reduced_height.load(std::memory_order_relaxed);
++    if (want && size.height > want) {
++      work.height = want;
++      work.width = std::max<uint32_t>(2, uint32_t((uint64_t(size.width) * want / size.height + 1) & ~1ull));
++    }
++    if (initialized && size.width == source_extent.width && size.height == source_extent.height &&
++        work.width == extent.width && work.height == extent.height) return true;
 +    // Observe already qualified the new extent. Recreate visual history without
 +    // discarding that producer cadence. Failure/teardown still resets pacing.
-+    DestroyImages(false); device = dev; extent = size;
++    DestroyImages(false); device = dev; extent = work; source_extent = size;
++    reduced = work.width != size.width || work.height != size.height;
 +    auto fail = [&] { DestroyImages(); failed = true; return false; };
 +    // Copy requires identical source/snapshot formats; no reinterpretation.
 +    if (source_format != VK_FORMAT_A2B10G10R10_UNORM_PACK32) return fail();
@@ -17434,6 +17818,52 @@ index 000000000..45de8c918
 +        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
 +    if ((properties.optimalTilingFeatures & output_required) != output_required) return fail();
 +    auto d = dev->device(); const auto& f = dev->functions();
++    if (reduced) {
++      // Linear blits down (the game's format) and up (the generated picture's).
++      VkFormatProperties source_blit{}, output_blit{};
++      dev->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
++          dev->physical_device(), source_format, &source_blit);
++      dev->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
++          dev->physical_device(), ps5::framegen::interpolator::k_format, &output_blit);
++      const auto blit = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
++                        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
++      if ((source_blit.optimalTilingFeatures & blit) != blit ||
++          (output_blit.optimalTilingFeatures & blit) != blit) {
++        XELOGW("Framegen: no linear blits for a smaller copy; generating at {}x{}", size.width,
++               size.height);
++        extent = size;
++        reduced = false;
++      }
++    }
++    if (reduced) {
++      for (uint32_t n = 0; n < 3; ++n) {
++        VkImageCreateInfo info{};
++        info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
++        info.imageType = VK_IMAGE_TYPE_2D;
++        info.format = n < 2 ? source_format : ps5::framegen::interpolator::k_format;
++        info.extent = {size.width, size.height, 1};
++        info.mipLevels = 1;
++        info.arrayLayers = 1;
++        info.samples = VK_SAMPLE_COUNT_1_BIT;
++        info.tiling = VK_IMAGE_TILING_OPTIMAL;
++        info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
++        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
++        info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
++        if (!ui::vulkan::util::CreateDedicatedAllocationImage(
++                dev, info, ui::vulkan::util::MemoryPurpose::kDeviceLocal, full[n].image,
++                full[n].memory)) {
++          return fail();
++        }
++        VkImageViewCreateInfo view{};
++        view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
++        view.image = full[n].image;
++        view.viewType = VK_IMAGE_VIEW_TYPE_2D;
++        view.format = info.format;
++        view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
++        if (f.vkCreateImageView(d, &view, nullptr, &full[n].view) != VK_SUCCESS) return fail();
++      }
++      full_layout_pending = true;
++    }
 +    const auto& ifn = dev->vulkan_instance()->functions();
 +    auto instance = dev->vulkan_instance()->instance();
 +    auto loader = reinterpret_cast<PFN_vkGetDeviceProcAddr>(ifn.vkGetInstanceProcAddr(instance,"vkGetDeviceProcAddr"));
@@ -17441,14 +17871,20 @@ index 000000000..45de8c918
 +    copy_image = reinterpret_cast<PFN_vkCmdCopyImage>(loader(d,"vkCmdCopyImage"));
 +    if (!copy_image) return fail();
 +    std::string error;
-+    if (!interpolation.create(dev->physical_device(),d,size.width,size.height,error,source_format)) {
++    if (!interpolation.create(dev->physical_device(),d,extent.width,extent.height,error,source_format)) {
 +      XELOGE("Framegen: Sword interpolator setup failed: {}",error);
 +      return fail();
 +    }
 +    for (unsigned i=0;i<2;++i) { images[i].image=interpolation.snapshot_image(i); images[i].view=interpolation.snapshot_view(i); }
 +    images[2].image=interpolation.output_image(); images[2].view=interpolation.output_view();
-+    XELOGW("Framegen: Sword FSR3 ready for {}x{} (6436210, {})",size.width,size.height,
-+           ps5x360::framegen::ModeText(pacing.Multiplier()));
++    if (reduced) {
++      XELOGW("Framegen: Sword FSR3 ready for {}x{}, from the game's {}x{} (6436210, {})",
++             extent.width, extent.height, size.width, size.height,
++             ps5x360::framegen::ModeText(pacing.Multiplier()));
++    } else {
++      XELOGW("Framegen: Sword FSR3 ready for {}x{} (6436210, {})",size.width,size.height,
++             ps5x360::framegen::ModeText(pacing.Multiplier()));
++    }
 +    VkDescriptorPoolSize counts[] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3},
 +                                    {VK_DESCRIPTOR_TYPE_SAMPLER, 3}};
 +    VkDescriptorPoolCreateInfo p{}; p.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -17460,7 +17896,8 @@ index 000000000..45de8c918
 +    if (f.vkAllocateDescriptorSets(d, &a, sampled) != VK_SUCCESS) return fail();
 +    VkDescriptorImageInfo info[3]{}; VkWriteDescriptorSet writes[3]{};
 +    for (uint32_t n=0;n<3;++n) {
-+      info[n].imageView = images[n].view; info[n].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
++      info[n].imageView = reduced ? full[n].view : images[n].view;
++      info[n].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 +      auto& w=writes[n];w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 +      w.dstSet = sampled[n]; w.dstBinding = 0; w.descriptorCount = 1;
 +      w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; w.pImageInfo = &info[n];
@@ -17491,11 +17928,43 @@ index 000000000..45de8c918
 +    f.vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
 +        VK_PIPELINE_STAGE_TRANSFER_BIT|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 +        0,1,&reuse,0,nullptr,0,nullptr);
-+    VkImageCopy copy{}; copy.srcSubresource = copy.dstSubresource =
-+        {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
-+    copy.extent = {extent.width,extent.height,1};
-+    copy_image(command,source,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-+                    images[next].image,VK_IMAGE_LAYOUT_GENERAL,1,&copy);
++    if (full_layout_pending) {
++      // The whole-size images, once: undefined to general.
++      VkImageMemoryBarrier general[3]{};
++      for (uint32_t n = 0; n < 3; ++n) {
++        general[n].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
++        general[n].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
++        general[n].newLayout = VK_IMAGE_LAYOUT_GENERAL;
++        general[n].srcQueueFamilyIndex = general[n].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++        general[n].image = full[n].image;
++        general[n].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
++        general[n].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
++      }
++      f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
++                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 3, general);
++      full_layout_pending = false;
++    }
++    if (reduced) {
++      // The interpolator's frame: the game's picture made smaller.
++      VkImageBlit down{};
++      down.srcSubresource = down.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
++      down.srcOffsets[1] = {int32_t(source_extent.width), int32_t(source_extent.height), 1};
++      down.dstOffsets[1] = {int32_t(extent.width), int32_t(extent.height), 1};
++      f.vkCmdBlitImage(command, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, images[next].image,
++                       VK_IMAGE_LAYOUT_GENERAL, 1, &down, VK_FILTER_LINEAR);
++      // The game's frame as shown: whole.
++      VkImageCopy whole{}; whole.srcSubresource = whole.dstSubresource =
++          {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
++      whole.extent = {source_extent.width, source_extent.height, 1};
++      copy_image(command,source,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
++                 full[next].image,VK_IMAGE_LAYOUT_GENERAL,1,&whole);
++    } else {
++      VkImageCopy copy{}; copy.srcSubresource = copy.dstSubresource =
++          {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
++      copy.extent = {extent.width,extent.height,1};
++      copy_image(command,source,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
++                      images[next].image,VK_IMAGE_LAYOUT_GENERAL,1,&copy);
++    }
 +    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 +    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 +    b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -17517,6 +17986,7 @@ index 000000000..45de8c918
 +                                  : generate ? std::clamp<uint32_t>(pacing.Generated(), 1, 3) : 1);
 +      made = interpolation.record(command, !interpolation_history);
 +      interpolation_history = true;
++      if (made && reduced) EnlargeGenerated(command);
 +    } else { interpolation_history = false; }
 +    const bool generated = generate && history && made;
 +    pictures = generated ? interpolation.generated() : 0;
@@ -17539,7 +18009,42 @@ index 000000000..45de8c918
 +    reuse.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 +    device->functions().vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
 +        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&reuse,0,nullptr,0,nullptr);
-+    return interpolation.interpolate_next(command, picture);
++    if (!interpolation.interpolate_next(command, picture)) return false;
++    if (reduced) {
++      // The paint of the picture before it reads full[2]: order the write after it.
++      VkMemoryBarrier read{}; read.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
++      read.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
++      read.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++      device->functions().vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
++          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &read, 0, nullptr, 0, nullptr);
++      EnlargeGenerated(command);
++    }
++    return true;
++  }
++  // What the paint samples: the whole-size copies with a smaller interpolator.
++  VkImageView PaintView(uint32_t picture) const {
++    return reduced ? full[picture].view : images[picture].view;
++  }
++  VkExtent2D PaintExtent() const { return reduced ? source_extent : extent; }
++  // alpha.76: the generated picture, made smaller, enlarged into full[2] for the paint.
++  void EnlargeGenerated(VkCommandBuffer command) {
++    const auto& f = device->functions();
++    VkMemoryBarrier made{}; made.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
++    made.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
++    made.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
++    f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
++        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &made, 0, nullptr, 0, nullptr);
++    VkImageBlit up{};
++    up.srcSubresource = up.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
++    up.srcOffsets[1] = {int32_t(extent.width), int32_t(extent.height), 1};
++    up.dstOffsets[1] = {int32_t(source_extent.width), int32_t(source_extent.height), 1};
++    f.vkCmdBlitImage(command, images[2].image, VK_IMAGE_LAYOUT_GENERAL, full[2].image,
++                     VK_IMAGE_LAYOUT_GENERAL, 1, &up, VK_FILTER_LINEAR);
++    VkMemoryBarrier enlarged{}; enlarged.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
++    enlarged.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++    enlarged.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
++    f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
++        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &enlarged, 0, nullptr, 0, nullptr);
 +  }
 +};
 +std::mutex framegen_sidecars_mutex;
@@ -55141,7 +55646,7 @@ index fd3e34d1c..ec38ab067 100644
      bool ext_KHR_xcb_surface = false;  // #6
  #endif
 diff --git a/src/xenia/ui/vulkan/vulkan_presenter.cc b/src/xenia/ui/vulkan/vulkan_presenter.cc
-index 9cf803fd6..5f6f1aaea 100644
+index 9cf803fd6..902af5d7e 100644
 --- a/src/xenia/ui/vulkan/vulkan_presenter.cc
 +++ b/src/xenia/ui/vulkan/vulkan_presenter.cc
 @@ -17,6 +17,10 @@
@@ -55582,8 +56087,8 @@ index 9cf803fd6..5f6f1aaea 100644
 +            snapshot_ready
 +                ? PaintSmaa(draw_command_buffer,
 +                            kGuestOutputMailboxSize + framegen_picture,
-+                            fg->images[framegen_picture].view,
-+                            VK_IMAGE_LAYOUT_GENERAL, fg->extent,
++                            fg->PaintView(framegen_picture),
++                            VK_IMAGE_LAYOUT_GENERAL, fg->PaintExtent(),
 +                            current_paint_submission_index,
 +                            guest_output_paint_config.GetSmaa(),
 +                            guest_output_paint_config.GetFxaa(),

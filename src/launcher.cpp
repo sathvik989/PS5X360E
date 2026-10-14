@@ -11,6 +11,7 @@
 #include "xbox360ps5/canary_audio.hpp"
 #include "xbox360ps5/gpu_diagnostics.hpp"
 #include "xenia/base/cvar.h"
+#include "xenia/base/platform.h"  // xe::amd64::InitFeatureFlags
 #include "xenia/base/logging.h"
 #include <algorithm>
 #include <cctype>
@@ -49,6 +50,8 @@ DECLARE_bool(content_delete_in_background);
 DECLARE_bool(module_load_offload);
 DECLARE_uint32(wait_reg_mem_spin_us);
 DECLARE_bool(spin_hint_yields);
+DECLARE_bool(x64_ps5_zen2_features);
+DECLARE_bool(precompile_module_initializers);
 DECLARE_uint32(kernel_slow_call_ms);
 DECLARE_bool(guest_scheduler_stats);
 DECLARE_bool(texture_load_scaled_direct_copy);
@@ -272,6 +275,10 @@ const std::vector<Option>& Options() {
       {"output_4k", &S::output_4k, 0, W::start, 1, true, "Saída de vídeo do jogo",
        "Tamanho da imagem enviada à TV durante o jogo. 4K: a imagem do jogo chega à tela em 3840x2160, e o 2x e o 3x mostram todo o detalhe. 1080p: como antes, a TV amplia. Os menus continuam em 1080p.",
        {"1080p", "4K"}},
+      // alpha.76, again in alpha.90 (alpha.81 went back to an older core).
+      {"framegen_size", &S::framegen_size, 0, W::live, 0, true, "Tamanho da geração de quadros",
+       "Os quadros gerados são feitos numa cópia menor da imagem do jogo e ampliados; os quadros do próprio jogo continuam no tamanho cheio. Em 3x, 1440p custa ao vídeo cerca de um quarto do tamanho cheio. Muda na hora.",
+       {"Imagem do jogo", "1440p", "1080p"}},
       {"frame_pacing", &S::frame_pacing, 0, W::live, 0, true, "Ritmo dos quadros",
        "Para jogos que rodam a 30 quadros: mostra cada quadro por exatamente duas atualizações da tela, para um movimento uniforme sem trancos. Jogos a 60 quadros ficam limitados a 30; deixe em Automático para eles.",
        {"Automático", "30 FPS uniforme"}},
@@ -298,6 +305,12 @@ const std::vector<Option>& Options() {
        off_on},
       {"gpu_waits", &S::gpu_waits, 1, W::start, 0, true, "Esperas rápidas do vídeo (teste)",
        "Quando o emulador espera o vídeo do PS5 ou o jogo, olha de novo mais cedo: o driver dorme no máximo 0,1 ms entre olhadas (em vez de 1 ms) e lê o relógio sem chamar o sistema, e o processamento de vídeo vigia por 0,2 ms a memória que o jogo vai escrever antes de dormir. Usa um pouco mais de CPU enquanto espera. Teste: compare a mesma corrida ligado e desligado; o registro mostra as esperas.",
+       off_on},
+      {"jit_zen2", &S::jit_zen2, 1, W::start, 0, true, "Instruções do Zen 2 no recompilador (teste)",
+       "O recompilador traduz o código do Xbox 360 para o processador do PS5 e escolhe as instruções que usa perguntando ao processador na abertura. Ligado, usa o conjunto do Zen 2 do PS5 (AVX2, FMA, BMI2, MOVBE...) mesmo que o sistema não o informe; o emulador em si já é compilado para ele. O registro mostra o que o processador informou e o que está em uso. Teste: compare a mesma corrida ligado e desligado.",
+       off_on},
+      {"precompile_initializers", &S::precompile_initializers, 1, W::start, 0, true, "Compilar antes a abertura dos módulos (teste)",
+       "Quando o jogo carrega uma parte do seu código (no NFS The Run, o módulo principal depois do logo), a abertura dessa parte rodava enquanto era compilada aos poucos, numa só CPU emulada. Ligado, ela e o que ela chama são compilados antes, em várias CPUs do PS5 ao mesmo tempo. Teste: compare no registro o tempo do ponto de entrada do módulo ligado e desligado.",
        off_on},
       {"submit_thread", &S::submit_thread, 1, W::start, 1, true, "Envio em segundo plano",
        "Um segundo núcleo grava os comandos de vídeo de cada lote e os entrega ao driver, enquanto o processamento de vídeo segue com os próximos desenhos. Desligue para comparar: tudo volta a ser feito num só núcleo, como até a 0.2-alpha.51.",
@@ -563,6 +576,24 @@ void Settings::Apply() const {
   cvars::wait_reg_mem_spin_us = gpu_waits ? 200 : 0;
   // alpha.89: read as guest code is compiled, so from the next start.
   cvars::spin_hint_yields = spin_yields != 0;
+  // alpha.90: the recompiler's instruction set, worked out again here the
+  // first time (a start option; the recompiler takes it when it starts).
+  cvars::x64_ps5_zen2_features = jit_zen2 != 0;
+  {
+    static bool features_set = false;
+    if (!features_set) {
+      features_set = true;
+      xe::amd64::InitFeatureFlags();
+    }
+  }
+  // alpha.90: read at each module the game loads.
+  cvars::precompile_module_initializers = precompile_initializers != 0;
+  // alpha.76 (again in alpha.90): the size frame generation works at, read by
+  // the presenter at each new frame.
+  {
+    static constexpr uint32_t kFramegenHeights[] = {0, 1440, 1080};
+    ps5x360::framegen::reduced_height.store(kFramegenHeights[std::clamp(framegen_size, 0, 2)]);
+  }
   // alpha.89: kernel calls that keep their guest CPU 50 ms or more, logged
   // with Diagnostics.
   cvars::kernel_slow_call_ms = diagnostics ? 50 : 0;

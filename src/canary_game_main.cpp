@@ -2390,6 +2390,24 @@ int main(int argc, char** argv) {
                          xbox360ps5::DriverWaitTuning() ? ", Faster GPU waits on" : "");
                 }
               }
+              // alpha.90: guest code compiled in the same half minute: on
+              // demand (a game thread calling code not yet compiled waits for
+              // it, which a race shows as a hitch) and ahead (module loads).
+              {
+                static xe::cpu::Processor::CompileTotals last{};
+                const xe::cpu::Processor::CompileTotals totals = emulator.processor()->compile_totals();
+                const uint64_t longest_ns = emulator.processor()->TakeLongestOnDemandCompileNs();
+                if (totals.on_demand_functions != last.on_demand_functions ||
+                    totals.ahead_functions != last.ahead_functions) {
+                  XELOGW("Performance: guest code compiled on demand: {} functions ({:.1f} ms, longest {:.1f} ms); "
+                         "ahead: {} functions ({:.0f} ms summed over the workers)",
+                         totals.on_demand_functions - last.on_demand_functions,
+                         double(totals.on_demand_ns - last.on_demand_ns) / 1e6, double(longest_ns) / 1e6,
+                         totals.ahead_functions - last.ahead_functions,
+                         double(totals.ahead_ns - last.ahead_ns) / 1e6);
+                }
+                last = totals;
+              }
               // Draws made while their shader was still being compiled show
               // a stand-in: brief gaps in a frame, lasting ones in what a game
               // draws once and keeps.

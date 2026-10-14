@@ -3,6 +3,37 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.90+0.6.0 (PS5X360E, on Xenia Edge)
+
+The first build of Phase F, which fits the emulator to the PS5's own CPU.
+
+- **The emulator is already built for the PS5's CPU.** The PS5 target compiles it for Zen 2:
+  the build that runs uses AVX2, FMA, BMI1/BMI2, LZCNT, MOVBE and F16C instructions thousands of
+  times. Nothing to change there.
+- **Test: Performance > Zen 2 instructions in the recompiler** (off by default). The
+  recompiler, which translates the Xbox 360's code as the game runs, picks its instructions by
+  asking the CPU at start-up, and on the console the system answers that question. On, it uses
+  the PS5's Zen 2 set whatever the answer. The log now always has a "Recompiler CPU features"
+  line: what the CPU reported and what is in use.
+- **Test: Performance > Compile module start-up code ahead** (off by default). NFS The Run's
+  main module, loaded after the logo, held the game for 1.26 s (alpha.89 log): 0.16 s to read
+  and load it, 0.59 s compiling the code its analysis found, and about 0.5 s more, most likely
+  its start-up code (static initializers) running and compiling each function it reached on the
+  one emulated CPU that loads it. On, that start-up code and what it calls are compiled ahead
+  too, on several CPUs at once, as Xenia does for a game's executable.
+- **Fixed thread layout: compiling ahead gets every CPU** but the GPU thread's and the sound's.
+  Under the layout its 16 workers shared five CPUs, which slowed module loads.
+- **Back from alpha.76: Video > Frame generation size** (Game picture, 1440p, 1080p; changes at
+  once), lost when alpha.81 went back to an older core. At 3x frame generation on the whole
+  3840x2160 picture cost about 10 ms of GPU time per generated frame; with a size chosen, the
+  generated frames are made from a smaller copy and enlarged, and the game's own frames are
+  still shown whole.
+- **Log**: each module load now shows the analysis, the compiling ahead (with the compiling time
+  summed over the workers, to set against the wall time) and how long its entry point ran, with
+  the functions compiled on demand meanwhile. The half-minute summary has a "guest code compiled"
+  line: functions compiled on demand (a game thread waits for each one) with the longest, and
+  ahead.
+
 ## 0.2-alpha.89+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Test: Performance > Give up the CPU in long spins** (off by default). A game thread waiting

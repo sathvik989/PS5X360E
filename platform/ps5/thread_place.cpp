@@ -60,7 +60,7 @@ pthread_t Of(void* thread) { return thread ? static_cast<pthread_t>(thread) : pt
 // thread spun for ever waiting for a thread that never ran). An emulated CPU
 // runs flat out, and the threads it makes (an I/O worker, a socket's) must be
 // able to start elsewhere and take their own place.
-enum class Role { kOther, kGuestCpu, kGpu, kSubmit, kPresent, kTiming, kAudio, kDispatch, kIo, kWorker };
+enum class Role { kOther, kGuestCpu, kGpu, kSubmit, kPresent, kTiming, kAudio, kDispatch, kIo, kWorker, kPrecompile };
 constexpr unsigned long long Cpu(int n) { return 1ull << n; }
 constexpr unsigned long long kGuestCpuCpus[6] = {Cpu(4), Cpu(6), Cpu(7), Cpu(8), Cpu(9), Cpu(10)};
 constexpr unsigned long long kOtherCpus = Cpu(0) | Cpu(1) | Cpu(12);
@@ -78,6 +78,11 @@ unsigned long long RoleCpus(Role role, int index) {
     // when the emulated CPUs wait: every CPU but theirs, the GPU thread's and
     // the sound's (a burst in play would otherwise cut the sound up).
     case Role::kWorker: return Cpu(0) | Cpu(1) | Cpu(3) | Cpu(5) | Cpu(12);
+    // alpha.90: compiling a module's code ahead, while the game waits for the
+    // module to load (NFS The Run's main module: 589 ms with the 16 workers on
+    // the five CPUs above, alpha.89): every CPU but the GPU thread's and the
+    // sound's, as before the layout.
+    case Role::kPrecompile: return kTitleCpus & ~(Cpu(2) | Cpu(11));
     default: return kOtherCpus;
   }
 }
@@ -92,6 +97,7 @@ const char* RoleName(Role role) {
     case Role::kDispatch: return "kernel dispatch";
     case Role::kIo: return "I/O";
     case Role::kWorker: return "compiling";
+    case Role::kPrecompile: return "compiling ahead";
     default: return "other";
   }
 }
@@ -112,8 +118,9 @@ Role RoleOf(const char* name, int* index) {
   if (Starts(name, "Kernel Dispatch")) return Role::kDispatch;
   if (Starts(name, "Guest I/O") || Starts(name, "Content trash") || Starts(name, "Logging Writer") ||
       Starts(name, "Shader Storage Writer")) return Role::kIo;
-  if (Starts(name, "Shader Translation") || Starts(name, "Shader Analysis") || Starts(name, "Vulkan Pipelines") ||
-      Starts(name, "Precompile ")) return Role::kWorker;
+  if (Starts(name, "Precompile ")) return Role::kPrecompile;
+  if (Starts(name, "Shader Translation") || Starts(name, "Shader Analysis") || Starts(name, "Vulkan Pipelines"))
+    return Role::kWorker;
   return Role::kOther;
 }
 
