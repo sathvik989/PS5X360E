@@ -3,6 +3,13 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.80+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **The GPU work breakdown is off unless asked for** (Performance > Measure GPU work by kind).
+  Since alpha.66 it wrote a GPU timestamp at every change between kinds of work, about 170,000
+  a second in a 2x race, in every game. Off, the GPU and the driver do what they did in
+  alpha.65; on, the log has the "GPU work ms/s" breakdown as before.
+
 ## 0.2-alpha.79+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **The three 3x test settings start again at their defaults** (Small effects: Game default,
