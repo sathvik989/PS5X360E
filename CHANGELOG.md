@@ -10,8 +10,8 @@ PS5X360 release it is built on.
   mounting it, writing its header and thumbnail) did their host file work while holding the
   kernel's global lock, which every guest thread takes to look up a handle; on the PS5's storage
   that work can take seconds, and the whole game waited with it. In NFS The Run, 16 of the 17
-  multi-second loading pauses logged since October 13 had the save thread in such a call, one
-  caught writing a save's header. On, only the bookkeeping of open packages stays under the lock,
+  multi-second loading pauses logged since October 13 involved the game's save thread, and one
+  caught it inside XamContentCreate writing a save's header. On, only the bookkeeping of open packages stays under the lock,
   and the file work runs outside it, on the I/O worker when a guest thread calls, so the other
   threads keep going. A content call over 50 ms is logged, with the thread and the mode.
 - **Test: Performance > Thread signals without lock** (off by default). Each event set or
