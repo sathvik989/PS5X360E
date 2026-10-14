@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.79+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **The three 3x test settings start again at their defaults** (Small effects: Game default,
+  Scaled texture offsets: On, Half pixel in upscaled copies: On): their saved values are not
+  read any more (new keys). A 2x run with all three changed showed stair-stepped, dotted panel
+  lines on the cars; Scaled texture offsets Off misplaces the samples of effects at 2x and 3x.
+- Found with alpha.78's render target log: NFS The Run draws into 640-pixel-wide 4x MSAA targets
+  (a 1280-wide picture as 640 pixels of four samples). The 3x faults come from these, as it is
+  the 640 cutoff that hides them.
+
 ## 0.2-alpha.78+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Withdrawn: alpha.74's 640-pixel small effects at 3x.** It kept parts of NFS The Run's main
