@@ -11,7 +11,6 @@
 #include "xenia/base/utf8.h"
 
 DECLARE_uint32(draw_resolution_scale_threshold);
-DECLARE_int32(draw_resolution_scale_x);
 #if XE_PLATFORM_PS5
 extern "C" int sceSystemServiceLoadExec(const char*, const char**);
 #endif
@@ -113,12 +112,12 @@ void LoadGameConfigs(const std::string& title_id) {
   // upscaled, so scenes were far darker than at 1x. Keeping targets up to 320
   // pixels wide native fixed it (user, alpha.39).
   const bool nfs_the_run = xe::utf8::lower_ascii(title_id) == "4541094a";
-  // At 3x (alpha.74) up to 640: with 320, a 640-wide effect image upscaled
-  // next to native ones drew shapes across the menus, blanked panels and made
-  // the HUD flicker; 640 also raced at 29-30 FPS instead of 22-25 (user,
-  // alpha.71-73). 2x keeps 320.
-  cvars::draw_resolution_scale_threshold =
-      nfs_the_run ? (cvars::draw_resolution_scale_x >= 3 ? 640 : 320) : 0;
+  // At 3x with 320 the menus show shapes, blank panels and HUD flicker
+  // (alpha.70-72); alpha.74 used 640 at 3x, withdrawn in alpha.78.
+  // alpha.78: back to 320 at 3x too. 640 kept the game's main scene at 1x
+  // where it is drawn in 640-pixel-wide strips (the car looked like "a PS1
+  // car" at 3x, user), which is also why it raced faster.
+  cvars::draw_resolution_scale_threshold = nfs_the_run ? 320 : 0;
   if (small_effects_choice == 1) cvars::draw_resolution_scale_threshold = 0;
   if (small_effects_choice == 2) cvars::draw_resolution_scale_threshold = 640;
   // alpha.72: the steps between, at EDRAM tile widths (80 pixels).

@@ -3,6 +3,17 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.78+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Withdrawn: alpha.74's 640-pixel small effects at 3x.** It kept parts of NFS The Run's main
+  scene at 1x where the game draws it in 640-pixel-wide strips: the car looked "like a PS1 car"
+  at 3x (user), and that is also why it raced faster. 3x is back to 320, like 2x.
+- **Small effects at native resolution (test) starts again at Game default**: its saved value
+  is not read any more (new key), as a 640 left on from the 3x tests also applied at 2x and
+  brought the same freezes there.
+- **Log**: the first 300 render targets a game draws into, with their width and whether they
+  stay at 1x ("Render target created: ...").
+
 ## 0.2-alpha.77+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **The car select and loading freezes at 3x**: alpha.73's hitch detail showed them to be the

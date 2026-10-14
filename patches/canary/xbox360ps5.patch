@@ -7715,7 +7715,7 @@ index bf2533069..b2ddc8261 100644
      Shutdown();
      return false;
 diff --git a/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc b/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
-index d32d11d28..4383632b7 100644
+index d32d11d28..7ff0a7582 100644
 --- a/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
 @@ -8,6 +8,9 @@
@@ -7740,17 +7740,27 @@ index d32d11d28..4383632b7 100644
    SCOPE_profile_cpu_f("gpu");
    written_address_out = 0;
    written_length_out = 0;
-@@ -1984,6 +1992,9 @@ uint32_t VulkanRenderTargetCache::GetMaxRenderTargetHeight() const {
+@@ -1984,6 +1992,19 @@ uint32_t VulkanRenderTargetCache::GetMaxRenderTargetHeight() const {
  RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(
      RenderTargetKey key) {
    SCOPE_profile_cpu_f("gpu");
 +#if XE_PLATFORM_PS5
 +  xbox360ps5::gpu_diag::HitchScope hitch_scope(xbox360ps5::gpu_diag::hitch_rt_create);
 +#endif
++  {
++    // PS5X360E (alpha.78): which render targets a game draws into, with their
++    // width, for the resolution scale thresholds. The first 300.
++    static uint32_t logged = 0;
++    if (logged < 300) {
++      ++logged;
++      XELOGW("Render target created: {}, {} pixels wide{}", key.GetDebugName(),
++             key.GetWidth(), key.scale_native ? " (kept at 1x)" : "");
++    }
++  }
    const ui::vulkan::VulkanDevice* const vulkan_device =
        command_processor_.GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
-@@ -2522,6 +2533,9 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+@@ -2522,6 +2543,9 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
      return pipeline_it->second[0] != VK_NULL_HANDLE ? pipeline_it->second.data()
                                                      : nullptr;
    }
@@ -7760,7 +7770,7 @@ index d32d11d28..4383632b7 100644
  
    const ui::vulkan::VulkanDevice* const vulkan_device =
        command_processor_.GetVulkanDevice();
-@@ -2796,7 +2810,12 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+@@ -2796,7 +2820,12 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
    pipeline_create_info.subpass = 0;
    pipeline_create_info.basePipelineHandle = VK_NULL_HANDLE;
    pipeline_create_info.basePipelineIndex = -1;
@@ -7774,7 +7784,7 @@ index d32d11d28..4383632b7 100644
                                      &pipeline_create_info, nullptr,
                                      &pipelines[0]) != VK_SUCCESS) {
      XELOGE(
-@@ -2821,7 +2840,7 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+@@ -2821,7 +2850,7 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
                : i;
        sample_id_specialization_constant = host_sample_index;
        sample_mask = uint32_t(1) << host_sample_index;
@@ -7783,7 +7793,7 @@ index d32d11d28..4383632b7 100644
                                          &pipeline_create_info, nullptr,
                                          &pipelines[i]) != VK_SUCCESS) {
          XELOGE(
-@@ -2837,6 +2856,7 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+@@ -2837,6 +2866,7 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
        }
      }
    }
@@ -7791,7 +7801,7 @@ index d32d11d28..4383632b7 100644
    return transfer_pipelines_.emplace(key, pipelines).first->second.data();
  }
  
-@@ -2845,6 +2865,11 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
+@@ -2845,6 +2875,11 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
      const std::vector<Transfer>* render_target_transfers,
      const uint64_t* render_target_resolve_clear_values,
      const Transfer::Rectangle* resolve_clear_rectangle) {
@@ -7803,7 +7813,7 @@ index d32d11d28..4383632b7 100644
    SCOPE_profile_cpu_f("gpu");
    assert_true(GetPath() == Path::kHostRenderTargets);
  
-@@ -3775,6 +3800,9 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(EdramDumpShaderKey key) {
+@@ -3775,6 +3810,9 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(EdramDumpShaderKey key) {
    if (pipeline_it != dump_pipelines_.end()) {
      return pipeline_it->second;
    }
@@ -7813,7 +7823,7 @@ index d32d11d28..4383632b7 100644
  
    EdramDumpShaderOptions shader_options;
    shader_options.spirv_version = spirv_version_;
-@@ -3800,7 +3828,11 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(EdramDumpShaderKey key) {
+@@ -3800,7 +3838,11 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(EdramDumpShaderKey key) {
    VkPipeline pipeline = ui::vulkan::util::CreateComputePipeline(
        command_processor_.GetVulkanDevice(),
        key.is_depth ? dump_pipeline_layout_depth_ : dump_pipeline_layout_color_,
