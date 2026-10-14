@@ -3,17 +3,30 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
-## Unreleased: 0.2-alpha.86 in progress (checkpoint, not built or tested yet)
+## 0.2-alpha.86+0.6.0 (PS5X360E, on Xenia Edge)
 
-- Test option, Performance > Save without stopping the game (content_io_unlocked, off by
-  default): a title's content calls (create, open, delete, the header and thumbnails) do their
-  host file work outside the global lock, on the I/O worker when a guest thread calls.
-- Test option, Performance > Thread signals without lock (guest_scheduler_fast_signal, off by
-  default): a signal to an object no fiber waits on skips the scheduler's lock (per-object
-  waiter counts).
-- Diagnostics: the guest scheduler's counters once a second, with the signals through and past
-  its lock; audio gaps longer than the 5.3 ms the port still holds counted apart as likely
-  heard; a disc image that fails to mount says which folder and where (GTA IV's did).
+- **Test: Performance > Save without stopping the game** (off by default). A title's content
+  calls (XamContentCreate and the like: checking, creating and deleting a save's folder,
+  mounting it, writing its header and thumbnail) did their host file work while holding the
+  kernel's global lock, which every guest thread takes to look up a handle; on the PS5's storage
+  that work can take seconds, and the whole game waited with it. In NFS The Run, 16 of the 17
+  multi-second loading pauses logged since October 13 had the save thread in such a call, one
+  caught writing a save's header. On, only the bookkeeping of open packages stays under the lock,
+  and the file work runs outside it, on the I/O worker when a guest thread calls, so the other
+  threads keep going. A content call over 50 ms is logged, with the thread and the mode.
+- **Test: Performance > Thread signals without lock** (off by default). Each event set or
+  semaphore release took the guest scheduler's lock, which every guest CPU also takes to switch
+  threads, to look for waiters to wake; with the guest clock without lock (alpha.85) it was the
+  largest wait left, a seventh to a quarter of some CPUs' samples. Every object now counts the
+  guest threads waiting on it (counted before a waiter looks at the object, uncounted after), so
+  on, a signal to an object nothing waits on skips the lock; a waiter registering at that moment
+  sees the signal itself. The choice is taken when the guest scheduler starts.
+- **Diagnostics**: the guest scheduler's counters once a second (re-polls, switches, offloaded
+  I/O), with the signals that went through its lock, those that woke a CPU and those to objects
+  nothing waited on. The 30-second audio line counts apart the gaps longer than the 5.3 ms the
+  audio port still holds, the ones likely heard; most gaps are shorter and covered.
+- A disc image that cannot be mounted says why: which folder lies past the end of the file or
+  could not be read, and the image's size (a damaged or incompletely copied image fails there).
 
 ## 0.2-alpha.85+0.6.0 (PS5X360E, on Xenia Edge)
 
