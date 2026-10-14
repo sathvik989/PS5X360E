@@ -3,6 +3,23 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.85+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Test: Performance > Guest clock without lock** (off by default). Guest threads read the
+  emulated console's clock all the time (mftb, KeQueryPerformanceCounter), and each read took one
+  shared lock to move a shared count forward: in a 2x race in NFS The Run, four of the six guest
+  CPUs spent a fifth to a third of their samples waiting on it (alpha.84 Diagnostics). On, the
+  guest tick count is worked out from the host's time-stamp counter and the tick ratio, from a
+  base set when the emulator sets its clock up, so a read writes nothing shared and waits for
+  nothing. The choice is taken at that setup (the option restarts the game).
+- **Diagnostics**: when the guest scheduler reports a CPU that kept one fiber for 2 s without
+  switching (behind the multi-second loading pauses: the sessions since alpha.71 that had those
+  pauses logged 5 to 11 of these reports each, the smooth ones none), the report says what that
+  fiber waits for if its wait blocks the host thread, and the log gets where that CPU's host
+  thread is ("PROFILE stall CPU n"): its instruction and the return addresses on its stack,
+  offsets in the build's ELF. The probes of the sampler, the stall look and the guide's Measure
+  performance take one lock, so they cannot answer each other's request.
+
 ## 0.2-alpha.84+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **System > Diagnostics** (off by default): the log gets, by itself, where the time goes.

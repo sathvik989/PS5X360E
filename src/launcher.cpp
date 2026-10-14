@@ -44,6 +44,7 @@ DECLARE_bool(async_shader_compilation);
 DECLARE_bool(vulkan_async_submission);
 DECLARE_bool(shared_memory_zero_copy);
 DECLARE_bool(rt_pipeline_warm_up);
+DECLARE_bool(clock_lock_free);
 DECLARE_bool(texture_load_scaled_direct_copy);
 DECLARE_bool(gpu_section_timing);
 DECLARE_uint32(apu_max_queued_frames);
@@ -249,6 +250,9 @@ const std::vector<Option>& Options() {
        off_on},
       {"rt_warm_up", &S::rt_warm_up, 1, W::start, 0, true, "Preparar conversões de imagem na abertura (teste)",
        "Guarda os programas que o vídeo usa para converter imagens do jogo e os prepara ao abrir o jogo, antes de serem pedidos. Sem isso cada um é feito na primeira vez que o jogo precisa, com travadas de até alguns segundos em menus e carregamentos (mais em 3x). A primeira sessão ainda faz a lista.",
+       off_on},
+      {"clock_lock_free", &S::clock_lock_free, 1, W::start, 0, true, "Relógio do console sem trava (teste)",
+       "As tarefas do jogo leem o relógio do console emulado o tempo todo, e cada leitura espera numa trava compartilhada: numa corrida do NFS The Run, quatro das seis CPUs emuladas passavam de um quinto a um terço do tempo esperando nela. Ligado, cada leitura calcula a hora sozinha, sem esperar. Teste: compare a mesma corrida ligado e desligado.",
        off_on},
       {"output_4k", &S::output_4k, 0, W::start, 1, true, "Saída de vídeo do jogo",
        "Tamanho da imagem enviada à TV durante o jogo. 4K: a imagem do jogo chega à tela em 3840x2160, e o 2x e o 3x mostram todo o detalhe. 1080p: como antes, a TV amplia. Os menus continuam em 1080p.",
@@ -526,6 +530,9 @@ void Settings::Apply() const {
   cvars::vulkan_async_submission = submit_thread != 0;
   cvars::shared_memory_zero_copy = zero_copy != 0;
   cvars::rt_pipeline_warm_up = rt_warm_up != 0;
+  // alpha.85: read when the emulator sets its clock up, so a change mid-game
+  // waits for the restart the option asks for.
+  cvars::clock_lock_free = clock_lock_free != 0;
   cvars::texture_load_scaled_direct_copy = rendered_texture_copy != 0;
   cvars::gpu_section_timing = diagnostics != 0;
   xbox360ps5::gpu_diag::detail_enabled = diagnostics != 0;

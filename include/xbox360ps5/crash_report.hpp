@@ -30,6 +30,14 @@ bool InGeneratedCode(unsigned long long address);
 // cpu: the CPU the thread was on when sampled.
 struct ThreadSample { unsigned long long rip = 0, caller = 0, caller2 = 0, slot = 0; int cpu = -1; bool in_title = false; };
 bool SampleThread(void* thread, ThreadSample* out);
+// alpha.85: where a thread is, deeper: its instruction (as in ThreadSample) and
+// up to 24 return addresses into the title found on its stack within 8 KiB of
+// the stack pointer, as offsets, nearest first. Some can be stale values left
+// in the frames; the chain reads in order. For the rare reports of a stall: it
+// reads the stack a word at a time through the kernel and takes about a
+// millisecond.
+struct ThreadStack { unsigned long long rip = 0, rsp = 0, frames[24] = {}; int count = 0, cpu = -1; bool in_title = false; };
+bool SampleThreadStack(void* thread, ThreadStack* out);
 // Whether every page of a range can be read, found without touching it: the
 // kernel answers an unreadable address with an error instead of a fault.
 bool HostReadable(const void* address, size_t bytes);

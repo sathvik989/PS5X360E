@@ -179,8 +179,33 @@ const char* probe_name = "";
 // outside the title's code and the generated code (a system library), the
 // nearest return address into the title: what called it.
 std::atomic<ThreadSample*> sample_out{nullptr};
+// alpha.85: a deeper look for a stall report (SampleThreadStack).
+std::atomic<ThreadStack*> stack_out{nullptr};
+// One probe at a time: the handler's answer goes to whichever request is set.
+std::mutex& ProbeMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
 void Probe(int, siginfo_t*, void* context) {
   const uint64_t* m = static_cast<const uint64_t*>(context) + 8;
+  if (ThreadStack* out = stack_out.load()) {
+    out->rip = m[20];
+    out->rsp = m[23];
+    out->cpu = sceKernelGetCurrentCpu();
+    out->in_title = InCode(m[20]);
+    if (out->in_title) out->rip -= CodeStart();
+    out->count = 0;
+    uint64_t last = 0;
+    for (uint64_t at = m[23] & ~uint64_t(7), end = at + 0x2000; at < end && out->count < 24; at += 8) {
+      uint64_t value;
+      if (!Copy(at, &value, sizeof(value))) break;
+      if (!InCode(value) || value == last) continue;
+      last = value;
+      out->frames[out->count++] = value - CodeStart();
+    }
+    probe_done = true;
+    return;
+  }
   if (ThreadSample* out = sample_out.load()) {
     out->rip = m[20];
     out->caller = out->caller2 = out->slot = 0;
@@ -257,9 +282,8 @@ bool SampleThread(void* thread, ThreadSample* out) {
   InstallProbe();
   if (!thread || !out) return false;
   // alpha.84: one sample at a time (the guide's Measure and the Diagnostics
-  // sampler share the probe's state).
-  static std::mutex sampling;
-  std::lock_guard<std::mutex> lock(sampling);
+  // sampler share the probe's state). alpha.85: with the stall probes too.
+  std::lock_guard<std::mutex> lock(ProbeMutex());
   sample_out = out;
   probe_done = false;
   bool taken = false;
@@ -272,9 +296,26 @@ bool SampleThread(void* thread, ThreadSample* out) {
   sample_out = nullptr;
   return taken;
 }
+bool SampleThreadStack(void* thread, ThreadStack* out) {
+  InstallProbe();
+  if (!thread || !out) return false;
+  std::lock_guard<std::mutex> lock(ProbeMutex());
+  stack_out = out;
+  probe_done = false;
+  bool taken = false;
+  if (!pthread_kill(reinterpret_cast<pthread_t>(thread), SIGUSR2)) {
+    // The handler reads up to a thousand words through the kernel.
+    for (int wait = 0; wait < 2000 && !probe_done; ++wait) usleep(50);
+    taken = probe_done;
+    if (!taken) for (int wait = 0; wait < 200 && !probe_done; ++wait) usleep(1000);
+  }
+  stack_out = nullptr;
+  return taken;
+}
 void ProbeThread(void* thread, const char* name) {
   InstallProbe();
   if (!thread) return;
+  std::lock_guard<std::mutex> lock(ProbeMutex());
   probe_name = name;
   probe_done = false;
   if (pthread_kill(reinterpret_cast<pthread_t>(thread), SIGUSR2)) return;

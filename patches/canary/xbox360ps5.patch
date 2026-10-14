@@ -196,10 +196,31 @@ index 7f3237a6f..543746130 100644
  
  class XmaDecoder {
 diff --git a/src/xenia/base/clock.cc b/src/xenia/base/clock.cc
-index 20d406f44..58232a880 100644
+index 20d406f44..1b705077f 100644
 --- a/src/xenia/base/clock.cc
 +++ b/src/xenia/base/clock.cc
-@@ -54,6 +54,13 @@ std::pair<uint64_t, uint64_t> guest_tick_ratio_ = std::make_pair(1, 1);
+@@ -9,6 +9,7 @@
+ 
+ #include "xenia/base/clock.h"
+ 
++#include <atomic>
+ #include <mutex>
+ 
+ #include "xenia/base/assert.h"
+@@ -30,6 +31,12 @@ DEFINE_bool(clock_source_raw, false,
+             "invariant TSC. "
+             "On a64, Use the CNTVCT_EL0 register as the time source",
+             "CPU");
++DEFINE_bool(clock_lock_free, false,
++            "Xbox360PS5: read the guest clock without a lock. The guest tick "
++            "count is worked out from the host tick count and the time scale "
++            "in force, so threads reading the clock at the same time never "
++            "wait for each other. Taken when the emulator sets the clock up.",
++            "CPU");
+ 
+ namespace xe {
+ 
+@@ -54,6 +61,13 @@ std::pair<uint64_t, uint64_t> guest_tick_ratio_ = std::make_pair(1, 1);
  
  // Native guest ticks.
  uint64_t last_guest_tick_count_ = 0;
@@ -213,15 +234,123 @@ index 20d406f44..58232a880 100644
  // Last sampled host tick count.
  uint64_t last_host_tick_count_ = Clock::QueryHostTickCount();
  
-@@ -88,6 +95,7 @@ void RecomputeGuestTickScalar() {
+@@ -63,6 +77,94 @@ using tick_mutex_type = std::mutex;
+ // std::mutex tick_mutex_;
+ static tick_mutex_type tick_mutex_;
+ 
++// Xbox360PS5 (alpha.85): clock_lock_free. Guest threads read the clock all the
++// time (mftb, KeQueryPerformanceCounter), and in UpdateGuestClock below each
++// read takes tick_mutex_ to move one shared count forward: in a race in NFS
++// The Run, four of the six guest CPUs spent a fifth to a third of their time
++// waiting on it. Here the
++// guest tick count is a plain function of the host tick count, from a base set
++// when the tick ratio changes (only as the emulator sets the clock up):
++//   guest = base guest + (host - base host) * first / second.
++// A reader writes nothing shared, so it neither waits nor moves a cache line
++// between cores. A sequence count (odd while the base is rewritten) keeps a
++// reader from mixing an old base with a new ratio. The choice is taken in
++// RecomputeGuestTickScalar, so a cvar changed mid-game cannot switch clocks.
++// Not kept up to date in this mode: last_guest_tick_count_, which only
++// inline_loadclock reads (off).
++static std::atomic<uint64_t> lock_free_base_host_{last_host_tick_count_};
++static std::atomic<uint64_t> lock_free_base_guest_{0};
++static std::atomic<uint64_t> lock_free_ratio_first_{1};
++static std::atomic<uint64_t> lock_free_ratio_second_{1};
++static std::atomic<uint32_t> lock_free_sequence_{0};
++static std::atomic<bool> lock_free_clock_{false};
++
++static uint64_t ScaleTicks(uint64_t ticks, uint64_t first, uint64_t second) {
++#if defined(__SIZEOF_INT128__)
++  return uint64_t((unsigned __int128)ticks * first / second);
++#else
++  return (ticks / second) * first + (ticks % second) * first / second;
++#endif
++}
++
++static uint64_t LockFreeGuestTickCount(uint64_t host_tick_count) {
++  while (true) {
++    const uint32_t sequence =
++        lock_free_sequence_.load(std::memory_order_acquire);
++    if (sequence & 1) {
++      continue;  // The base is being moved (clock setup): read it again.
++    }
++    const uint64_t host = lock_free_base_host_.load(std::memory_order_relaxed);
++    const uint64_t guest =
++        lock_free_base_guest_.load(std::memory_order_relaxed);
++    const uint64_t first =
++        lock_free_ratio_first_.load(std::memory_order_relaxed);
++    const uint64_t second =
++        lock_free_ratio_second_.load(std::memory_order_relaxed);
++    std::atomic_thread_fence(std::memory_order_acquire);
++    if (lock_free_sequence_.load(std::memory_order_relaxed) != sequence) {
++      continue;
++    }
++    const uint64_t delta =
++        host_tick_count > host ? host_tick_count - host : 0;
++    return guest + (first == 1 ? delta / second
++                               : ScaleTicks(delta, first, second));
++  }
++}
++
++// With tick_mutex_ held, as the tick ratio becomes |first|/|second|: base the
++// lock-free count at the present, continuing whichever clock was in use, and
++// take the clock_lock_free choice.
++static void RebaseLockFreeClockLocked(uint64_t first, uint64_t second) {
++  const uint64_t host_now = Clock::QueryHostTickCount();
++  const bool was_lock_free = lock_free_clock_.load(std::memory_order_relaxed);
++  uint64_t guest_now;
++  if (was_lock_free) {
++    guest_now = LockFreeGuestTickCount(host_now);
++  } else {
++    // What the locked count reads next: its pending host ticks go at the new
++    // ratio (the remainder is dropped with the old one).
++    const uint64_t delta = host_now > last_host_tick_count_
++                               ? host_now - last_host_tick_count_
++                               : 0;
++    guest_now = last_guest_tick_count_ + ScaleTicks(delta, first, second);
++  }
++  const uint32_t sequence = lock_free_sequence_.load(std::memory_order_relaxed);
++  lock_free_sequence_.store(sequence + 1, std::memory_order_relaxed);
++  std::atomic_thread_fence(std::memory_order_release);
++  lock_free_base_host_.store(host_now, std::memory_order_relaxed);
++  lock_free_base_guest_.store(guest_now, std::memory_order_relaxed);
++  lock_free_ratio_first_.store(first, std::memory_order_relaxed);
++  lock_free_ratio_second_.store(second, std::memory_order_relaxed);
++  lock_free_sequence_.store(sequence + 2, std::memory_order_release);
++  const bool lock_free = cvars::clock_lock_free;
++  if (was_lock_free && !lock_free) {
++    // Back to the locked count: it goes on from the lock-free time.
++    last_host_tick_count_ = host_now;
++    last_guest_tick_count_ = guest_now;
++  }
++  lock_free_clock_.store(lock_free, std::memory_order_relaxed);
++}
++
+ static void RecomputeGuestSystemTimeRatio() {
+   std::pair<uint64_t, uint64_t> frac(uint64_t(10000000), guest_tick_frequency_);
+   reduce_fraction(frac);
+@@ -87,7 +189,9 @@ void RecomputeGuestTickScalar() {
+   reduce_fraction(frac);
  
    std::lock_guard<tick_mutex_type> lock(tick_mutex_);
++  RebaseLockFreeClockLocked(frac.first, frac.second);
    guest_tick_ratio_ = frac;
 +  guest_tick_remainder_ = 0;
  }
  
  // Update the guest timer for all threads.
-@@ -107,8 +115,10 @@ uint64_t UpdateGuestClock() {
+@@ -100,6 +204,10 @@ uint64_t UpdateGuestClock() {
+     return host_tick_count * guest_tick_ratio_.first / guest_tick_ratio_.second;
+   }
+ 
++  if (lock_free_clock_.load(std::memory_order_relaxed)) {
++    return LockFreeGuestTickCount(host_tick_count);
++  }
++
+   std::unique_lock<tick_mutex_type> lock(tick_mutex_, std::defer_lock);
+   if (lock.try_lock()) {
+     // Translate host tick count to guest tick count.
+@@ -107,8 +215,10 @@ uint64_t UpdateGuestClock() {
                                     ? host_tick_count - last_host_tick_count_
                                     : 0;
      last_host_tick_count_ = host_tick_count;
@@ -234,6 +363,18 @@ index 20d406f44..58232a880 100644
      last_guest_tick_count_ += guest_tick_delta;
      return last_guest_tick_count_;
    } else {
+diff --git a/src/xenia/base/clock.h b/src/xenia/base/clock.h
+index ecfe44284..23e007bda 100644
+--- a/src/xenia/base/clock.h
++++ b/src/xenia/base/clock.h
+@@ -22,6 +22,7 @@
+ 
+ DECLARE_bool(clock_no_scaling);
+ DECLARE_bool(clock_source_raw);
++DECLARE_bool(clock_lock_free);
+ 
+ namespace xe {
+ 
 diff --git a/src/xenia/base/clock_posix.cc b/src/xenia/base/clock_posix.cc
 index 64383e07a..05a8aa1b4 100644
 --- a/src/xenia/base/clock_posix.cc
@@ -8160,7 +8301,7 @@ index 108718adf..7e68a1f00 100644
      return true;
    }
 diff --git a/src/xenia/kernel/guest_scheduler.cc b/src/xenia/kernel/guest_scheduler.cc
-index c24087925..3af8cbcdb 100644
+index c24087925..08f9b0fe6 100644
 --- a/src/xenia/kernel/guest_scheduler.cc
 +++ b/src/xenia/kernel/guest_scheduler.cc
 @@ -7,6 +7,7 @@
@@ -8189,11 +8330,121 @@ index c24087925..3af8cbcdb 100644
      if (cpu.repoll_now.exchange(false, std::memory_order_relaxed) ||
          now >= cpu.next_timed_repoll_ms) {
        RereadyBlocked(cpu_index);
+@@ -1892,44 +1904,76 @@ void GuestScheduler::WatchdogLoop() {
+     }
+ 
+     uint64_t now = Clock::host_tick_count_raw();
+-    std::lock_guard<std::mutex> lock(lock_);
+-    for (int i = 0; i < kMaxCpus; ++i) {
+-      XThread* running = cpus_[i].current_thread;
+-      if (running && now >= cpus_[i].quantum_deadline_tick) {
+-        running->thread_state()->context()->preempt_requested = 1;
+-      }
+-      // Stall detector: a dispatch count that has not moved for a whole
+-      // window separates the wedge modes - flag still set means the fiber
+-      // never reaches a safepoint or declines each one (see irql_defers and
+-      // lock_defers), flag cleared means it yields but makes no progress.
+-      uint64_t seq = cpus_[i].switch_seq.load(std::memory_order_relaxed);
+-      if (!running || seq != stall_last_seq_[i]) {
+-        stall_last_seq_[i] = seq;
+-        stall_ticks_[i] = 0;
+-        stall_reported_[i] = false;
+-        continue;
++    // PS5X360E (alpha.85): the CPUs reported below, for stall_hook.
++    uint32_t stalled_cpus = 0;
++    {
++      std::lock_guard<std::mutex> lock(lock_);
++      for (int i = 0; i < kMaxCpus; ++i) {
++        XThread* running = cpus_[i].current_thread;
++        if (running && now >= cpus_[i].quantum_deadline_tick) {
++          running->thread_state()->context()->preempt_requested = 1;
++        }
++        // Stall detector: a dispatch count that has not moved for a whole
++        // window separates the wedge modes - flag still set means the fiber
++        // never reaches a safepoint or declines each one (see irql_defers and
++        // lock_defers), flag cleared means it yields but makes no progress.
++        uint64_t seq = cpus_[i].switch_seq.load(std::memory_order_relaxed);
++        if (!running || seq != stall_last_seq_[i]) {
++          stall_last_seq_[i] = seq;
++          stall_ticks_[i] = 0;
++          stall_reported_[i] = false;
++          continue;
++        }
++        if (++stall_ticks_[i] < kStallReportTicks || stall_reported_[i]) {
++          continue;
++        }
++        stall_reported_[i] = true;
++        stalled_cpus |= uint32_t(1) << i;
++        auto* context = running->thread_state()->context();
++        auto* kpcr = context->TranslateVirtualGPR<X_KPCR*>(context->r[13]);
++        // PS5X360E (alpha.85): a fiber that keeps its CPU with the flag set is
++        // in host code. A wait that blocks the host thread instead of parking
++        // the fiber leaves a note (XThread::WaitNote): what it waits for.
++        const XThread::WaitNote& note = running->wait_note();
++        std::string host_wait = "none";
++        if (note.count) {
++          host_wait = fmt::format("{} object(s){}:", note.count,
++                                  note.count > 1 && note.all ? " (all)" : "");
++          for (uint32_t n = 0; n < note.count && n < 4; ++n) {
++            host_wait += fmt::format(" type {} handle {:08X} guest {:08X}",
++                                     uint32_t(note.types[n]), note.handles[n],
++                                     note.guest_objects[n]);
++          }
++        }
++        XELOGW(
++            "GuestScheduler: CPU {} has not switched fibers in {} watchdog "
++            "ticks. Running tid={:08X} '{}' prio={} last_safepoint={:08X} "
++            "lr={:08X} irql={} preempt_requested={} irql_defers={} "
++            "lock_defers={} ready_summary={:#x} wait={} host_wait={}",
++            i, stall_ticks_[i], running->thread_id(), running->thread_name(),
++            ClampPriority(running->priority()),
++            uint32_t(context->last_safepoint_pc), uint32_t(context->lr),
++            uint32_t(kpcr->current_irql), uint32_t(context->preempt_requested),
++            running->scheduler_links().preempt_defers_irql,
++            running->scheduler_links().preempt_defers_lock,
++            cpus_[i].ready_summary.load(),
++            FormatWaitShape(running->scheduler_links()), host_wait);
+       }
+-      if (++stall_ticks_[i] < kStallReportTicks || stall_reported_[i]) {
+-        continue;
++    }
++    // PS5X360E (alpha.85): where those CPUs' host threads are (Diagnostics).
++    if (stalled_cpus) {
++      if (auto hook = stall_hook.load(std::memory_order_acquire)) {
++        for (int i = 0; i < kMaxCpus; ++i) {
++          if (stalled_cpus & (uint32_t(1) << i)) {
++            hook(i);
++          }
++        }
+       }
+-      stall_reported_[i] = true;
+-      auto* context = running->thread_state()->context();
+-      auto* kpcr = context->TranslateVirtualGPR<X_KPCR*>(context->r[13]);
+-      XELOGW(
+-          "GuestScheduler: CPU {} has not switched fibers in {} watchdog "
+-          "ticks. Running tid={:08X} '{}' prio={} last_safepoint={:08X} "
+-          "lr={:08X} irql={} preempt_requested={} irql_defers={} "
+-          "lock_defers={} ready_summary={:#x}",
+-          i, stall_ticks_[i], running->thread_id(), running->thread_name(),
+-          ClampPriority(running->priority()),
+-          uint32_t(context->last_safepoint_pc), uint32_t(context->lr),
+-          uint32_t(kpcr->current_irql), uint32_t(context->preempt_requested),
+-          running->scheduler_links().preempt_defers_irql,
+-          running->scheduler_links().preempt_defers_lock,
+-          cpus_[i].ready_summary.load());
+     }
+   }
+ }
+ 
++std::atomic<void (*)(int)> GuestScheduler::stall_hook{nullptr};
++
+ }  // namespace kernel
+ }  // namespace xe
 diff --git a/src/xenia/kernel/guest_scheduler.h b/src/xenia/kernel/guest_scheduler.h
-index 4b254e51a..caf0355af 100644
+index 4b254e51a..9d0a5ee8c 100644
 --- a/src/xenia/kernel/guest_scheduler.h
 +++ b/src/xenia/kernel/guest_scheduler.h
-@@ -174,6 +174,22 @@ class GuestScheduler {
+@@ -174,6 +174,27 @@ class GuestScheduler {
  
    KernelState* kernel_state() const { return kernel_state_; }
  
@@ -8212,11 +8463,16 @@ index 4b254e51a..caf0355af 100644
 +               ? cpus_[cpu].thread_cpu_ns.load(std::memory_order_relaxed)
 +               : 0;
 +  }
++  // PS5X360E (alpha.85): when set (the PS5 build's Diagnostics), told the
++  // index of each CPU the watchdog's stall report names, from the watchdog
++  // thread with no lock held, so the frontend can look at where that CPU's
++  // dispatch thread is. It must return at once.
++  static std::atomic<void (*)(int)> stall_hook;
 +
   private:
    // Xbox 360 logical CPU count, also the maximum number of dispatch threads.
    static constexpr int kMaxCpus = 6;
-@@ -208,6 +224,9 @@ class GuestScheduler {
+@@ -208,6 +229,9 @@ class GuestScheduler {
      XThread* suspended_tail = nullptr;
      XThread* exited_thread = nullptr;
      std::unique_ptr<xe::threading::Thread> host_thread;

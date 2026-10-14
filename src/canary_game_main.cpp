@@ -799,13 +799,56 @@ void MeasurePerformance(xe::Emulator& emulator, float fps) {
 class BackgroundProfiler {
  public:
   explicit BackgroundProfiler(xe::Emulator& emulator)
-      : emulator_(emulator), thread_([this] { Run(); }) {}
+      : emulator_(emulator), thread_([this] { Run(); }) {
+    // alpha.85: the guest scheduler's stall report (a CPU that kept one fiber
+    // for 2 s) asks for a look at where that CPU's host thread is.
+    xe::kernel::GuestScheduler::stall_hook.store(
+        [](int cpu) { pending_stalls_.fetch_or(uint32_t(1) << cpu); });
+  }
   ~BackgroundProfiler() {
+    xe::kernel::GuestScheduler::stall_hook.store(nullptr);
     stop_.store(true);
     thread_.join();
   }
 
  private:
+  static inline std::atomic<uint32_t> pending_stalls_{0};
+  // alpha.85: where the host thread of each CPU the stall report names is: its
+  // instruction and the return addresses on its stack (offsets in the build's
+  // ELF), which show the emulator call a guest thread is stuck in.
+  void ProbeStalls(uint32_t cpus) {
+    auto* scheduler = emulator_.kernel_state()->guest_scheduler();
+    if (!scheduler) return;
+    for (int cpu = 0; cpu < scheduler->dispatch_cpu_count(); ++cpu) {
+      if (!(cpus & (uint32_t(1) << cpu)) || stall_probes_ >= 32) continue;
+      auto* host = scheduler->dispatch_thread(cpu);
+      if (!host) continue;
+      ++stall_probes_;
+      xbox360ps5::ThreadStack stack;
+      if (!xbox360ps5::SampleThreadStack(host->native_handle(), &stack)) {
+        XELOGW("PROFILE stall CPU {}: its host thread did not answer", cpu);
+        continue;
+      }
+      std::string where;
+      if (stack.in_title) {
+        where = fmt::format("emulator {:X}", stack.rip);
+      } else if (xbox360ps5::InGeneratedCode(stack.rip)) {
+        auto* function = emulator_.processor()->backend()->code_cache()->LookupFunction(stack.rip);
+        where = function ? fmt::format("guest code {:08X} (function {:08X})",
+                                       function->MapMachineCodeToGuestAddress(uintptr_t(stack.rip)),
+                                       function->address())
+                         : std::string("guest code");
+      } else {
+        where = fmt::format("system library {:X}", stack.rip);
+      }
+      std::string line = fmt::format("PROFILE stall CPU {} host thread (PS5 CPU {}) in {}; return addresses:", cpu,
+                                     stack.cpu, where);
+      for (int n = 0; n < stack.count; ++n) line += fmt::format(" {:X}", stack.frames[n]);
+      XELOGW("{}", line);
+    }
+    xe::FlushLog();
+  }
+
   struct Place {
     uint64_t key;
     uint32_t count;
@@ -945,6 +988,7 @@ class BackgroundProfiler {
     int pauses = 0, slows = 0, baselines = 0;
     while (!stop_.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      if (const uint32_t stalled = pending_stalls_.exchange(0)) ProbeStalls(stalled);
       now = std::chrono::steady_clock::now();
       const uint64_t swaps_now = processor->swap_count();
       if (swaps_now != swaps) {
@@ -1027,6 +1071,7 @@ class BackgroundProfiler {
   xe::Emulator& emulator_;
   std::atomic<bool> stop_{false};
   std::vector<uint32_t> dumped_;
+  int stall_probes_ = 0;
   std::thread thread_;
 };
 // The profile the user chose in the launcher, kept between runs.
