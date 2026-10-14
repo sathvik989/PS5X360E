@@ -3,6 +3,18 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## Unreleased: 0.2-alpha.86 in progress (checkpoint, not built or tested yet)
+
+- Test option, Performance > Save without stopping the game (content_io_unlocked, off by
+  default): a title's content calls (create, open, delete, the header and thumbnails) do their
+  host file work outside the global lock, on the I/O worker when a guest thread calls.
+- Test option, Performance > Thread signals without lock (guest_scheduler_fast_signal, off by
+  default): a signal to an object no fiber waits on skips the scheduler's lock (per-object
+  waiter counts).
+- Diagnostics: the guest scheduler's counters once a second, with the signals through and past
+  its lock; audio gaps longer than the 5.3 ms the port still holds counted apart as likely
+  heard; a disc image that fails to mount says which folder and where (GTA IV's did).
+
 ## 0.2-alpha.85+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Test: Performance > Guest clock without lock** (off by default). Guest threads read the

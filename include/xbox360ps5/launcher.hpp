@@ -50,6 +50,8 @@ struct Settings {
   int rendered_texture_copy = 0;  // 1: rendered textures in one copy (texture_load_scaled_direct_copy; alpha.83 test).
   int rt_warm_up = 0;         // 1: render target conversion pipelines cached and made at start (rt_pipeline_warm_up; alpha.82 test).
   int clock_lock_free = 0;    // 1: the guest clock read without its lock (clock_lock_free; alpha.85 test).
+  int content_io_unlocked = 0;  // 1: a save's file work outside the global lock (content_io_unlocked; alpha.86 test).
+  int fast_signal = 0;        // 1: a signal nothing waits on skips the scheduler's lock (guest_scheduler_fast_signal; alpha.86 test).
   int output_4k = 1;          // A game's picture to the screen at 3840x2160 (1) or 1920x1080 (0); menus stay 1080p (alpha69nice).
   int frame_pacing = 0;       // 0 shows the newest frame at each refresh, 1 paces a 30 FPS game to exactly 2 refreshes a frame.
   int image_filter = 0;       // How a game's picture is stretched to the screen: 0 plain, 1 CAS, 2 FSR.

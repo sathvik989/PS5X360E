@@ -153,6 +153,15 @@ class PacedDriver final : public xe::apu::AudioDriver {
             const uint64_t gap_us = uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(gap).count());
             gap_us_ += gap_us;
             longest_gap_us_ = std::max(longest_gap_us_, gap_us);
+            // alpha.86: the port goes on playing the grain it last took (5.3
+            // ms, a 5.1 frame), so a gap no longer than that is covered; a
+            // longer one is silence a player can hear. Counted apart, as most
+            // gaps are short.
+            const uint64_t grain_us = uint64_t(kGrain) * 1000000 / frequency_;
+            if (gap_us > grain_us) {
+              ++audible_gaps_;
+              audible_gap_us_ += gap_us - grain_us;
+            }
             gap_started_ = {};
           }
         }
@@ -212,8 +221,10 @@ class PacedDriver final : public xe::apu::AudioDriver {
     // About every 30 s of sound: the gaps, if any.
     if (port_ >= 0 && ++since_report_ >= 5625) {
       if (gaps_) {
-        XELOGW("Audio: {} gaps in the last 30 s (the game's sound came late), {:.0f} ms of silence, longest {:.0f} ms; {} frames held in reserve",
-               gaps_, double(gap_us_) / 1000.0, double(longest_gap_us_) / 1000.0, PrefillFrames());
+        XELOGW("Audio: {} gaps in the last 30 s (the game's sound came late), {:.0f} ms of silence, longest {:.0f} ms; {} frames held in reserve; "
+               "{} of the gaps longer than the 5.3 ms the port still had ({:.0f} ms past it, likely heard), the rest covered",
+               gaps_, double(gap_us_) / 1000.0, double(longest_gap_us_) / 1000.0, PrefillFrames(), audible_gaps_,
+               double(audible_gap_us_) / 1000.0);
       }
       if (limited_) {
         XELOGW("Audio: limiter acted on {} of {} samples in the last 30 s (sound over full scale), deepest {:.1f} dB",
@@ -224,6 +235,8 @@ class PacedDriver final : public xe::apu::AudioDriver {
       min_gain_ = 1.0f;
       gaps_ = 0;
       gap_us_ = longest_gap_us_ = 0;
+      audible_gaps_ = 0;
+      audible_gap_us_ = 0;
       since_report_ = 0;
     }
     if (++metered_ < 1024) return;
@@ -248,6 +261,8 @@ class PacedDriver final : public xe::apu::AudioDriver {
   float limiter_gain_ = 1.0f, min_gain_ = 1.0f;
   uint64_t limited_ = 0;
   uint64_t gap_us_ = 0, longest_gap_us_ = 0;
+  unsigned audible_gaps_ = 0;
+  uint64_t audible_gap_us_ = 0;
   std::chrono::steady_clock::time_point gap_started_{};
 };
 }
