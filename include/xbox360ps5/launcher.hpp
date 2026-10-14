@@ -46,6 +46,7 @@ struct Settings {
   int renderer = 0;       // 0 Vulkan, 1 OpenGL; restart required, separate GPU caches.
   int resolution_scale = 1;   // Games render at 1, 2 or 3 times their resolution. Read when the title starts.
   int render_scale = 0;       // The option: 0 renders at 1x, 1 at 2x, 2 at 3x (test; alpha.68).
+  int rt_warm_up = 0;         // 1: render target conversion pipelines cached and made at start (rt_pipeline_warm_up; alpha.82 test).
   int output_4k = 1;          // A game's picture to the screen at 3840x2160 (1) or 1920x1080 (0); menus stay 1080p (alpha69nice).
   int frame_pacing = 0;       // 0 shows the newest frame at each refresh, 1 paces a 30 FPS game to exactly 2 refreshes a frame.
   int image_filter = 0;       // How a game's picture is stretched to the screen: 0 plain, 1 CAS, 2 FSR.

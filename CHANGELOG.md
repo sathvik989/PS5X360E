@@ -3,6 +3,16 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.82+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **Test: Performance > Prepare image conversions at start** (off by default). The GPU programs
+  that convert the game's render targets into each other were made the first time a game needed
+  each one, every session: 0.3-1.4 s apiece on the PS5, freezes in menus, car select and race
+  loading (68 of them, 1.8 s, in one 2x session). On, they go through the shader cache and into
+  a list kept per game and resolution next to it (<TITLE>.rtp2x2.bin), and the next start makes
+  them from the cache before the game needs them ("Render target pipelines: N made at start" in
+  the log). The first session with it on still makes the list.
+
 ## 0.2-alpha.81+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Back to alpha.65's emulator and graphics core**, as 2x still hitched where alpha.65 did not.

@@ -43,6 +43,7 @@ DECLARE_string(render_target_path);  // PS5X360E: Edge's "performance"/"accuracy
 DECLARE_bool(async_shader_compilation);
 DECLARE_bool(vulkan_async_submission);
 DECLARE_bool(shared_memory_zero_copy);
+DECLARE_bool(rt_pipeline_warm_up);
 DECLARE_uint32(apu_max_queued_frames);
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(delay_via_maybeyield);
@@ -238,6 +239,9 @@ const std::vector<Option>& Options() {
       {"render_scale", &S::render_scale, 0, W::start, 0, true, "Resolução de renderização",
        "O jogo desenha em 2x a resolução original (720p vira 1440p): imagem bem mais nítida, mais trabalho para o vídeo e mais memória. Alguns efeitos podem sair errados em 2x; volte a 1x se aparecerem.",
        {"1x (720p, original)", "2x (1440p, pesado)", "3x (2160p, teste)"}},
+      {"rt_warm_up", &S::rt_warm_up, 1, W::start, 0, true, "Preparar conversões de imagem na abertura (teste)",
+       "Guarda os programas que o vídeo usa para converter imagens do jogo e os prepara ao abrir o jogo, antes de serem pedidos. Sem isso cada um é feito na primeira vez que o jogo precisa, com travadas de até alguns segundos em menus e carregamentos (mais em 3x). A primeira sessão ainda faz a lista.",
+       off_on},
       {"output_4k", &S::output_4k, 0, W::start, 1, true, "Saída de vídeo do jogo",
        "Tamanho da imagem enviada à TV durante o jogo. 4K: a imagem do jogo chega à tela em 3840x2160, e o 2x e o 3x mostram todo o detalhe. 1080p: como antes, a TV amplia. Os menus continuam em 1080p.",
        {"1080p", "4K"}},
@@ -513,6 +517,7 @@ void Settings::Apply() const {
   cvars::async_shader_compilation = async_shaders != 0;
   cvars::vulkan_async_submission = submit_thread != 0;
   cvars::shared_memory_zero_copy = zero_copy != 0;
+  cvars::rt_pipeline_warm_up = rt_warm_up != 0;
   cvars::clear_memory_page_state = clear_pages != 0;
   // The core falls back to host render targets by itself when the device lacks
   // fragment shader interlock; the pipeline storage then keeps its .fbo name.
