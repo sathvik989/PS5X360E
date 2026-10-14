@@ -4903,7 +4903,7 @@ index e1feb3fd4..aff58b41a 100644
    // uintmax_t to ensure uint64_t and pointer alignment of all structures.
    std::vector<uintmax_t> command_stream_;
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index b61995956..b27c01dc5 100644
+index b61995956..0e885a754 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,16 +8,21 @@
@@ -6337,7 +6337,7 @@ index b61995956..b27c01dc5 100644
  void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    if (!vulkan_device->properties().timestampPeriod) {
-@@ -5679,9 +6720,57 @@ void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
+@@ -5679,7 +6720,64 @@ void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
                              &gpu_time_query_pool_) != VK_SUCCESS) {
      XELOGE("Vulkan: failed to create the GPU time query pool");
      gpu_time_query_pool_ = VK_NULL_HANDLE;
@@ -6348,13 +6348,22 @@ index b61995956..b27c01dc5 100644
 +                            &gpu_section_pool_) != VK_SUCCESS) {
 +    XELOGW("Vulkan: no GPU section query pool, GPU time by kind not reported");
 +    gpu_section_pool_ = VK_NULL_HANDLE;
-   }
- }
- 
++  }
++}
++
++VkPipelineCache VulkanCommandProcessor::GetVkPipelineCache() const {
++  return pipeline_cache_ ? pipeline_cache_->vk_pipeline_cache() : VK_NULL_HANDLE;
++}
++void VulkanCommandProcessor::NotePipelineCached() {
++  if (pipeline_cache_) {
++    pipeline_cache_->NoteOwnPipelineCreated();
++  }
++}
++
 +void VulkanCommandProcessor::SetGpuSection(GpuSection section) {
 +  if (section == gpu_section_) {
 +    return;
-+  }
+   }
 +  const GpuSection previous = gpu_section_;
 +  gpu_section_ = section;
 +  if (!submission_open_ || gpu_section_pool_ == VK_NULL_HANDLE ||
@@ -6390,12 +6399,10 @@ index b61995956..b27c01dc5 100644
 +  gpu_section_marks_[gpu_section_mark_count_] = section;
 +  deferred_command_buffer_.CmdXeTimestampMark(gpu_section_mark_count_++);
 +  gpu_section_mark_stream_size_ = deferred_command_buffer_.stream_size();
-+}
-+
+ }
+ 
  void VulkanCommandProcessor::DestroyGpuTimeQueryPool() {
-   if (gpu_time_query_pool_ == VK_NULL_HANDLE) {
-     return;
-@@ -5690,6 +6779,11 @@ void VulkanCommandProcessor::DestroyGpuTimeQueryPool() {
+@@ -5690,6 +6788,11 @@ void VulkanCommandProcessor::DestroyGpuTimeQueryPool() {
    vulkan_device->functions().vkDestroyQueryPool(vulkan_device->device(),
                                                  gpu_time_query_pool_, nullptr);
    gpu_time_query_pool_ = VK_NULL_HANDLE;
@@ -6407,7 +6414,7 @@ index b61995956..b27c01dc5 100644
  }
  
  void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
-@@ -5711,13 +6805,239 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
+@@ -5711,13 +6814,239 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
                                    sizeof(uint64_t),
                                    VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
          timestamps[1] > timestamps[0]) {
@@ -6648,7 +6655,7 @@ index b61995956..b27c01dc5 100644
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5757,13 +7077,17 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5757,13 +7086,17 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        command_buffer_allocate_info.pNext = nullptr;
        command_buffer_allocate_info.commandPool = command_buffer.pool;
        command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -6668,7 +6675,7 @@ index b61995956..b27c01dc5 100644
        command_buffers_writable_.push_back(command_buffer);
      }
    }
-@@ -5822,6 +7146,12 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5822,6 +7155,12 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        bind_sparse_info.signalSemaphoreCount = 1;
        bind_sparse_info.pSignalSemaphores = &bind_sparse_semaphore;
        VkResult bind_sparse_result;
@@ -6681,7 +6688,7 @@ index b61995956..b27c01dc5 100644
        {
          ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
              vulkan_device->AcquireQueue(
-@@ -5860,11 +7190,6 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5860,11 +7199,6 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
      command_buffer_begin_info.flags =
          VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
      command_buffer_begin_info.pInheritanceInfo = nullptr;
@@ -6693,7 +6700,7 @@ index b61995956..b27c01dc5 100644
      // Bracket the whole submission. Recycle finished slots first, or a frame
      // with more submissions than slots leaves the later ones untimed.
      CollectCompletedGpuTimeQueries();
-@@ -5874,68 +7199,91 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5874,68 +7208,91 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
          gpu_time_pool_available && !gpu_time_query_submissions_[gpu_time_slot];
      if (gpu_time_pool_available && !gpu_time_recorded) {
        ++gpu_time_untimed_submissions_;
@@ -6828,7 +6835,7 @@ index b61995956..b27c01dc5 100644
        LogRecentSubmissions("submit-failure");
        if (vulkan_device->IsLost() && !device_lost_) {
          device_lost_ = true;
-@@ -5943,6 +7291,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5943,6 +7300,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        }
        return false;
      }
@@ -6837,7 +6844,7 @@ index b61995956..b27c01dc5 100644
      current_submission_wait_stage_masks_.clear();
      for (VkSemaphore semaphore : current_submission_wait_semaphores_) {
        submissions_in_flight_semaphores_.emplace_back(submission_index,
-@@ -5966,6 +7316,13 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5966,6 +7325,13 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
  
      submission_open_ = false;
  
@@ -6851,7 +6858,7 @@ index b61995956..b27c01dc5 100644
      // Process any query resolves that completed with this submission.
      PumpQueryResolves();
      PumpPendingRetire();
-@@ -6882,20 +8239,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6882,20 +8248,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
          std::memcpy(mapping, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X],
                      sizeof(float) * 4 * 256);
        } else {
@@ -6875,7 +6882,7 @@ index b61995956..b27c01dc5 100644
        }
      }
      // Pixel shader float constants.
-@@ -6909,20 +8255,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6909,20 +8264,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
        if (!mapping) {
          return false;
        }
@@ -6900,7 +6907,7 @@ index b61995956..b27c01dc5 100644
      // Bool and loop constants.
      if (!(current_constant_buffers_up_to_date_ &
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.h b/src/xenia/gpu/vulkan/vulkan_command_processor.h
-index 34c45db8a..9dab7524a 100644
+index 34c45db8a..4665dd8a8 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.h
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.h
 @@ -14,13 +14,16 @@
@@ -6920,7 +6927,7 @@ index 34c45db8a..9dab7524a 100644
  #include <unordered_map>
  #include <unordered_set>
  #include <utility>
-@@ -64,6 +67,38 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -64,6 +67,43 @@ class VulkanCommandProcessor final : public CommandProcessor {
  #include "../pm4_command_processor_declare.h"
  #undef OVERRIDING_BASE_CMDPROCESSOR
   public:
@@ -6956,10 +6963,15 @@ index 34c45db8a..9dab7524a 100644
 +    GpuSection previous_;
 +  };
 +
++  // PS5X360E (alpha.77): the pipeline cache's VkPipelineCache (null before it
++  // exists), and a note that a pipeline was put in it.
++  VkPipelineCache GetVkPipelineCache() const;
++  void NotePipelineCached();
++
    // Single-descriptor layouts for use within a single frame.
    enum class SingleTransientDescriptorLayout {
      kStorageBuffer,
-@@ -166,6 +201,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -166,6 +206,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
        std::function<void()> completion_callback = nullptr) override;
  
    void RestoreEdramSnapshot(const void* snapshot) override;
@@ -6970,7 +6982,7 @@ index 34c45db8a..9dab7524a 100644
  
    void PollCompletedSubmission() override;
  
-@@ -240,6 +279,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -240,6 +284,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
                                            uint32_t size_bytes,
                                            bool whole_range = false);
  
@@ -6985,7 +6997,7 @@ index 34c45db8a..9dab7524a 100644
    // If not started yet, begins a render pass from the render target cache.
    // Submission must be open.
    void SubmitBarriersAndEnterRenderTargetCacheRenderPass(
-@@ -315,14 +362,31 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -315,14 +367,31 @@ class VulkanCommandProcessor final : public CommandProcessor {
    XE_FORCEINLINE
    virtual void WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
                                       uint32_t num_registers) override;
@@ -7018,7 +7030,7 @@ index 34c45db8a..9dab7524a 100644
    uint64_t GetResolveSubmittedThrough() const {
      return resolve_submitted_through_.load(std::memory_order_acquire);
    }
-@@ -366,7 +430,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -366,7 +435,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
    void StageMemexportReadback();
    void FlushMemexportStagingReadback();
    void AwaitMemexportSubmission(uint64_t submission) {
@@ -7027,7 +7039,7 @@ index 34c45db8a..9dab7524a 100644
    }
    // Export ranges staged but not yet copied out, in record order - a later
    // copy of an overlapping range has to win.
-@@ -380,6 +444,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -380,6 +449,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
    std::vector<MemexportStagedRange> memexport_staged_;
    // For EnsureMemexportRangeInDeviceBuffer.
    std::vector<VkBufferCopy> memexport_copy_regions_;
@@ -7041,7 +7053,7 @@ index 34c45db8a..9dab7524a 100644
  
    void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                   uint32_t frontbuffer_height) override;
-@@ -395,6 +466,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -395,6 +471,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
                   bool major_mode_explicit) override;
    bool IssueCopy() override;
  
@@ -7049,7 +7061,7 @@ index 34c45db8a..9dab7524a 100644
    void InitializeTrace() override;
    bool DumpEdramSnapshotToFile(const std::filesystem::path& path) override;
  
-@@ -402,6 +474,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -402,6 +479,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
    struct CommandBuffer {
      VkCommandPool pool;
      VkCommandBuffer buffer;
@@ -7060,7 +7072,7 @@ index 34c45db8a..9dab7524a 100644
    };
  
    struct SparseBufferBind {
-@@ -521,7 +597,17 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -521,7 +602,17 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // Rechecks submission number and reclaims per-submission resources. Pass 0 as
    // the submission to await to simply check status, or pass
    // GetCurrentSubmission() to wait for all queue operations to be completed.
@@ -7079,7 +7091,7 @@ index 34c45db8a..9dab7524a 100644
    // If is_guest_command is true, a new full frame - with full cleanup of
    // resources and, if needed, starting capturing - is opened if pending (as
    // opposed to simply resuming after mid-frame synchronization). Returns
-@@ -573,6 +659,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -573,6 +664,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
    void PumpQueryResolves() override;
    bool AwaitQueryResolve(ReportHandle report_handle,
                           uint64_t wait_for_submission) override;
@@ -7088,7 +7100,7 @@ index 34c45db8a..9dab7524a 100644
  
    bool EnsureVIZPredicateBuffer();
    // Drains the queued predicate copies.
-@@ -701,7 +789,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -701,7 +794,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
  
    // A timestamp pair per in-flight submission, so the summed GPU busy time is
    // comparable against the Metal backend's completion-handler figure.
@@ -7097,7 +7109,7 @@ index 34c45db8a..9dab7524a 100644
    VkQueryPool gpu_time_query_pool_ = VK_NULL_HANDLE;
    uint64_t gpu_time_query_submissions_[kGpuTimeQuerySubmissions] = {};
    uint32_t gpu_time_query_slot_ = 0;
-@@ -713,6 +801,78 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -713,6 +806,78 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // which sums per-submission intervals and misleads without it.
    uint64_t gpu_time_submissions_window_start_ = 0;
    uint64_t gpu_time_window_start_ns_ = 0;
@@ -7176,7 +7188,7 @@ index 34c45db8a..9dab7524a 100644
    void CreateGpuTimeQueryPool();
    void DestroyGpuTimeQueryPool();
    void CollectCompletedGpuTimeQueries();
-@@ -734,6 +894,48 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -734,6 +899,48 @@ class VulkanCommandProcessor final : public CommandProcessor {
    std::deque<std::pair<uint64_t, CommandBuffer>> command_buffers_submitted_;
    DeferredCommandBuffer deferred_command_buffer_;
  
@@ -7225,7 +7237,7 @@ index 34c45db8a..9dab7524a 100644
    std::vector<VkSparseMemoryBind> sparse_memory_binds_;
    std::vector<SparseBufferBind> sparse_buffer_binds_;
    // SparseBufferBind converted to VkSparseBufferMemoryBindInfo to this buffer
-@@ -1092,6 +1294,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -1092,6 +1299,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // .inc for ScaledResolveReadbackInfo.
    bool DownscaleScaledResolve(uint32_t written_address,
                                const ScaledResolveReadbackInfo& scaled_info);
@@ -7595,7 +7607,7 @@ index 266495e99..b9fac50ff 100644
  
    // Shut down the storage writer (closes files, stops write thread).
 diff --git a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.h b/src/xenia/gpu/vulkan/vulkan_pipeline_cache.h
-index 5436d7f0c..10ff5c6fc 100644
+index 5436d7f0c..cec7c93d1 100644
 --- a/src/xenia/gpu/vulkan/vulkan_pipeline_cache.h
 +++ b/src/xenia/gpu/vulkan/vulkan_pipeline_cache.h
 @@ -10,7 +10,10 @@
@@ -7609,7 +7621,22 @@ index 5436d7f0c..10ff5c6fc 100644
  #include <cstddef>
  #include <cstdio>
  #include <cstring>
-@@ -140,6 +143,12 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
+@@ -51,6 +54,14 @@ class VulkanCommandProcessor;
+ // implementations.
+ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
+  public:
++  // PS5X360E (alpha.77): the live VkPipelineCache, for the render target
++  // cache's transfer and dump pipelines (built on this same thread), and a
++  // pipeline made through it outside this class, so the periodic save keeps it.
++  VkPipelineCache vk_pipeline_cache() const { return vk_pipeline_cache_; }
++  void NoteOwnPipelineCreated() {
++    pipelines_created_since_save_.fetch_add(1, std::memory_order_relaxed);
++  }
++
+   class PipelineLayoutProvider {
+    public:
+     virtual ~PipelineLayoutProvider() {}
+@@ -140,6 +151,12 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
        const std::filesystem::path& cache_root, uint32_t title_id, bool blocking,
        std::function<void()> completion_callback = nullptr);
    void ShutdownShaderStorage();
@@ -7622,7 +7649,7 @@ index 5436d7f0c..10ff5c6fc 100644
  
    void EndSubmission();
    // Whether the non-blocking storage warm-up is still creating pipelines.
-@@ -510,6 +519,16 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
+@@ -510,6 +527,16 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
    std::unordered_map<uint64_t, VulkanShader*,
                       xe::hash::IdentityHasher<uint64_t>>
        shaders_;
@@ -7639,7 +7666,7 @@ index 5436d7f0c..10ff5c6fc 100644
  
    // Geometry shaders for Xenos primitive types not supported by Vulkan.
    // Stores VK_NULL_HANDLE if failed to create.
-@@ -610,6 +629,10 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
+@@ -610,6 +637,10 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
  
    // VkPipelineCache persistence path.
    std::filesystem::path vk_pipeline_cache_path_;
@@ -7688,7 +7715,7 @@ index bf2533069..b2ddc8261 100644
      Shutdown();
      return false;
 diff --git a/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc b/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
-index d32d11d28..e7f290a09 100644
+index d32d11d28..4383632b7 100644
 --- a/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
 @@ -8,6 +8,9 @@
@@ -7733,7 +7760,38 @@ index d32d11d28..e7f290a09 100644
  
    const ui::vulkan::VulkanDevice* const vulkan_device =
        command_processor_.GetVulkanDevice();
-@@ -2845,6 +2859,11 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
+@@ -2796,7 +2810,12 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+   pipeline_create_info.subpass = 0;
+   pipeline_create_info.basePipelineHandle = VK_NULL_HANDLE;
+   pipeline_create_info.basePipelineIndex = -1;
+-  if (dfn.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
++  // PS5X360E (alpha.77): through the shader cache. Made on first use, these
++  // took 0.3-1.4 s each at 3x on the PS5 (a 15.5 s freeze entering car select
++  // in NFS The Run) and were made again every session.
++  const VkPipelineCache transfer_pipeline_cache =
++      command_processor_.GetVkPipelineCache();
++  if (dfn.vkCreateGraphicsPipelines(device, transfer_pipeline_cache, 1,
+                                     &pipeline_create_info, nullptr,
+                                     &pipelines[0]) != VK_SUCCESS) {
+     XELOGE(
+@@ -2821,7 +2840,7 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+               : i;
+       sample_id_specialization_constant = host_sample_index;
+       sample_mask = uint32_t(1) << host_sample_index;
+-      if (dfn.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
++      if (dfn.vkCreateGraphicsPipelines(device, transfer_pipeline_cache, 1,
+                                         &pipeline_create_info, nullptr,
+                                         &pipelines[i]) != VK_SUCCESS) {
+         XELOGE(
+@@ -2837,6 +2856,7 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+       }
+     }
+   }
++  command_processor_.NotePipelineCached();
+   return transfer_pipelines_.emplace(key, pipelines).first->second.data();
+ }
+ 
+@@ -2845,6 +2865,11 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
      const std::vector<Transfer>* render_target_transfers,
      const uint64_t* render_target_resolve_clear_values,
      const Transfer::Rectangle* resolve_clear_rectangle) {
@@ -7745,7 +7803,7 @@ index d32d11d28..e7f290a09 100644
    SCOPE_profile_cpu_f("gpu");
    assert_true(GetPath() == Path::kHostRenderTargets);
  
-@@ -3775,6 +3794,9 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(EdramDumpShaderKey key) {
+@@ -3775,6 +3800,9 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(EdramDumpShaderKey key) {
    if (pipeline_it != dump_pipelines_.end()) {
      return pipeline_it->second;
    }
@@ -7755,6 +7813,19 @@ index d32d11d28..e7f290a09 100644
  
    EdramDumpShaderOptions shader_options;
    shader_options.spirv_version = spirv_version_;
+@@ -3800,7 +3828,11 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(EdramDumpShaderKey key) {
+   VkPipeline pipeline = ui::vulkan::util::CreateComputePipeline(
+       command_processor_.GetVulkanDevice(),
+       key.is_depth ? dump_pipeline_layout_depth_ : dump_pipeline_layout_color_,
+-      shader_code.data(), sizeof(uint32_t) * shader_code.size());
++      shader_code.data(), sizeof(uint32_t) * shader_code.size(), nullptr,
++      "main", 0, command_processor_.GetVkPipelineCache());
++  if (pipeline != VK_NULL_HANDLE) {
++    command_processor_.NotePipelineCached();
++  }
+   if (pipeline == VK_NULL_HANDLE) {
+     XELOGE(
+         "VulkanRenderTargetCache: Failed to create a render target {} pipeline "
 diff --git a/src/xenia/gpu/vulkan/vulkan_shared_memory.cc b/src/xenia/gpu/vulkan/vulkan_shared_memory.cc
 index e8068404e..a99512b4d 100644
 --- a/src/xenia/gpu/vulkan/vulkan_shared_memory.cc
@@ -55043,6 +55114,70 @@ index fa151fb4c..78b28464f 100644
 +                            bool show_edges);
  };
  
+ }  // namespace vulkan
+diff --git a/src/xenia/ui/vulkan/vulkan_util.cc b/src/xenia/ui/vulkan/vulkan_util.cc
+index 7b0445a9f..5dae25ff8 100644
+--- a/src/xenia/ui/vulkan/vulkan_util.cc
++++ b/src/xenia/ui/vulkan/vulkan_util.cc
+@@ -231,7 +231,8 @@ VkPipeline CreateComputePipeline(
+     const VulkanDevice* const vulkan_device, const VkPipelineLayout layout,
+     const VkShaderModule shader,
+     const VkSpecializationInfo* const specialization_info,
+-    const char* const entry_point, const uint32_t required_subgroup_size) {
++    const char* const entry_point, const uint32_t required_subgroup_size,
++    const VkPipelineCache pipeline_cache) {
+   VkPipelineShaderStageRequiredSubgroupSizeCreateInfo subgroup_size_info = {};
+   subgroup_size_info.sType =
+       VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
+@@ -263,7 +264,7 @@ VkPipeline CreateComputePipeline(
+ 
+   VkPipeline pipeline;
+   if (vulkan_device->functions().vkCreateComputePipelines(
+-          vulkan_device->device(), VK_NULL_HANDLE, 1, &pipeline_create_info,
++          vulkan_device->device(), pipeline_cache, 1, &pipeline_create_info,
+           nullptr, &pipeline) != VK_SUCCESS) {
+     return VK_NULL_HANDLE;
+   }
+@@ -274,7 +275,8 @@ VkPipeline CreateComputePipeline(
+     const VulkanDevice* const vulkan_device, VkPipelineLayout layout,
+     const uint32_t* shader_code, size_t shader_code_size_bytes,
+     const VkSpecializationInfo* specialization_info, const char* entry_point,
+-    const uint32_t required_subgroup_size) {
++    const uint32_t required_subgroup_size,
++    const VkPipelineCache pipeline_cache) {
+   const VkShaderModule shader =
+       CreateShaderModule(vulkan_device, shader_code, shader_code_size_bytes);
+   if (shader == VK_NULL_HANDLE) {
+@@ -282,7 +284,8 @@ VkPipeline CreateComputePipeline(
+   }
+   const VkPipeline pipeline =
+       CreateComputePipeline(vulkan_device, layout, shader, specialization_info,
+-                            entry_point, required_subgroup_size);
++                            entry_point, required_subgroup_size,
++                            pipeline_cache);
+   vulkan_device->functions().vkDestroyShaderModule(vulkan_device->device(),
+                                                    shader, nullptr);
+   return pipeline;
+diff --git a/src/xenia/ui/vulkan/vulkan_util.h b/src/xenia/ui/vulkan/vulkan_util.h
+index 471bc1e94..a4ccc3fa4 100644
+--- a/src/xenia/ui/vulkan/vulkan_util.h
++++ b/src/xenia/ui/vulkan/vulkan_util.h
+@@ -197,12 +197,14 @@ VkPipeline CreateComputePipeline(
+     const VulkanDevice* vulkan_device, VkPipelineLayout layout,
+     VkShaderModule shader,
+     const VkSpecializationInfo* specialization_info = nullptr,
+-    const char* entry_point = "main", uint32_t required_subgroup_size = 0);
++    const char* entry_point = "main", uint32_t required_subgroup_size = 0,
++    VkPipelineCache pipeline_cache = VK_NULL_HANDLE);
+ VkPipeline CreateComputePipeline(
+     const VulkanDevice* vulkan_device, VkPipelineLayout layout,
+     const uint32_t* shader_code, size_t shader_code_size_bytes,
+     const VkSpecializationInfo* specialization_info = nullptr,
+-    const char* entry_point = "main", uint32_t required_subgroup_size = 0);
++    const char* entry_point = "main", uint32_t required_subgroup_size = 0,
++    VkPipelineCache pipeline_cache = VK_NULL_HANDLE);
+ 
+ }  // namespace util
  }  // namespace vulkan
 diff --git a/src/xenia/vfs/devices/disc_image_device.cc b/src/xenia/vfs/devices/disc_image_device.cc
 index 8baf6669e..9c380043e 100644

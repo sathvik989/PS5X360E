@@ -3,6 +3,15 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.77+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **The car select and loading freezes at 3x**: alpha.73's hitch detail showed them to be the
+  GPU programs that copy and convert the game's render targets (transfer and dump pipelines),
+  built when first needed: 57 of them took 15.5 s of a 15.7 s freeze entering car select in NFS
+  The Run, 0.3-1.4 s each. They were never put in the shader cache, so every session built them
+  again. They now go through it and are saved with it: a freeze can still happen the first time
+  a program is needed, but not in later sessions.
+
 ## 0.2-alpha.76+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Frame generation size** (Video, and the in-game guide's settings page; changes at once):
