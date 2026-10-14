@@ -1424,10 +1424,10 @@ index 868a331a0..538de7fdf 100644
    munmap(s.base, s.total);
  #endif
 diff --git a/src/xenia/base/threading_posix.cc b/src/xenia/base/threading_posix.cc
-index b02ac0c9d..4825a8089 100644
+index b02ac0c9d..b7d7d0926 100644
 --- a/src/xenia/base/threading_posix.cc
 +++ b/src/xenia/base/threading_posix.cc
-@@ -67,14 +67,31 @@ DEFINE_bool(wfe_precise_sleep, false,
+@@ -67,14 +67,36 @@ DEFINE_bool(wfe_precise_sleep, false,
              "CPU");
  #endif
  
@@ -1445,6 +1445,11 @@ index b02ac0c9d..4825a8089 100644
 +// The console's libkernel has pthread_getname_np itself (and no
 +// pthread_get_name_np).
 +extern "C" int pthread_getname_np(pthread_t thread, char* name, size_t size);
++// PS5X360E (alpha.88): the fixed thread layout places a thread by its name
++// (platform/ps5/thread_place.cpp; null is the calling thread).
++namespace xbox360ps5 {
++void PlaceNamedThread(void* thread, const char* name);
++}
 +#else
 +#define XE_GETTID() syscall(SYS_gettid)
 +#endif
@@ -1461,7 +1466,7 @@ index b02ac0c9d..4825a8089 100644
  #endif
  #else
  #define XE_HAS_SIGEV_THREAD_ID 0
-@@ -202,7 +219,7 @@ uint32_t current_thread_system_id() {
+@@ -202,7 +224,7 @@ uint32_t current_thread_system_id() {
  #if XE_PLATFORM_MAC
    return static_cast<uint32_t>(pthread_mach_thread_np(pthread_self()));
  #else
@@ -1470,7 +1475,7 @@ index b02ac0c9d..4825a8089 100644
  #endif
  }
  
-@@ -1011,7 +1028,14 @@ class PosixCondition<Thread> final : public PosixConditionBase {
+@@ -1011,7 +1033,14 @@ class PosixCondition<Thread> final : public PosixConditionBase {
        return result;
      };
  
@@ -1485,7 +1490,7 @@ index b02ac0c9d..4825a8089 100644
      if (result == 0) {
        return true;
      }
-@@ -1058,7 +1082,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
+@@ -1058,7 +1087,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
    explicit PosixCondition(pthread_t thread)
        : thread_(thread),
  #if XE_PLATFORM_LINUX
@@ -1494,7 +1499,7 @@ index b02ac0c9d..4825a8089 100644
  #endif
          signaled_(false),
          exit_code_(0),
-@@ -1154,6 +1178,10 @@ class PosixCondition<Thread> final : public PosixConditionBase {
+@@ -1154,6 +1183,10 @@ class PosixCondition<Thread> final : public PosixConditionBase {
    uint32_t system_id() const {
  #if XE_PLATFORM_MAC
      return static_cast<uint32_t>(pthread_mach_thread_np(thread_));
@@ -1505,7 +1510,7 @@ index b02ac0c9d..4825a8089 100644
  #else
      return static_cast<uint32_t>(thread_);
  #endif
-@@ -1188,6 +1216,14 @@ class PosixCondition<Thread> final : public PosixConditionBase {
+@@ -1188,6 +1221,14 @@ class PosixCondition<Thread> final : public PosixConditionBase {
    }
  
    void set_affinity_mask(uint64_t mask) const {
@@ -1520,7 +1525,7 @@ index b02ac0c9d..4825a8089 100644
      WaitStarted();
  #if XE_PLATFORM_MAC
      // Thread affinity is not supported on macOS.
-@@ -1299,8 +1335,9 @@ class PosixCondition<Thread> final : public PosixConditionBase {
+@@ -1299,8 +1340,9 @@ class PosixCondition<Thread> final : public PosixConditionBase {
      WaitStarted();
      std::unique_lock lock(callback_mutex_);
      user_callback_ = std::move(callback);
@@ -1532,7 +1537,7 @@ index b02ac0c9d..4825a8089 100644
      pthread_kill(thread_, GetSystemSignal(SignalType::kThreadUserCallback));
  #elif XE_PLATFORM_ANDROID
      sigval value{};
-@@ -1392,7 +1429,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
+@@ -1392,7 +1434,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
      return result == 0;
    }
  
@@ -1541,7 +1546,7 @@ index b02ac0c9d..4825a8089 100644
      bool is_current_thread = pthread_self() == thread_;
      {
        std::unique_lock lock(state_mutex_);
-@@ -1401,6 +1438,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
+@@ -1401,6 +1443,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
            // The other thread's pthread_cancel may never arrive; exit here.
            XELOGW("Terminate: thread was already marked finished; exiting");
            lock.unlock();
@@ -1549,7 +1554,7 @@ index b02ac0c9d..4825a8089 100644
  #if XE_PLATFORM_MAC && defined(__aarch64__)
            pthread_jit_write_protect_np(1);
  #endif
-@@ -1419,6 +1457,8 @@ class PosixCondition<Thread> final : public PosixConditionBase {
+@@ -1419,6 +1462,8 @@ class PosixCondition<Thread> final : public PosixConditionBase {
        NotifyAll();
      }
      if (is_current_thread) {
@@ -1558,7 +1563,17 @@ index b02ac0c9d..4825a8089 100644
  #if XE_PLATFORM_MAC && defined(__aarch64__)
        pthread_jit_write_protect_np(1);
  #endif
-@@ -1783,6 +1823,9 @@ class PosixThread final : public PosixConditionHandle<Thread> {
+@@ -1752,6 +1797,9 @@ class PosixThread final : public PosixConditionHandle<Thread> {
+     handle_.WaitStarted();
+     std::lock_guard lock(name_mutex_);
+     Thread::set_name(name);
++#if XE_PLATFORM_PS5
++    xbox360ps5::PlaceNamedThread(handle_.native_handle(), name.c_str());
++#endif
+     if (name.length() > 15) {
+       name = name.substr(0, 15);
+     }
+@@ -1783,6 +1831,9 @@ class PosixThread final : public PosixConditionHandle<Thread> {
    }
  
    void Terminate(int exit_code) override { handle_.Terminate(exit_code); }
@@ -1568,7 +1583,7 @@ index b02ac0c9d..4825a8089 100644
  
    void WaitSuspended() { handle_.WaitSuspended(); }
  
-@@ -1792,7 +1835,24 @@ class PosixThread final : public PosixConditionHandle<Thread> {
+@@ -1792,7 +1843,24 @@ class PosixThread final : public PosixConditionHandle<Thread> {
  
  thread_local PosixThread* current_thread_ = nullptr;
  
@@ -1593,7 +1608,7 @@ index b02ac0c9d..4825a8089 100644
  #if !XE_PLATFORM_ANDROID
    // Deferred so cancellation unwinds only at safe points, never mid-malloc.
    if (pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, nullptr) != 0) {
-@@ -1821,7 +1881,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+@@ -1821,7 +1889,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
  
    current_thread_ = thread;
  #if XE_PLATFORM_LINUX
@@ -1602,7 +1617,7 @@ index b02ac0c9d..4825a8089 100644
  #endif
    {
      std::unique_lock lock(thread->handle_.state_mutex_);
-@@ -1920,6 +1980,20 @@ void Thread::Exit(int exit_code) {
+@@ -1920,7 +1988,24 @@ void Thread::Exit(int exit_code) {
    assert_always();
  }
  
@@ -1621,9 +1636,13 @@ index b02ac0c9d..4825a8089 100644
 +}
 +
  void set_name(const std::string_view name) {
++#if XE_PLATFORM_PS5
++  xbox360ps5::PlaceNamedThread(nullptr, std::string(name).c_str());
++#endif
  #if XE_PLATFORM_MAC
    pthread_setname_np(std::string(name).c_str());
-@@ -1944,8 +2018,8 @@ static void signal_handler(int signal, siginfo_t* info, void* /*context*/) {
+ #else
+@@ -1944,8 +2029,8 @@ static void signal_handler(int signal, siginfo_t* info, void* /*context*/) {
        current_thread_->WaitSuspended();
      } break;
      case SignalType::kThreadUserCallback: {
@@ -2027,7 +2046,7 @@ index 3984cd9d6..3ee0b21a7 100644
    for (int i = 0; i < 32; i++) {
      crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
 diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
-index c9bac1689..bc5a9a222 100644
+index c9bac1689..5aaac8203 100644
 --- a/src/xenia/gpu/command_processor.cc
 +++ b/src/xenia/gpu/command_processor.cc
 @@ -8,6 +8,7 @@
@@ -2050,7 +2069,7 @@ index c9bac1689..bc5a9a222 100644
      "GPU");
  
  DEFINE_bool(
-@@ -109,6 +113,59 @@ DEFINE_bool(
+@@ -109,6 +113,68 @@ DEFINE_bool(
      "RAM without it, which breaks games that read it back.",
      "GPU");
  
@@ -2098,6 +2117,15 @@ index c9bac1689..bc5a9a222 100644
 +    "alpha.55.",
 +    "GPU");
 +
++DEFINE_uint32(
++    wait_reg_mem_spin_us, 0,
++    "PS5X360E (alpha.88): for this long (microseconds) from its start, a "
++    "WAIT_REG_MEM on guest memory looks again at the value in a loop instead "
++    "of sleeping wait_reg_mem_memory_poll_us between looks, so a guest CPU's "
++    "write a few microseconds later is seen at once. Costs the GPU thread's "
++    "CPU while it waits. 0: off.",
++    "GPU");
++
 +DEFINE_bool(
 +    occlusion_query_strict_early_submit, true,
 +    "With accurate (strict) occlusion queries, hand a query the guest will "
@@ -2110,7 +2138,7 @@ index c9bac1689..bc5a9a222 100644
  DEFINE_bool(
      memexport_enable, true,
      "Make memory export output visible to the CPU. Needed by games that read "
-@@ -144,6 +201,12 @@ DEFINE_bool(
+@@ -144,6 +210,12 @@ DEFINE_bool(
      "Vulkan, SV_Barycentrics on Direct3D 12).",
      "GPU");
  
@@ -2123,7 +2151,7 @@ index c9bac1689..bc5a9a222 100644
  namespace xe {
  namespace gpu {
  
-@@ -195,6 +258,8 @@ static ZPDMode ParseZPDMode() {
+@@ -195,6 +267,8 @@ static ZPDMode ParseZPDMode() {
    const std::string& mode = cvars::occlusion_query;
    if (mode == "strict") {
      return ZPDMode::kStrict;
@@ -2132,7 +2160,7 @@ index c9bac1689..bc5a9a222 100644
    } else if (mode == "fast") {
      return ZPDMode::kFast;
    } else if (mode == "fast-alt") {
-@@ -407,6 +472,9 @@ void CommandProcessor::SetZPDMode(ZPDMode mode) {
+@@ -407,6 +481,9 @@ void CommandProcessor::SetZPDMode(ZPDMode mode) {
      case ZPDMode::kStrict:
        mode_str = "strict";
        break;
@@ -2142,7 +2170,7 @@ index c9bac1689..bc5a9a222 100644
      default:
        break;
    }
-@@ -432,14 +500,19 @@ void CommandProcessor::SetDesiredSwapPostEffect(
+@@ -432,14 +509,19 @@ void CommandProcessor::SetDesiredSwapPostEffect(
  void CommandProcessor::ThrottlePresentation() {
    // Host frame rate limiting based on framerate_limit cvar.
    const uint32_t framerate_limit = cvars::framerate_limit;
@@ -2164,7 +2192,7 @@ index c9bac1689..bc5a9a222 100644
    const uint64_t tick_freq = Clock::guest_tick_frequency();
  
    const uint64_t target_duration_ticks = static_cast<uint64_t>(
-@@ -498,6 +571,12 @@ void CommandProcessor::SetTitleStateSuffix(std::string suffix) {
+@@ -498,6 +580,12 @@ void CommandProcessor::SetTitleStateSuffix(std::string suffix) {
  }
  
  void CommandProcessor::WorkerThreadMain() {
@@ -2177,7 +2205,7 @@ index c9bac1689..bc5a9a222 100644
    if (!SetupContext()) {
      xe::FatalError("Unable to setup command processor internal state");
      return;
-@@ -517,18 +596,47 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -517,18 +605,47 @@ void CommandProcessor::WorkerThreadMain() {
        // We've run out of commands to execute.
        // We spin here waiting for new ones, as the overhead of waiting on our
        // event is too high.
@@ -2226,7 +2254,7 @@ index c9bac1689..bc5a9a222 100644
            }
          } else {
            xe::threading::MaybeYield();
-@@ -539,6 +647,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -539,6 +656,7 @@ void CommandProcessor::WorkerThreadMain() {
                 (write_ptr_index == 0xBAADF00D ||
                  read_ptr_index_ == write_ptr_index));
        ReturnFromWait();
@@ -2234,7 +2262,7 @@ index c9bac1689..bc5a9a222 100644
        if (!worker_running_ || !pending_fns_.empty()) {
          continue;
        }
-@@ -546,6 +655,7 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -546,6 +664,7 @@ void CommandProcessor::WorkerThreadMain() {
      assert_true(read_ptr_index_ != write_ptr_index);
  
      // Execute. Note that we handle wraparound transparently.
@@ -2242,7 +2270,7 @@ index c9bac1689..bc5a9a222 100644
      read_ptr_index_ = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
  
      // ExecutePrimaryBuffer republishes this every read_ptr_update_freq_ dwords
-@@ -565,6 +675,184 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -565,6 +684,184 @@ void CommandProcessor::WorkerThreadMain() {
    ShutdownContext();
  }
  
@@ -2427,7 +2455,7 @@ index c9bac1689..bc5a9a222 100644
  void CommandProcessor::Pause() {
    if (paused_) {
      return;
-@@ -754,6 +1042,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
+@@ -754,6 +1051,9 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
        uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
        uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
        xe::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
@@ -2437,7 +2465,7 @@ index c9bac1689..bc5a9a222 100644
      }
    } else {
      switch (index) {
-@@ -1046,6 +1337,12 @@ void CommandProcessor::PrepareForWait() {
+@@ -1046,6 +1346,12 @@ void CommandProcessor::PrepareForWait() {
    trace_writer_.Flush();
    if (zpd_mode_ == ZPDMode::kStrict && zpd_awaited_report_count_) {
      PrepareZPDForWait();
@@ -2450,7 +2478,7 @@ index c9bac1689..bc5a9a222 100644
    }
    if (viz_pending_resolves_) {
      PollCompletedSubmission();
-@@ -1263,7 +1560,7 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1263,7 +1569,7 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
  
    ZPDReport& report = zpd_current_report_;
    report.address = report_address;
@@ -2459,7 +2487,7 @@ index c9bac1689..bc5a9a222 100644
      // See EVENT_WRITE_ZPD for additional information on the pending sentinel.
      const uint32_t kPendingSentinel = xe::byte_swap(0xFFFFFEEDu);
      const auto* guest =
-@@ -1291,8 +1588,19 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
+@@ -1291,8 +1597,19 @@ void CommandProcessor::QueueZPDReport(uint32_t report_address) {
      WriteZPDReport(report_address, report.speculative_value);
    }
    zpd_awaited_report_count_ += report.awaited;
@@ -2479,7 +2507,7 @@ index c9bac1689..bc5a9a222 100644
  
    // The next report's segment opens at its first draw.
    // Report runs without draws between them never use any pool slots.
-@@ -1340,8 +1648,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
+@@ -1340,8 +1657,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
    if (result == QueryOpenResult::kPoolExhausted) {
      zpd_stats_.pool_exhausted++;
    }
@@ -2489,7 +2517,7 @@ index c9bac1689..bc5a9a222 100644
      // Fast modes favor forward progress over accuracy. Report at least one
      // passing sample instead of waiting for a slot to become available.
      if (report) {
-@@ -1488,10 +1795,30 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
+@@ -1488,10 +1804,30 @@ CommandProcessor::ZPDReport* CommandProcessor::FindZPDReport(
    return nullptr;
  }
  
@@ -2522,7 +2550,7 @@ index c9bac1689..bc5a9a222 100644
        awaited_handle = report.handle;
        break;
      }
-@@ -1512,6 +1839,10 @@ void CommandProcessor::PrepareZPDForWait() {
+@@ -1512,6 +1848,10 @@ void CommandProcessor::PrepareZPDForWait() {
    if (!wait_report || !wait_report->pending_segments) {
      return;
    }
@@ -2533,7 +2561,7 @@ index c9bac1689..bc5a9a222 100644
    if (AwaitQueryResolve(wait_report->handle,
                          wait_report->last_segment_end_submission)) {
      PumpPendingRetire();
-@@ -1543,13 +1874,22 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1543,13 +1883,22 @@ void CommandProcessor::PumpPendingRetire() {
        if (zpd_mode_ == ZPDMode::kStrict) {
          break;
        }
@@ -2557,7 +2585,7 @@ index c9bac1689..bc5a9a222 100644
          break;
        }
        front.delta.z_pass = std::max<uint64_t>(front.delta.z_pass, 1);
-@@ -1559,6 +1899,21 @@ void CommandProcessor::PumpPendingRetire() {
+@@ -1559,6 +1908,21 @@ void CommandProcessor::PumpPendingRetire() {
      zpd_pending_retire_start_ms_ = 0;
  
      zpd_sample_counter_ += front.delta;
@@ -2580,7 +2608,7 @@ index c9bac1689..bc5a9a222 100644
        if (fast_zpd_report_cached_deltas_.size() >= kFastZPDCacheMaxEntries &&
            !fast_zpd_report_cached_deltas_.count(front.address)) {
 diff --git a/src/xenia/gpu/command_processor.h b/src/xenia/gpu/command_processor.h
-index 3057e6bc9..e3afce82c 100644
+index 3057e6bc9..6706a3e3e 100644
 --- a/src/xenia/gpu/command_processor.h
 +++ b/src/xenia/gpu/command_processor.h
 @@ -21,6 +21,7 @@
@@ -2721,7 +2749,7 @@ index 3057e6bc9..e3afce82c 100644
  
    uint32_t primary_buffer_ptr_ = 0;
    uint32_t primary_buffer_size_ = 0;
-@@ -718,6 +776,39 @@ class CommandProcessor {
+@@ -718,6 +776,50 @@ class CommandProcessor {
    uint32_t read_ptr_update_freq_ = 0;
    uint32_t read_ptr_writeback_ptr_ = 0;
  
@@ -2757,6 +2785,17 @@ index 3057e6bc9..e3afce82c 100644
 +           diag_primary_write_ = 0;
 +  void DiagWalk(const char* what, const uint8_t* buffer, uint32_t capacity,
 +                uint32_t read, uint32_t write);
++
++  // PS5X360E (alpha.88): WAIT_REG_MEM packets that did not match at once, on
++  // guest memory and on registers, and the time until they did; the sleeps of
++  // the memory waits, with the time they asked for and the time they took; and
++  // the memory waits that ended while the GPU thread looked again without
++  // sleeping first (wait_reg_mem_spin_us). Taken by the performance summary.
++  struct WaitRegMemStats {
++    std::atomic<uint64_t> memory_waits{0}, memory_ns{0}, register_waits{0},
++        register_ns{0}, sleeps{0}, sleep_asked_ns{0}, sleep_ns{0}, spun{0};
++  };
++  WaitRegMemStats wait_reg_mem_stats_;
 +
    std::unique_ptr<xe::threading::Event> write_ptr_index_event_;
    std::atomic<uint32_t> write_ptr_index_;
@@ -3193,7 +3232,7 @@ index bada58008..2ace3791a 100644
  DEFINE_bool(
      gpu_debug_markers, false,
 diff --git a/src/xenia/gpu/gpu_flags.h b/src/xenia/gpu/gpu_flags.h
-index d20f38f1f..97df2afe0 100644
+index d20f38f1f..3c31dd014 100644
 --- a/src/xenia/gpu/gpu_flags.h
 +++ b/src/xenia/gpu/gpu_flags.h
 @@ -11,6 +11,67 @@
@@ -3264,7 +3303,7 @@ index d20f38f1f..97df2afe0 100644
  DECLARE_path(trace_gpu_prefix);
  DECLARE_bool(trace_gpu_stream);
  
-@@ -28,6 +89,16 @@ DECLARE_bool(gpu_allow_invalid_fetch_constants);
+@@ -28,6 +89,17 @@ DECLARE_bool(gpu_allow_invalid_fetch_constants);
  DECLARE_bool(shared_memory_zero_copy);
  
  DECLARE_bool(enable_host_buffer);
@@ -3277,11 +3316,12 @@ index d20f38f1f..97df2afe0 100644
 +DECLARE_bool(readback_resolve_async);
 +DECLARE_uint32(readback_async_submit_spacing_ms);
 +DECLARE_uint32(wait_reg_mem_memory_poll_us);
++DECLARE_uint32(wait_reg_mem_spin_us);
 +DECLARE_uint32(framerate_limit_millihz);
  
  DECLARE_bool(memexport_enable);
  DECLARE_bool(memexport_await_pixel_exports);
-@@ -49,9 +120,13 @@ DECLARE_bool(occlusion_query_full_counters);
+@@ -49,9 +121,13 @@ DECLARE_bool(occlusion_query_full_counters);
  
  DECLARE_bool(occlusion_query_viz);
  
@@ -3380,7 +3420,7 @@ index f0652b6b5..05f252b70 100644
    command_processor_->increment_counter();
  
 diff --git a/src/xenia/gpu/pm4_command_processor_implement.h b/src/xenia/gpu/pm4_command_processor_implement.h
-index ee3cd5e8a..a596f119f 100644
+index ee3cd5e8a..75499d4ad 100644
 --- a/src/xenia/gpu/pm4_command_processor_implement.h
 +++ b/src/xenia/gpu/pm4_command_processor_implement.h
 @@ -86,6 +86,13 @@ void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
@@ -3441,24 +3481,33 @@ index ee3cd5e8a..a596f119f 100644
    COMMAND_PROCESSOR::IssueSwap(frontbuffer_ptr, frontbuffer_width,
                                 frontbuffer_height);
  
-@@ -877,6 +900,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -877,6 +900,19 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
                  : register_file_->values[poll_reg_addr];
  
    bool matched = false;
 +  // PS5X360E: a wait that never ends hangs the title with no trace of what it
 +  // waits for; report it once after a few seconds.
-+  std::chrono::steady_clock::time_point wait_started{};
++  // alpha.88: in host ticks (the time-stamp counter on the console, where
++  // steady_clock is a system call), from the first look that did not match; 0
++  // until then. Also how long the wait took, for the performance summary.
++  uint64_t wait_started = 0;
 +  bool wait_reported = false;
++  const uint64_t tick_frequency = xe::Clock::QueryHostTickFrequency();
++  auto ticks_to_ns = [tick_frequency](uint64_t ticks) {
++    return tick_frequency == 1000000000ull
++               ? ticks
++               : uint64_t(double(ticks) * 1e9 / double(tick_frequency));
++  };
  
    do {
      uint32_t value = value_ref;
-@@ -902,6 +929,74 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -902,6 +938,74 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
      matched = MatchValueAndRef(value & mask, ref, wait_info);
  
      if (!matched) {
 +      // PS5X360E: on the console, what earlier GPU work writes is there for the
 +      // CP to see; here export and resolve output may still be on the host GPU.
-+      if (is_memory && wait_started == std::chrono::steady_clock::time_point{}) {
++      if (is_memory && !wait_started) {
 +        const uint32_t block = poll_reg_addr & ~uint32_t(0x1F);
 +        diag_wait_block_.store(block, std::memory_order_relaxed);
 +        const uint32_t* words = reinterpret_cast<const uint32_t*>(
@@ -3486,11 +3535,11 @@ index ee3cd5e8a..a596f119f 100644
 +        }
 +      }
 +      if (!wait_reported) {
-+        const auto now = std::chrono::steady_clock::now();
-+        if (wait_started == std::chrono::steady_clock::time_point{}) {
-+          wait_started = now;
++        const uint64_t now = xe::Clock::QueryHostTickCount();
++        if (!wait_started) {
++          wait_started = now ? now : 1;
 +          COMMAND_PROCESSOR::DiagSetPhase(DiagPhase::kWaitRegMem);
-+        } else if (now - wait_started > std::chrono::seconds(3)) {
++        } else if (now - wait_started > 3 * tick_frequency) {
 +          wait_reported = true;
 +          XELOGW(
 +              "GPU: WAIT_REG_MEM still waiting after 3 s: {} 0x{:08X}, "
@@ -3527,7 +3576,7 @@ index ee3cd5e8a..a596f119f 100644
        // Wait using the duration specified by the guest.
        if (wait >= 0x100) {
          PrepareForWait();
-@@ -914,7 +1009,15 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -914,7 +1018,43 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
                static_cast<uint64_t>(wait_ms * 1000000 * 0.90);
            xe::threading::NanoSleep(sleep_ns);
  #else
@@ -3536,33 +3585,67 @@ index ee3cd5e8a..a596f119f 100644
 +          // again sooner than the guest's (millisecond) wait asks; the
 +          // vertical blank register keeps that duration.
 +          if (is_memory && cvars::wait_reg_mem_memory_poll_us) {
-+            xe::threading::NanoSleep(
-+                int64_t(cvars::wait_reg_mem_memory_poll_us) * 1000);
++            // alpha.88: first, for wait_reg_mem_spin_us from the wait's start,
++            // the value is watched in a loop until it changes (then looked at
++            // again above); after that, sleeps, timed for the summary.
++            const uint64_t spin_ticks =
++                uint64_t(cvars::wait_reg_mem_spin_us) * tick_frequency /
++                1000000;
++            const uint64_t before = xe::Clock::QueryHostTickCount();
++            if (spin_ticks && before - wait_started < spin_ticks) {
++              const uint32_t seen = value_ref;
++              while (value_ref == seen &&
++                     xe::Clock::QueryHostTickCount() - wait_started <
++                         spin_ticks) {
++                xe::SpinPause();
++              }
++              if (value_ref != seen) {
++                wait_reg_mem_stats_.spun.fetch_add(1,
++                                                   std::memory_order_relaxed);
++              }
++            } else {
++              const uint64_t asked_ns =
++                  uint64_t(cvars::wait_reg_mem_memory_poll_us) * 1000;
++              xe::threading::NanoSleep(int64_t(asked_ns));
++              wait_reg_mem_stats_.sleeps.fetch_add(1,
++                                                   std::memory_order_relaxed);
++              wait_reg_mem_stats_.sleep_asked_ns.fetch_add(
++                  asked_ns, std::memory_order_relaxed);
++              wait_reg_mem_stats_.sleep_ns.fetch_add(
++                  ticks_to_ns(xe::Clock::QueryHostTickCount() - before),
++                  std::memory_order_relaxed);
++            }
 +          } else {
 +            xe::threading::Sleep(std::chrono::milliseconds(wait / 0x100));
 +          }
  #endif
          }
          // Unlimited vblank mode (guest_display_refresh_cap=false) - spin since
-@@ -928,6 +1031,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+@@ -928,6 +1068,23 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
        }
      }
    } while (!matched);
-+  if (wait_started != std::chrono::steady_clock::time_point{}) {
++  if (wait_started) {
 +    COMMAND_PROCESSOR::DiagSetPhase(DiagPhase::kRing);
 +    COMMAND_PROCESSOR::OnGuestBatch();
-+  }
-+  if (is_memory && wait_started != std::chrono::steady_clock::time_point{}) {
-+    DiagRecordWrite(0x104, poll_reg_addr,
-+                    uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(
-+                                 std::chrono::steady_clock::now() - wait_started)
-+                                 .count()),
-+                    0);
++    const uint64_t waited_ns =
++        ticks_to_ns(xe::Clock::QueryHostTickCount() - wait_started);
++    if (is_memory) {
++      wait_reg_mem_stats_.memory_waits.fetch_add(1, std::memory_order_relaxed);
++      wait_reg_mem_stats_.memory_ns.fetch_add(waited_ns,
++                                              std::memory_order_relaxed);
++      DiagRecordWrite(0x104, poll_reg_addr, uint32_t(waited_ns / 1000), 0);
++    } else {
++      wait_reg_mem_stats_.register_waits.fetch_add(1,
++                                                   std::memory_order_relaxed);
++      wait_reg_mem_stats_.register_ns.fetch_add(waited_ns,
++                                                std::memory_order_relaxed);
++    }
 +  }
  
    return true;
  }
-@@ -985,6 +1099,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
+@@ -985,6 +1142,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
  
    auto endianness = static_cast<xenos::Endian>(mem_addr & 0x3);
    mem_addr &= ~0x3;
@@ -3570,7 +3653,7 @@ index ee3cd5e8a..a596f119f 100644
    reg_val = GpuSwap(reg_val, endianness);
    xe::store(memory_->TranslatePhysical(mem_addr), reg_val);
    trace_writer_.WriteMemoryWrite(CpuToGpu(mem_addr), 4);
-@@ -1004,6 +1119,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
+@@ -1004,6 +1162,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
  
    for (uint32_t i = 0; i < count - 1; i++) {
      uint32_t write_data = reader_.ReadAndSwap<uint32_t>();
@@ -3580,7 +3663,7 @@ index ee3cd5e8a..a596f119f 100644
  
      auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
      auto addr = write_addr & ~0x3;
-@@ -1049,6 +1167,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
+@@ -1049,6 +1210,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
      value = register_file_->values[poll_reg_addr];
    }
    bool matched = MatchValueAndRef(value & mask, ref, wait_info);
@@ -3589,7 +3672,7 @@ index ee3cd5e8a..a596f119f 100644
  
    if (matched) {
      // Write.
-@@ -1088,7 +1208,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
+@@ -1088,7 +1251,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
      // Just an event flag? Where does this write?
    } else {
      // Write to an address.
@@ -3608,7 +3691,7 @@ index ee3cd5e8a..a596f119f 100644
      reader_.AdvanceRead((count - 1) * sizeof(uint32_t));
    }
    return true;
-@@ -1123,6 +1253,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
+@@ -1123,6 +1296,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
      // Write value.
      data_value = value;
    }
@@ -3616,7 +3699,7 @@ index ee3cd5e8a..a596f119f 100644
    auto endianness = static_cast<xenos::Endian>(address & 0x3);
    address &= ~0x3;
    data_value = GpuSwap(data_value, endianness);
-@@ -1366,10 +1497,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
+@@ -1366,10 +1540,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
        }
  
        if (!draw_succeeded) {
@@ -5051,7 +5134,7 @@ index e1feb3fd4..aff58b41a 100644
    // uintmax_t to ensure uint64_t and pointer alignment of all structures.
    std::vector<uintmax_t> command_stream_;
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index b61995956..161359c96 100644
+index b61995956..5ee631098 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,16 +8,21 @@
@@ -5129,7 +5212,7 @@ index b61995956..161359c96 100644
  DECLARE_bool(submit_on_primary_buffer_end);
  
  DEFINE_bool(
-@@ -48,10 +99,55 @@ DEFINE_bool(
+@@ -48,10 +99,56 @@ DEFINE_bool(
      "1.3 or VK_KHR_dynamic_rendering extension support.",
      "Vulkan");
  
@@ -5147,6 +5230,7 @@ index b61995956..161359c96 100644
 +// would hide the real one from the rest of this file).
 +namespace xbox360ps5 {
 +void PlaceCallingThread(bool gpu);
++void PlaceCallingThreadAsSubmitter();
 +// platform/ps5/memory_ps5.cpp and exception_handler.cpp: page protection
 +// changes and the time in them, and write faults.
 +extern std::atomic<unsigned long long> protect_syscalls, protect_nanoseconds,
@@ -5185,7 +5269,7 @@ index b61995956..161359c96 100644
  // Generated with `xb buildshaders`.
  namespace shaders {
  #include "xenia/gpu/shaders/bytecode/vulkan_spirv/apply_gamma_pwl_cs.h"
-@@ -190,6 +286,24 @@ void VulkanCommandProcessor::InitializeShaderStorage(
+@@ -190,6 +287,24 @@ void VulkanCommandProcessor::InitializeShaderStorage(
                                             std::move(completion_callback));
  }
  
@@ -5210,7 +5294,7 @@ index b61995956..161359c96 100644
  void VulkanCommandProcessor::RestoreEdramSnapshot(const void* snapshot) {
    // Starting a new frame because descriptors may be needed.
    if (!BeginSubmission(true)) {
-@@ -1421,10 +1535,15 @@ bool VulkanCommandProcessor::SetupContext() {
+@@ -1421,10 +1536,15 @@ bool VulkanCommandProcessor::SetupContext() {
    system_constants_.zpd_fsi_counter_index = UINT32_MAX;
    zpd_counter_index_force_update_ = true;
  
@@ -5226,7 +5310,7 @@ index b61995956..161359c96 100644
    AwaitAllQueueOperationsCompletion();
  
    ResetResolveReadWatch();
-@@ -1641,8 +1760,29 @@ void VulkanCommandProcessor::ShutdownContext() {
+@@ -1641,8 +1761,29 @@ void VulkanCommandProcessor::ShutdownContext() {
  }
  
  void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
@@ -5256,7 +5340,7 @@ index b61995956..161359c96 100644
    if (index >= XE_GPU_REG_SHADER_CONSTANT_000_X &&
        index <= XE_GPU_REG_SHADER_CONSTANT_511_W) {
      if (frame_open_) {
-@@ -1693,14 +1833,204 @@ void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+@@ -1693,14 +1834,204 @@ void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
          ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferSystem);
    }
  }
@@ -5461,7 +5545,7 @@ index b61995956..161359c96 100644
  void VulkanCommandProcessor::SparseBindBuffer(
      VkBuffer buffer, uint32_t bind_count, const VkSparseMemoryBind* binds,
      VkPipelineStageFlags wait_stage_mask) {
-@@ -1904,6 +2234,9 @@ bool VulkanCommandProcessor::FaultCopyResolveToGuestRam(
+@@ -1904,6 +2235,9 @@ bool VulkanCommandProcessor::FaultCopyResolveToGuestRam(
    VkSubmitInfo submit_info = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
    submit_info.commandBufferCount = 1;
    submit_info.pCommandBuffers = &resolve_fault_command_buffer_;
@@ -5471,7 +5555,7 @@ index b61995956..161359c96 100644
    VkResult submit_result;
    {
      ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
-@@ -1915,8 +2248,14 @@ bool VulkanCommandProcessor::FaultCopyResolveToGuestRam(
+@@ -1915,8 +2249,14 @@ bool VulkanCommandProcessor::FaultCopyResolveToGuestRam(
    if (submit_result != VK_SUCCESS) {
      return false;
    }
@@ -5486,7 +5570,7 @@ index b61995956..161359c96 100644
    dfn.vkResetFences(device, 1, &resolve_fault_fence_);
    if (wait_result != VK_SUCCESS) {
      return false;
-@@ -1968,10 +2307,29 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -1968,10 +2308,29 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                                         uint32_t frontbuffer_height) {
    SCOPE_profile_cpu_f("gpu");
    EndZPDFrame();
@@ -5516,7 +5600,7 @@ index b61995956..161359c96 100644
  
    CollectCompletedGpuTimeQueries();
    static constexpr uint32_t kRenderPassWindowFrames = 60;
-@@ -2018,7 +2376,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2018,7 +2377,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
  
    auto aspect = graphics_system_->GetScaledAspectRatio();
  
@@ -5525,7 +5609,7 @@ index b61995956..161359c96 100644
        frontbuffer_width_scaled, frontbuffer_height_scaled, aspect.first,
        aspect.second,
        [this, frontbuffer_width_scaled, frontbuffer_height_scaled,
-@@ -2199,7 +2557,14 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2199,7 +2558,14 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
          uint32_t& gamma_ramp_frame_index_ref =
              use_pwl_gamma_ramp ? gamma_ramp_pwl_current_frame_
                                 : gamma_ramp_256_entry_table_current_frame_;
@@ -5541,7 +5625,7 @@ index b61995956..161359c96 100644
            constexpr uint32_t kGammaRampSize256EntryTable =
                sizeof(uint32_t) * 256;
            constexpr uint32_t kGammaRampSizePWL = sizeof(uint16_t) * 2 * 3 * 128;
-@@ -2570,12 +2935,18 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+@@ -2570,12 +2936,18 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
          // Need to submit all the commands before giving the image back to the
          // presenter so it can submit its own commands for displaying it to the
          // queue, and also need to submit the release barrier.
@@ -5560,7 +5644,7 @@ index b61995956..161359c96 100644
    EndSubmission(true);
  }
  
-@@ -2586,6 +2957,7 @@ void VulkanCommandProcessor::OnPrimaryBufferEnd() {
+@@ -2586,6 +2958,7 @@ void VulkanCommandProcessor::OnPrimaryBufferEnd() {
  
    if (cvars::submit_on_primary_buffer_end && submission_open_ &&
        !scratch_buffer_used_) {
@@ -5568,7 +5652,7 @@ index b61995956..161359c96 100644
      EndSubmission(false);
    }
  }
-@@ -3398,6 +3770,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3398,6 +3771,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -5580,7 +5664,7 @@ index b61995956..161359c96 100644
  
    const RegisterFile& regs = *register_file_;
  
-@@ -3728,6 +4105,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3728,6 +4106,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
      CheckSubmissionCompletionAndDeviceLoss(sampler_overflow_await_submission);
    }
  
@@ -5588,7 +5672,7 @@ index b61995956..161359c96 100644
    // Put the window offset into the EDRAM bases when possible.
    int32_t window_offset_tiles = render_target_cache_->GetWindowOffsetTiles(
        regs, normalized_depth_control, normalized_color_mask, frame_current_);
-@@ -3738,6 +4116,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3738,6 +4117,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
            normalized_color_mask, *vertex_shader, window_offset_tiles)) {
      return false;
    }
@@ -5596,7 +5680,7 @@ index b61995956..161359c96 100644
    const char* stand_in_wait_reason =
        render_target_cache_->GetPipelineStandInWaitReason(
            frame_current_, *vertex_shader, pixel_shader, memexport_used_vertex,
-@@ -3783,6 +4162,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3783,6 +4163,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
      OnVIZSurveyDraw(false);
      return true;
    }
@@ -5604,7 +5688,7 @@ index b61995956..161359c96 100644
    VkPipeline current_pipeline =
        pipeline->pipeline.load(std::memory_order_acquire);
    // Whether the placeholder pipeline is bound rather than the real one. Derived
-@@ -3839,7 +4219,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3839,7 +4220,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
        (pixel_shader != nullptr && pixel_shader->bindings_ready()
             ? pixel_shader->GetUsedTextureMaskAfterTranslation()
             : 0);
@@ -5619,7 +5703,7 @@ index b61995956..161359c96 100644
  
    // Update the graphics pipeline, and if the new graphics pipeline has a
    // different layout, invalidate incompatible descriptor sets before updating
-@@ -3975,6 +4362,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -3975,6 +4363,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
        normalized_color_mask,
        apply_host_depth_polygon_offset ? &host_depth_polygon_offset : nullptr,
        window_offset_tiles);
@@ -5627,7 +5711,7 @@ index b61995956..161359c96 100644
  
    {
      uint32_t ucode_base_dwords = 0, cf_instr_count = 0;
-@@ -4042,6 +4430,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4042,6 +4431,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
                        placeholder_pixel_shader)) {
      return false;
    }
@@ -5635,7 +5719,7 @@ index b61995956..161359c96 100644
  
    // Ensure vertex buffers are resident.
    //
-@@ -4112,16 +4501,30 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4112,16 +4502,30 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
      }
  
      if (vfetch_current_queued) {
@@ -5667,7 +5751,7 @@ index b61995956..161359c96 100644
            XELOGE(
                "Failed to request vertex buffer at 0x{:08X} (size {}) in the "
                "shared memory",
-@@ -4129,6 +4532,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4129,6 +4533,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
            return false;
          }
        }
@@ -5680,7 +5764,7 @@ index b61995956..161359c96 100644
      }
    }
  
-@@ -4173,6 +4582,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4173,6 +4583,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
    // After all commands that may dispatch, copy or insert barriers, submit the
    // barriers (may end the render pass), and (re)enter the render pass before
    // drawing.
@@ -5688,7 +5772,7 @@ index b61995956..161359c96 100644
    uint32_t zpd_hybrid_index_before_render_pass =
        active_segment_.hybrid ? active_query_index_ : UINT32_MAX;
    SubmitBarriersAndEnterRenderTargetCacheRenderPass(
-@@ -4265,6 +4675,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4265,6 +4676,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
    }
  
    if (!memexport_ranges_.empty()) {
@@ -5699,7 +5783,7 @@ index b61995956..161359c96 100644
      if (route_to_host) {
        // Producer draw: output landed in host_buffer_ (guest RAM), already CPU
        // coherent, so no readback. Just record the written pages. Consumers then
-@@ -4285,13 +4699,45 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
+@@ -4285,13 +4700,45 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
      }
    }
  
@@ -5745,7 +5829,7 @@ index b61995956..161359c96 100644
    if (memexport_ranges_.empty()) {
      return;
    }
-@@ -4372,6 +4818,173 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
+@@ -4372,6 +4819,173 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
    memexport_staged_.clear();
  }
  
@@ -5919,7 +6003,7 @@ index b61995956..161359c96 100644
  bool VulkanCommandProcessor::EnsureMemexportRangeInDeviceBuffer(
      uint32_t base_bytes, uint32_t size_bytes, bool whole_range) {
    // Readers of the device buffer need memexport output copied across from
-@@ -4768,6 +5381,35 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4768,6 +5382,35 @@ bool VulkanCommandProcessor::IssueCopy() {
      return false;
    }
    ++submission_in_progress_.resolve_count;
@@ -5955,7 +6039,7 @@ index b61995956..161359c96 100644
  
    // The resolve wrote the device buffer. Drop any stale memexport marks so the
    // output isn't overwritten with guest RAM by a later texture load.
-@@ -4785,9 +5427,17 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4785,9 +5428,17 @@ bool VulkanCommandProcessor::IssueCopy() {
          is_scaled = false;
          written_length = mirrored_length;
        }
@@ -5973,7 +6057,7 @@ index b61995956..161359c96 100644
  
    // Pop debug marker for resolve operation.
    if (debug_markers_enabled_) {
-@@ -4796,9 +5446,212 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4796,9 +5447,212 @@ bool VulkanCommandProcessor::IssueCopy() {
  
    SubmitRequestedResolve();
  
@@ -6186,7 +6270,7 @@ index b61995956..161359c96 100644
  void VulkanCommandProcessor::EnsureQueryResources() {
    // VIZ surveys need the pool even when ZPD reports are faked.
    if ((zpd_mode_ == ZPDMode::kFake && !cvars::occlusion_query_viz) ||
-@@ -4922,7 +5775,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4922,7 +5776,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
        is_pool_exhausted = !host_query_pool_->has_free_indices();
      }
  
@@ -6195,7 +6279,7 @@ index b61995956..161359c96 100644
        return QueryOpenResult::kPoolExhausted;
      }
  
-@@ -4947,6 +5800,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4947,6 +5801,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
          saved_framebuffer = current_framebuffer_;
          EndRenderPass();
        }
@@ -6203,7 +6287,7 @@ index b61995956..161359c96 100644
        if (!EndSubmission(false)) {
          return QueryOpenResult::kFailed;
        }
-@@ -4973,7 +5827,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
+@@ -4973,7 +5828,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenQuery(
          XELOGI("ZPD: Stall awaiting submission={} completed_before={}",
                 wait_for, completed_submission);
        }
@@ -6212,7 +6296,7 @@ index b61995956..161359c96 100644
        PumpQueryResolves();
      }
  
-@@ -5147,6 +6001,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
+@@ -5147,6 +6002,12 @@ void VulkanCommandProcessor::PumpQueryResolves() {
  bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                 uint64_t wait_for_submission) {
    assert_not_zero(wait_for_submission);
@@ -6225,7 +6309,7 @@ index b61995956..161359c96 100644
  
    // The resolve is still in the open submission.
    if (wait_for_submission >= GetCurrentSubmission()) {
-@@ -5154,13 +6014,15 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5154,13 +6015,15 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
        return false;
      }
      EndRenderPass();
@@ -6242,7 +6326,7 @@ index b61995956..161359c96 100644
    }
  
    PumpQueryResolves();
-@@ -5169,6 +6031,20 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+@@ -5169,6 +6032,20 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
    return !report || !report->pending_segments;
  }
  
@@ -6263,7 +6347,7 @@ index b61995956..161359c96 100644
  bool VulkanCommandProcessor::EnsureVIZPredicateBuffer() {
    if (viz_predicate_buffer_ != VK_NULL_HANDLE) {
      return true;
-@@ -5306,7 +6182,7 @@ void VulkanCommandProcessor::AwaitVIZQueryResolve(
+@@ -5306,7 +6183,7 @@ void VulkanCommandProcessor::AwaitVIZQueryResolve(
    }
  
    if (wait_for_submission > GetCompletedSubmission()) {
@@ -6272,7 +6356,7 @@ index b61995956..161359c96 100644
    }
  
    PumpQueryResolves();
-@@ -5378,7 +6254,7 @@ void VulkanCommandProcessor::LogRecentSubmissions(const char* context) {
+@@ -5378,7 +6255,7 @@ void VulkanCommandProcessor::LogRecentSubmissions(const char* context) {
  }
  
  void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
@@ -6281,7 +6365,7 @@ index b61995956..161359c96 100644
    // Only report once, no need to retry a wait that won't succeed anyway.
    if (device_lost_) {
      return;
-@@ -5386,6 +6262,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
+@@ -5386,6 +6263,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
  
    if (await_submission >= GetCurrentSubmission()) {
      if (submission_open_) {
@@ -6289,7 +6373,7 @@ index b61995956..161359c96 100644
        EndSubmission(false);
      }
      // A submission won't be ended if it hasn't been started, or if ending
-@@ -5393,7 +6270,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
+@@ -5393,7 +6271,7 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
      await_submission = GetCurrentSubmission() - 1;
    }
  
@@ -6298,7 +6382,7 @@ index b61995956..161359c96 100644
  
    const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
  
-@@ -5517,7 +6394,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5517,7 +6395,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
        is_opening_frame
            ? closed_frame_submissions_[frame_current_ % kMaxFramesInFlight]
            : 0;
@@ -6307,7 +6391,7 @@ index b61995956..161359c96 100644
    const uint64_t completed_submission = GetCompletedSubmission();
    if (device_lost_ || completed_submission < await_submission) {
      return false;
-@@ -5549,6 +6426,14 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5549,6 +6427,14 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
      // Start a new deferred command buffer - will submit it to the real one in
      // the end of the submission.
      deferred_command_buffer_.Reset();
@@ -6322,7 +6406,7 @@ index b61995956..161359c96 100644
  
      // Reset cached state of the command buffer.
      dynamic_viewport_update_needed_ = true;
-@@ -5665,6 +6550,171 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5665,6 +6551,203 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
    return true;
  }
  
@@ -6364,6 +6448,13 @@ index b61995956..161359c96 100644
 +    perf_draws_previous_ = perf_draws_.load(std::memory_order_relaxed);
 +    perf_thread_cpu_previous_ns_ =
 +        perf_thread_cpu_ns_.load(std::memory_order_relaxed);
++    for (auto* counter :
++         {&wait_reg_mem_stats_.memory_waits, &wait_reg_mem_stats_.memory_ns,
++          &wait_reg_mem_stats_.register_waits, &wait_reg_mem_stats_.register_ns,
++          &wait_reg_mem_stats_.sleeps, &wait_reg_mem_stats_.sleep_asked_ns,
++          &wait_reg_mem_stats_.sleep_ns, &wait_reg_mem_stats_.spun}) {
++      counter->store(0);
++    }
 +    return {};
 +  }
 +  const double seconds = double(now - since) / 1e9;
@@ -6455,6 +6546,31 @@ index b61995956..161359c96 100644
 +        per_s(spans[size_t(GpuSection::kUpload)]), per_s(changes),
 +        per_s(overflow));
 +  }
++  // PS5X360E (alpha.88): the GPU thread's waits on what the guest writes
++  // (WAIT_REG_MEM): how many did not end at once and their time, the sleeps
++  // between looks at guest memory with the time each asked for and took (a
++  // sleep that takes far longer than asked delays the frame), and the waits
++  // that ended while it watched without sleeping (wait_reg_mem_spin_us).
++  std::string wait_reg_mem;
++  {
++    WaitRegMemStats& s = wait_reg_mem_stats_;
++    const uint64_t memory_waits = s.memory_waits.exchange(0);
++    const uint64_t memory_ns = s.memory_ns.exchange(0);
++    const uint64_t register_waits = s.register_waits.exchange(0);
++    const uint64_t register_ns = s.register_ns.exchange(0);
++    const uint64_t sleeps = s.sleeps.exchange(0);
++    const uint64_t asked_ns = s.sleep_asked_ns.exchange(0);
++    const uint64_t slept_ns = s.sleep_ns.exchange(0);
++    const uint64_t spun = s.spun.exchange(0);
++    wait_reg_mem = fmt::format(
++        "; GPU waits on the guest: memory {:.0f}/s {:.1f} ms/s ({:.0f} "
++        "sleeps/s, each asked {:.0f} us and took {:.0f} us; {:.0f}/s seen "
++        "while watching), registers {:.0f}/s {:.1f} ms/s",
++        per_s(memory_waits), ms_per_s(memory_ns), per_s(sleeps),
++        sleeps ? double(asked_ns) / 1000.0 / double(sleeps) : 0.0,
++        sleeps ? double(slept_ns) / 1000.0 / double(sleeps) : 0.0,
++        per_s(spun), per_s(register_waits), ms_per_s(register_ns));
++  }
 +  std::string thread_cpu =
 +      thread_cpu_ns ? fmt::format("{:.0f}%", 100.0 *
 +                                                 double(window_thread_cpu_ns) /
@@ -6468,7 +6584,7 @@ index b61995956..161359c96 100644
 +      "waits: occlusion query {:.0f}/s {:.1f} ms/s, frames in flight {:.0f}/s "
 +      "{:.1f} ms/s, export output for the guest {:.0f}/s {:.1f} ms/s, other "
 +      "{:.0f}/s {:.1f} ms/s, resolve read by CPU {:.0f}/s {:.1f} ms/s; render "
-+      "output copied for the CPU without waiting {:.0f}/s{}",
++      "output copied for the CPU without waiting {:.0f}/s{}{}",
 +      per_s(window_draws), thread_cpu, draw_stages,
 +      100.0 * double(busy) / double(now - since), ms_per_s(busy), timed,
 +      untimed, per_s(total_submits),
@@ -6488,13 +6604,13 @@ index b61995956..161359c96 100644
 +      ms_per_s(wait_ns[uint32_t(WaitReason::kOther)]),
 +      per_s(waits[uint32_t(WaitReason::kFaultCopy)]),
 +      ms_per_s(wait_ns[uint32_t(WaitReason::kFaultCopy)]),
-+      per_s(async_readbacks), gpu_sections);
++      per_s(async_readbacks), wait_reg_mem, gpu_sections);
 +}
 +
  void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    if (!vulkan_device->properties().timestampPeriod) {
-@@ -5679,6 +6729,63 @@ void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
+@@ -5679,6 +6762,63 @@ void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
                              &gpu_time_query_pool_) != VK_SUCCESS) {
      XELOGE("Vulkan: failed to create the GPU time query pool");
      gpu_time_query_pool_ = VK_NULL_HANDLE;
@@ -6558,7 +6674,7 @@ index b61995956..161359c96 100644
    }
  }
  
-@@ -5690,6 +6797,11 @@ void VulkanCommandProcessor::DestroyGpuTimeQueryPool() {
+@@ -5690,6 +6830,11 @@ void VulkanCommandProcessor::DestroyGpuTimeQueryPool() {
    vulkan_device->functions().vkDestroyQueryPool(vulkan_device->device(),
                                                  gpu_time_query_pool_, nullptr);
    gpu_time_query_pool_ = VK_NULL_HANDLE;
@@ -6570,7 +6686,7 @@ index b61995956..161359c96 100644
  }
  
  void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
-@@ -5711,13 +6823,239 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
+@@ -5711,13 +6856,241 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
                                    sizeof(uint64_t),
                                    VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
          timestamps[1] > timestamps[0]) {
@@ -6705,6 +6821,8 @@ index b61995956..161359c96 100644
 +  // thread, and GPU waits ten times as long). Off that core, like every other
 +  // thread of the title.
 +  ::xbox360ps5::PlaceCallingThread(false);
++  // PS5X360E (alpha.88): under the fixed layout, next to the GPU thread.
++  ::xbox360ps5::PlaceCallingThreadAsSubmitter();
 +#endif
 +  while (true) {
 +    SubmitJob job;
@@ -6811,7 +6929,7 @@ index b61995956..161359c96 100644
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5757,13 +7095,17 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5757,13 +7130,17 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        command_buffer_allocate_info.pNext = nullptr;
        command_buffer_allocate_info.commandPool = command_buffer.pool;
        command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -6831,7 +6949,7 @@ index b61995956..161359c96 100644
        command_buffers_writable_.push_back(command_buffer);
      }
    }
-@@ -5822,6 +7164,12 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5822,6 +7199,12 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        bind_sparse_info.signalSemaphoreCount = 1;
        bind_sparse_info.pSignalSemaphores = &bind_sparse_semaphore;
        VkResult bind_sparse_result;
@@ -6844,7 +6962,7 @@ index b61995956..161359c96 100644
        {
          ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
              vulkan_device->AcquireQueue(
-@@ -5860,11 +7208,6 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5860,11 +7243,6 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
      command_buffer_begin_info.flags =
          VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
      command_buffer_begin_info.pInheritanceInfo = nullptr;
@@ -6856,7 +6974,7 @@ index b61995956..161359c96 100644
      // Bracket the whole submission. Recycle finished slots first, or a frame
      // with more submissions than slots leaves the later ones untimed.
      CollectCompletedGpuTimeQueries();
-@@ -5874,68 +7217,91 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5874,68 +7252,91 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
          gpu_time_pool_available && !gpu_time_query_submissions_[gpu_time_slot];
      if (gpu_time_pool_available && !gpu_time_recorded) {
        ++gpu_time_untimed_submissions_;
@@ -6991,7 +7109,7 @@ index b61995956..161359c96 100644
        LogRecentSubmissions("submit-failure");
        if (vulkan_device->IsLost() && !device_lost_) {
          device_lost_ = true;
-@@ -5943,6 +7309,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5943,6 +7344,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        }
        return false;
      }
@@ -7000,7 +7118,7 @@ index b61995956..161359c96 100644
      current_submission_wait_stage_masks_.clear();
      for (VkSemaphore semaphore : current_submission_wait_semaphores_) {
        submissions_in_flight_semaphores_.emplace_back(submission_index,
-@@ -5966,6 +7334,13 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5966,6 +7369,13 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
  
      submission_open_ = false;
  
@@ -7014,7 +7132,7 @@ index b61995956..161359c96 100644
      // Process any query resolves that completed with this submission.
      PumpQueryResolves();
      PumpPendingRetire();
-@@ -6882,20 +8257,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6882,20 +8292,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
          std::memcpy(mapping, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X],
                      sizeof(float) * 4 * 256);
        } else {
@@ -7038,7 +7156,7 @@ index b61995956..161359c96 100644
        }
      }
      // Pixel shader float constants.
-@@ -6909,20 +8273,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6909,20 +8308,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
        if (!mapping) {
          return false;
        }

@@ -47,6 +47,7 @@ DECLARE_bool(rt_pipeline_warm_up);
 DECLARE_bool(clock_lock_free);
 DECLARE_bool(content_delete_in_background);
 DECLARE_bool(module_load_offload);
+DECLARE_uint32(wait_reg_mem_spin_us);
 DECLARE_bool(guest_scheduler_stats);
 DECLARE_bool(texture_load_scaled_direct_copy);
 DECLARE_bool(gpu_section_timing);
@@ -286,6 +287,12 @@ const std::vector<Option>& Options() {
        off_on},
       {"gpu_core", &S::gpu_core, 1, W::start, 0, true, "Núcleo só para o vídeo",
        "Dá ao processamento de vídeo do emulador um núcleo do PS5 só para ele: nenhuma outra tarefa do emulador usa esse núcleo. Esse processamento é o que limita o jogo nas cenas pesadas. Experimental: compare uma mesma corrida ligado e desligado; o registro mostra o uso de cada um.",
+       off_on},
+      {"thread_layout", &S::thread_layout, 1, W::start, 0, true, "Disposição fixa das tarefas (teste)",
+       "Cada tarefa do emulador fica em CPUs fixas do PS5 conforme o seu papel: cada uma das seis CPUs emuladas e o processamento de vídeo numa CPU só sua, o tempo e o som nas suas, o resto junto. O sistema deixa de mudar as tarefas pesadas de lugar, e uma tarefa do jogo girando sem parar não cai mais na CPU do som ou do vblank. Ligado, substitui \"Núcleo só para o vídeo\". Teste: compare a mesma corrida ligado e desligado.",
+       off_on},
+      {"gpu_waits", &S::gpu_waits, 1, W::start, 0, true, "Esperas rápidas do vídeo (teste)",
+       "Quando o emulador espera o vídeo do PS5 ou o jogo, olha de novo mais cedo: o driver dorme no máximo 0,1 ms entre olhadas (em vez de 1 ms) e lê o relógio sem chamar o sistema, e o processamento de vídeo vigia por 0,2 ms a memória que o jogo vai escrever antes de dormir. Usa um pouco mais de CPU enquanto espera. Teste: compare a mesma corrida ligado e desligado; o registro mostra as esperas.",
        off_on},
       {"submit_thread", &S::submit_thread, 1, W::start, 1, true, "Envio em segundo plano",
        "Um segundo núcleo grava os comandos de vídeo de cada lote e os entrega ao driver, enquanto o processamento de vídeo segue com os próximos desenhos. Desligue para comparar: tudo volta a ser feito num só núcleo, como até a 0.2-alpha.51.",
@@ -545,6 +552,10 @@ void Settings::Apply() const {
   // alpha.87: both read when used (a delete, a module load).
   cvars::content_delete_in_background = save_delete_background != 0;
   cvars::module_load_offload = module_load_offload != 0;
+  // alpha.88: the GPU thread watches guest memory for 0.2 ms before sleeping
+  // in a WAIT_REG_MEM (read at each wait); the driver's half is set at start
+  // (canary_game_main.cpp, platform/ps5/driver_wait.cpp).
+  cvars::wait_reg_mem_spin_us = gpu_waits ? 200 : 0;
   // alpha.86: the scheduler's counters (signals through and past its lock,
   // offloaded I/O) once a second with Diagnostics.
   cvars::guest_scheduler_stats = diagnostics != 0;

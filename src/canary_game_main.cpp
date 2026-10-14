@@ -23,6 +23,7 @@
 #include "xbox360ps5/gpu_diagnostics.hpp"
 #include "xenia/base/mutex.h"
 #include "xbox360ps5/thread_place.hpp"
+#include "xbox360ps5/driver_wait.hpp"
 #include "xbox360ps5/frame_watch.hpp"
 #include "xbox360ps5/session_log.hpp"
 #include "xbox360ps5/crash_report.hpp"
@@ -1334,6 +1335,13 @@ int main(int argc, char** argv) {
   // PS5X360E: the GPU command thread on a core of its own (CPU 2, with its twin
   // CPU 3 kept free), before any core thread places itself.
   xbox360ps5::SetGpuCoreDedicated(settings.gpu_core != 0);
+  // alpha.88: the fixed layout, also before any core thread exists; this
+  // thread presents the frames.
+  xbox360ps5::SetThreadLayout(settings.thread_layout != 0);
+  xbox360ps5::PlaceCallingThreadAsPresenter();
+  // alpha.88: the driver's half of "Faster GPU waits", before the driver
+  // starts (its clock, once switched, stays switched).
+  xbox360ps5::SetDriverWaitTuning(settings.gpu_waits != 0);
   // The driver's worker-thread recording is a test. A start with it on that
   // did not get as far as the launcher or a running game turns it off.
   bool driver_test_withdrawn = false;
@@ -2328,6 +2336,16 @@ int main(int argc, char** argv) {
                   XELOGW("Performance: CPU % of one PS5 CPU: guest CPUs 0-5 {} (sum {:.0f}); whole emulator {:.0f} (of 1300 available)",
                          have_guest ? guest : std::string("n/a"), 100.0 * double(guest_sum) / span,
                          process && previous_process ? 100.0 * double(process - previous_process) / span : 0.0);
+                  // alpha.88: where the fixed layout put the threads named so
+                  // far, once (by now the emulated CPUs have started).
+                  static bool layout_reported = false;
+                  if (!layout_reported && xbox360ps5::ThreadLayoutOn()) {
+                    layout_reported = true;
+                    unsigned given = 0, not_given = 0;
+                    xbox360ps5::ThreadPlaceCounts(&given, &not_given);
+                    XELOGW("Threads: fixed layout, {} placements accepted, {} refused: {}", given, not_given,
+                           xbox360ps5::ThreadLayoutReport());
+                  }
                 }
                 previous_wall = wall;
                 previous_process = process;
@@ -2351,6 +2369,26 @@ int main(int argc, char** argv) {
                 const std::string gpu =
                     emulator.graphics_system()->command_processor()->TakePerformanceSummary();
                 if (!gpu.empty()) XELOGW("Performance: {}", gpu);
+              }
+              // alpha.88: the driver's sleeps while it waits for the GPU (a
+              // sleep that takes far longer than it asked holds up whatever
+              // waits), and how often it read the clock.
+              {
+                static auto previous = std::chrono::steady_clock::now();
+                const auto now = std::chrono::steady_clock::now();
+                const double seconds = std::chrono::duration<double>(now - previous).count();
+                previous = now;
+                const xbox360ps5::DriverWaitCounts driver = xbox360ps5::TakeDriverWaitCounts();
+                if (seconds > 0.5) {
+                  XELOGW("Performance: driver: {:.0f} sleeps/s waiting for the GPU, each asked {:.0f} us and took {:.0f} us "
+                         "({:.1f} ms/s); {:.0f} clock reads/s ({}){}",
+                         double(driver.sleeps) / seconds,
+                         driver.sleeps ? double(driver.sleep_asked_ns) / 1000.0 / double(driver.sleeps) : 0.0,
+                         driver.sleeps ? double(driver.sleep_taken_ns) / 1000.0 / double(driver.sleeps) : 0.0,
+                         double(driver.sleep_taken_ns) / 1e6 / seconds, double(driver.clock_reads) / seconds,
+                         xbox360ps5::DriverWaitTuning() ? "time-stamp counter" : "system calls",
+                         xbox360ps5::DriverWaitTuning() ? ", Faster GPU waits on" : "");
+                }
               }
               // Draws made while their shader was still being compiled show
               // a stand-in: brief gaps in a frame, lasting ones in what a game

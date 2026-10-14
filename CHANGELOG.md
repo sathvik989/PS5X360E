@@ -3,6 +3,32 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.88+0.6.0 (PS5X360E, on Xenia Edge)
+
+The first of the builds that fit the emulator to the PS5 itself (the platform layer).
+
+- **Test: Performance > Fixed thread layout** (off by default). The system moved every busy
+  thread across all thirteen of the title's CPUs, and two busy threads could share the two
+  halves of a core. On, each thread takes CPUs by its role, which its name gives: each of the
+  six emulated CPUs and the GPU command thread a CPU of its own (the busiest emulated CPU with
+  only the light timing threads on its core's other half), the GPU submission thread next to the
+  GPU thread, the timing threads (vblank, the scheduler's watchdog, timers) and the sound threads
+  theirs, I/O and logging on CPUs 0-1, the compile workers on what is left, and the rest
+  together on CPUs 0, 1 and 12. A thread with a CPU of its own may also use those three, so a
+  thread it starts never waits behind it; the driver's threads (made by Mesa) start among the
+  rest. The log lists where each thread went. It takes the place of Graphics thread on its own
+  core.
+- **Test: Performance > Faster GPU waits** (off by default). The driver looked at the GPU's
+  progress for 1.5 ms and then slept a millisecond at a time, so a wait that ended just past
+  1.5 ms was seen a millisecond or more late; on, it sleeps at most 0.1 ms, and its clock comes
+  from the processor's counter instead of a system call (about nine of those for every
+  submission). The GPU thread, which slept 0.1 ms between looks at guest memory it waits on,
+  first watches it for 0.2 ms.
+- **Diagnostics and logs**: the driver's sleeps while it waits for the GPU (how long each asked
+  for and took) and its clock reads; the GPU thread's waits on what the guest writes (on memory
+  and on registers, how long they took, and the sleeps between looks, asked and taken), on the
+  GPU performance line.
+
 ## 0.2-alpha.87+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **Removed: alpha.86's Save without stopping the game and Thread signals without lock.** Both

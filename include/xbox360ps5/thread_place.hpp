@@ -3,6 +3,7 @@
 // (platform/ps5/thread_place.cpp).
 #pragma once
 #include <cstddef>
+#include <string>
 namespace xbox360ps5 {
 // The CPU the calling thread is on now.
 int CurrentCpu();
@@ -26,6 +27,17 @@ void SetGpuCoreDedicated(bool on);
 bool GpuCoreDedicated();
 // How many placements the system accepted and refused.
 void ThreadPlaceCounts(unsigned* given, unsigned* not_given);
+// alpha.88: the fixed layout (platform/ps5/thread_place.cpp). Set before the
+// emulator makes its threads; each then takes the CPUs of its role, which its
+// name gives (PlaceNamedThread, called as a thread is named; null is the
+// calling thread). The main thread and the GPU submission thread have no name
+// and say what they are. ThreadLayoutReport lists the threads placed so far.
+void SetThreadLayout(bool on);
+bool ThreadLayoutOn();
+void PlaceNamedThread(void* thread, const char* name);
+void PlaceCallingThreadAsPresenter();
+void PlaceCallingThreadAsSubmitter();
+std::string ThreadLayoutReport();
 // For a sample without the lean towards system calls. On the console a signal
 // sent from another CPU is taken when the target next enters the kernel, so a
 // thread that makes many system calls is mostly caught in them. With the

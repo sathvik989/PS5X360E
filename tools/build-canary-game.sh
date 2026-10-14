@@ -93,6 +93,7 @@ mapfile -t archives < <(find "$build" -name '*.a' | sort)
 link_native() {
 "$sdk/bin/prospero-lld" "${radv_linker_script[@]}" --eh-frame-hdr --gc-sections "$@" \
   "${radv_link_flags[@]}" --wrap=mmap --wrap=mprotect --wrap=munmap --wrap=ffs --wrap=stat --wrap=lstat --wrap=timegm \
+  --wrap=thrd_create --wrap=os_time_get_nano --wrap=radv_ps5_sleep_us \
   --version-script "$native/app-symbols.map" --version-script "$root/tooling/native-game-symbols.map" \
   --exclude-libs=ALL -e _start \
   -o "$work/llvm-pie.elf" "$work/obj/app_crt.o" "${objects[@]}" \

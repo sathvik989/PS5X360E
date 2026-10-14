@@ -99,6 +99,7 @@ if(CMAKE_CROSSCOMPILING)
     "${XBOX360PS5_ROOT}/platform/ps5/canary_system.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/crash_report.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/thread_place.cpp"
+    "${XBOX360PS5_ROOT}/platform/ps5/driver_wait.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/notify.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/web_settings.cpp"
     "${XBOX360PS5_ROOT}/platform/ps5/phone_camera_tls.cpp"
