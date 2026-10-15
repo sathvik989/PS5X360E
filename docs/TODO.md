@@ -28,6 +28,9 @@ Turn on:
 - Frame generation fixed at 2x instead of Automatic
 - Diagnostics, for the logs
 
+Keep off for now: Scheduler lock without sleeping, Switch threads when the IRQL drops, Calibrated
+spin-wait pauses.
+
 What to watch:
 - Pauses in the menu while the game saves.
 - Going back to the launcher. If it hangs, check the `BOOT exit` lines in boot.log.
@@ -45,6 +48,11 @@ What to watch:
   inside `remove_all` (unlinkat/closedir) at that point, and the game log was missing its last lines,
   so `ShutdownLogging` is the suspect.
 - **Switch threads when the IRQL drops**: 0 deferrals in NFS, so no effect there.
+- **The three spin options** (Scheduler lock without sleeping, Switch threads when the IRQL drops,
+  Calibrated spin-wait pauses) were on only in the second run, and in it the host work was much
+  slower. The same 68 render target pipelines took 2.4 s instead of 0.35 s, and the save deletes
+  took 4.0 s and 2.85 s instead of 0.34 s and 0.30 s. Storage times vary a lot (0.1–2.8 s in
+  alpha.92), so this may be chance; keep them off until a run says otherwise.
 - **PAUSE**: 19.3 ns, about 68 cycles at 3.5 GHz (not about 140).
 - **History**: alpha.86 tried save file work off the global lock and was reverted in alpha.87 as "worse".
   The ~960 ms folder creation and header write blamed on the helper thread then also show up under the
@@ -63,7 +71,9 @@ What to watch:
 6. Phase E part 2: image work at 3x. Per second of GPU time: rendered textures about 270 ms, render
    target copies about 190 ms, resolves 80–160 ms.
 7. Phase D: per-draw cost (VK_EXT_descriptor_buffer).
-8. Driver experiment: Wave32 against Wave64 in ps5-vulkan (RADV_PERFTEST pswave32/cswave32).
+8. Driver experiment: Wave32 against Wave64 in ps5-vulkan. The driver runs vertex, pixel and
+   compute shaders as Wave64 by default (radv_physical_device.c: cs/ps/ge_wave_size = 64 unless
+   RADV_PERFTEST has cswave32, pswave32, gewave32). Add it as a test option and A/B it.
 
 ## Co-design document (October 15): where each idea stands
 
