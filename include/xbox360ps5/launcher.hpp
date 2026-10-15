@@ -77,7 +77,7 @@ struct Settings {
   int thread_layout = 0;        // alpha.88: every thread on fixed CPUs by its role (platform/ps5/thread_place.cpp; test).
   int gpu_waits = 0;            // alpha.88: shorter driver sleeps, counter clock, WAIT_REG_MEM watch (platform/ps5/driver_wait.cpp; test).
   int jit_zen2 = 0;             // alpha.90: the recompiler uses the PS5's Zen 2 instruction set (x64_ps5_zen2_features; test).
-  int precompile_initializers = 0;  // alpha.90: a loaded module's static initializers compiled ahead (precompile_module_initializers; test).
+  int precompile_initializers = 0;  // alpha.90: a loaded module's static initializers compiled ahead; alpha.95: and a DLL with the title flag (NFS.Main) compiled ahead whole (precompile_module_initializers; test).
   int audio_reserve = 0;        // PS5X360E: sound held in reserve before playing (alpha.58; off since alpha.62).
   int zero_copy = 0;            // PS5X360E: the GPU reads guest RAM in place (Edge's shared_memory_zero_copy).
   int submit_thread = 1;        // PS5X360E: Vulkan submissions recorded and submitted on their own thread.

@@ -3,6 +3,36 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.95+0.6.0 (PS5X360E, on Xenia Edge)
+
+From the alpha.92 logs of NFS The Run.
+
+- **Performance > Compile game modules ahead (test)** (was "Compile module start-up code ahead";
+  off by default) now does what it was meant to. NFS The Run keeps its game in modules it loads
+  after the logo (NFS.Splash, NFS.Main), and those carry the flag of the title's own
+  executable, so the emulator left them for the launch to compile, which only compiles the
+  module it launched: none of their code was compiled ahead, option or not. Each function was
+  compiled the first time the game ran it, on the guest CPU that ran it: 3,200 functions in the
+  first half minute, then 34,000 (3.5 to 9.6 s of compiling) while the first race loaded, and
+  thousands more into the race, one of them taking almost a second. On, such a module is
+  compiled whole while it loads, on the PS5's free CPUs at once, with its start-up code. The log
+  shows it ("Module: NFS.Main: ... functions found by analysis ...; compiled ahead in ...") and
+  the "compiled on demand" counts that should fall.
+- **Diagnostics cost far less CPU.** Since alpha.89 the slow kernel call report timed every
+  kernel call, and turning its time into milliseconds asked the console for the clock's
+  resolution, a system call, every time. With Diagnostics on, that took a third of the guest
+  CPUs' time in a race and half of the main thread's, so Diagnostics runs since alpha.89 read
+  heavier on the CPU than the game is. The resolution is now known without asking (the clock is
+  in nanoseconds), which also saves the call on the GPU thread's waits for the game.
+- **Notes from the alpha.92 logs**: MihawkGen ran (3840x2160 at 3x, 2560x1440 at 2x) at 1.7 to
+  2.8 ms of GPU time per game frame for one generated frame; FSR 3 took about 2 ms at 2560x1440
+  and 1.2 ms with Frame generation size at 1080p. "Zen 2 instructions in the recompiler"
+  changes nothing on this console: its processor already reports the whole set
+  ("Recompiler CPU features: CPUID reports AVX2 FMA LZCNT BMI1 BMI2 ... MOVBE"), and the
+  recompiler already uses it. The render target report confirms the driver compresses 8-bit
+  colour and depth targets (DCC, HTILE) and not the 16-bit ones the emulator also views as
+  integers.
+
 ## 0.2-alpha.94+0.6.0 (PS5X360E, on Xenia Edge)
 
 Phase C, part 1: the global lock, measured. Every thread that makes a system call, takes a write
