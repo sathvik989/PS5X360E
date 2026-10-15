@@ -3,6 +3,29 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.97+0.6.0 (PS5X360E, on Xenia Edge)
+
+Spin waits and the PS5's SMT. The emulated CPUs share PS5 cores in pairs (emulated CPUs 1 and 2 on
+one core, 3 and 4 on another), as the Xbox 360's hardware threads do, so a game thread spinning on
+one half of a core takes pipeline slots from the other.
+
+- **The log measures PAUSE**: "CPU: one PAUSE instruction takes ... ns", at each game's start,
+  timed on the console itself (the shortest of eight runs of 2,000).
+- **New: Performance > Calibrated spin-wait pauses (test)** (off by default; from the next start).
+  A guest spin hint (db16cyc, the Xenon's "give the other hardware thread the pipeline") becomes
+  as many PAUSEs as make about 40 ns from the measured time (one, until now), and a
+  store-conditional (stwcx., stdcx.) that lost its reservation pauses as long before the game
+  retries, where it retried at once: another CPU took the lock word first, and the retry would
+  pull its cache line back while that CPU still works on it.
+- **Give up the CPU in long spins** (spin_yields) costs far less: its look at the scheduler
+  happens at every 16th spin hint, counted in the generated code, instead of a call into the
+  emulator at each one (a thread-local lookup on the PS5 and the register saves of a call, every
+  turn of a spin, on the half of the core the other thread needs).
+- **Notes from your tests**: Direct copy of rendered textures brings hitches, so leave it off;
+  MihawkGen blurs scenes that change fast (a race is all of that): its network works on the
+  frames reduced to 288 rows and mixes the two frames where it can't follow the motion, so for
+  racing games FSR 3 stays the engine to use.
+
 ## 0.2-alpha.96+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **New: Performance > Scheduler lock without sleeping (test)** (off by default; from the next

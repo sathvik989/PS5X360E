@@ -54,6 +54,7 @@ struct Settings {
   int module_load_offload = 0;     // 1: a game module's read and precompile on an I/O worker (module_load_offload; alpha.87 test).
   int scheduler_spin = 0;          // 1: the guest scheduler's lock spins instead of sleeping (scheduler_lock_spins; alpha.96 test).
   int irql_preempt = 0;            // 1: a preemption DISPATCH_LEVEL defers is asked again when the IRQL drops (preempt_at_irql_drop; alpha.96 test).
+  int spin_waits = 0;              // 1: PAUSEs per guest spin and after a failed store-conditional from the measured PAUSE time (x64_spin_pauses, x64_reserve_fail_pauses; alpha.97 test).
   int spin_yields = 0;             // 1: a guest spin over 0.2 ms gives its guest CPU to other threads (spin_hint_yields; alpha.89 test).
   int output_4k = 1;          // A game's picture to the screen at 3840x2160 (1) or 1920x1080 (0); menus stay 1080p (alpha69nice).
   int framegen_size = 0;      // Generated frames made at the game picture's size (0), 1440p (1) or 1080p (2) (alpha.76, again in alpha.90).

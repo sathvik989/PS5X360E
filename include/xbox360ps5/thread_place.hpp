@@ -36,6 +36,9 @@ void SetThreadLayout(bool on);
 bool ThreadLayoutOn();
 void PlaceNamedThread(void* thread, const char* name);
 void PlaceCallingThreadAsPresenter();
+// alpha.97: how long one PAUSE instruction takes on this console, in
+// nanoseconds (measured the first time it is asked; 0 if it could not be).
+double PauseNanoseconds();
 void PlaceCallingThreadAsSubmitter();
 std::string ThreadLayoutReport();
 // For a sample without the lean towards system calls. On the console a signal

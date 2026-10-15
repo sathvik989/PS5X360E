@@ -85,6 +85,8 @@ DECLARE_bool(guest_display_refresh_cap);
 DECLARE_bool(use_50Hz_mode);
 DECLARE_int32(log_level);
 DECLARE_bool(headless);
+DECLARE_uint32(x64_spin_pauses);
+DECLARE_uint32(x64_reserve_fail_pauses);
 DECLARE_bool(frame_trace_on_measure);
 // The launcher's language setting. Canary declares this variable in its kernel
 // without defining it (the language comes from the signed-in profile there).
@@ -2010,6 +2012,14 @@ int main(int argc, char** argv) {
                xbox360ps5::EffectiveVsync(settings.vsync) ? "on" : "off", GetGuestVblankRateHz());
         XELOGW("Settings: {} of this game's own ({}); not at the recommended value: {}", overrides.size(),
                settings_title.empty() ? "title not identified yet" : settings_title, ChangedOptions(settings));
+        // alpha.97: what a PAUSE costs on this console, and the spin waits.
+        {
+          const double pause_ns = xbox360ps5::PauseNanoseconds();
+          XELOGW("CPU: one PAUSE instruction takes {:.1f} ns (about {:.0f} cycles at 3.5 GHz); guest spin waits use "
+                 "{} per spin hint and {} after a failed store-conditional{}",
+                 pause_ns, pause_ns * 3.5, uint32_t(cvars::x64_spin_pauses), uint32_t(cvars::x64_reserve_fail_pauses),
+                 settings.spin_waits ? " (calibrated)" : "");
+        }
         if (!status) start_reached();
         Stage("BOOT launch returned");
         // After a switch the running executable is not the one the library lists.

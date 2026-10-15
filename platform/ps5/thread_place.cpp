@@ -30,8 +30,29 @@ int scePthreadSetaffinity(pthread_t, unsigned long long);
 int scePthreadGetprio(pthread_t, int*);
 int scePthreadSetprio(pthread_t, int);
 int sceKernelGetCurrentCpu(void);
+uint64_t sceKernelReadTsc(void);
+uint64_t sceKernelGetTscFrequency(void);
 }
+#include <algorithm>
+#include <cstdint>
+#include <immintrin.h>
 namespace xbox360ps5 {
+// alpha.97: one PAUSE's time, measured once: the shortest of eight runs of
+// 2,000 (the others may have been interrupted).
+double PauseNanoseconds() {
+  static const double measured = [] {
+    const uint64_t frequency = sceKernelGetTscFrequency();
+    if (!frequency) return 0.0;
+    uint64_t best = ~0ull;
+    for (int round = 0; round < 8; ++round) {
+      const uint64_t start = sceKernelReadTsc();
+      for (int n = 0; n < 2000; ++n) _mm_pause();
+      best = std::min<uint64_t>(best, sceKernelReadTsc() - start);
+    }
+    return double(best) * 1e9 / double(frequency) / 2000.0;
+  }();
+  return measured;
+}
 namespace {
 constexpr unsigned long long kTitleCpus = 0x1fffull;  // CPUs 0 to 12.
 constexpr unsigned long long kGpuCore = 0xcull;       // CPUs 2 and 3: one core.

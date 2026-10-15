@@ -2080,10 +2080,10 @@ index 13583c50f..8ed0b9ce9 100644
    static_assert(kGeneratedCodeSize < 0x80000000);
    static_assert(kGeneratedCodeExecuteBase + kGeneratedCodeSize <
 diff --git a/src/xenia/cpu/backend/x64/x64_backend.cc b/src/xenia/cpu/backend/x64/x64_backend.cc
-index 55f3e6b18..d815d82d4 100644
+index 55f3e6b18..78f306f44 100644
 --- a/src/xenia/cpu/backend/x64/x64_backend.cc
 +++ b/src/xenia/cpu/backend/x64/x64_backend.cc
-@@ -36,6 +36,15 @@
+@@ -36,9 +36,26 @@
  
  DECLARE_bool(record_mmio_access_exceptions);
  
@@ -2099,7 +2099,18 @@ index 55f3e6b18..d815d82d4 100644
  DEFINE_int64(max_stackpoints, 65536,
               "Max number of host->guest stack mappings we can record.", "x64");
  
-@@ -256,12 +265,21 @@ bool X64Backend::Initialize(Processor* processor) {
++DEFINE_uint32(
++    x64_reserve_fail_pauses, 0,
++    "PS5X360E (alpha.97): PAUSE instructions a failed store-conditional "
++    "(stwcx., stdcx.) runs before the guest retries: a backoff for contended "
++    "lock words, leaving the pipeline to the other half of the core "
++    "meanwhile. Read at each failure.",
++    "x64");
++
+ DEFINE_bool(enable_host_guest_stack_synchronization, true,
+             "Records entries for guest/host stack mappings at function starts "
+             "and checks for reentry at return sites. Has slight performance "
+@@ -256,12 +273,21 @@ bool X64Backend::Initialize(Processor* processor) {
  #endif
  
    // Need movbe to do advanced LOAD/STORE tricks.
@@ -2121,6 +2132,53 @@ index 55f3e6b18..d815d82d4 100644
  
    auto& gprs = machine_info_.register_sets[0];
    gprs.id = 0;
+@@ -1675,6 +1701,24 @@ void* X64HelperEmitter::EmitReservedStoreHelper(bool bit64) {
+   ret();
+ 
+   L(fail);
++  // PS5X360E (alpha.97): x64_reserve_fail_pauses, read here each time (it can
++  // change while the game runs): a store-conditional that lost its
++  // reservation, which a guest retries at once, pauses first. When another
++  // CPU took the lock word, the retry then finds the line settled instead of
++  // pulling it back and forth, and a thread spinning on the other half of
++  // the core leaves it the pipeline meanwhile.
++  {
++    Xbyak::Label no_pause, pause_loop;
++    mov(rax, reinterpret_cast<uint64_t>(&cvars::x64_reserve_fail_pauses));
++    mov(eax, dword[rax]);
++    test(eax, eax);
++    jz(no_pause);
++    L(pause_loop);
++    pause();
++    dec(eax);
++    jnz(pause_loop);
++    L(no_pause);
++  }
+   or_(eax, 1);  // ZF = 0
+   ret();
+ 
+@@ -1934,6 +1978,7 @@ void X64Backend::InitializeBackendContext(void* ctx) {
+   bctx->Ox1000 = 0x1000;
+   bctx->guest_tick_count = Clock::GetGuestTickCountPointer();
+   bctx->reserve_helper_ = &reserve_helper_;
++  bctx->spin_hint_count = 0;
+ }
+ void X64Backend::DeinitializeBackendContext(void* ctx) {
+   X64BackendContext* bctx = BackendContextForGuestContext(ctx);
+diff --git a/src/xenia/cpu/backend/x64/x64_backend.h b/src/xenia/cpu/backend/x64/x64_backend.h
+index cb1e1ee5f..1a0f2ab90 100644
+--- a/src/xenia/cpu/backend/x64/x64_backend.h
++++ b/src/xenia/cpu/backend/x64/x64_backend.h
+@@ -170,6 +170,9 @@ struct X64BackendContext {
+                         // add of it by... 2 bytes lol
+   // DEFAULT_VMX_MXCSR regardless of NJM, for the ops that always flush
+   unsigned int mxcsr_vmx_daz;
++  // PS5X360E (alpha.97): the guest spin hints (db16cyc) this thread ran, for
++  // spin_hint_yields: the scheduler is called at every 16th.
++  unsigned int spin_hint_count;
+ };
+ constexpr unsigned int DEFAULT_VMX_MXCSR =
+     0x8000 |                   // flush to zero
 diff --git a/src/xenia/cpu/backend/x64/x64_code_cache_posix.cc b/src/xenia/cpu/backend/x64/x64_code_cache_posix.cc
 index 67625137b..a06f2980f 100644
 --- a/src/xenia/cpu/backend/x64/x64_code_cache_posix.cc
@@ -2141,10 +2199,17 @@ index 67625137b..a06f2980f 100644
    __register_frame(unwind_execute_address);
    registered_frames_.push_back(unwind_execute_address);
 diff --git a/src/xenia/cpu/backend/x64/x64_sequences.cc b/src/xenia/cpu/backend/x64/x64_sequences.cc
-index 735b43826..e43a6f0c9 100644
+index 735b43826..b4cca74b2 100644
 --- a/src/xenia/cpu/backend/x64/x64_sequences.cc
 +++ b/src/xenia/cpu/backend/x64/x64_sequences.cc
-@@ -30,7 +30,9 @@
+@@ -24,13 +24,16 @@
+ 
+ #include "xenia/cpu/backend/x64/x64_sequences.h"
+ 
++#include <algorithm>
+ #include <cstdio>
+ #include <cstring>
+ 
  #include "xenia/base/assert.h"
  #include "xenia/base/clock.h"
  #include "xenia/base/logging.h"
@@ -2154,10 +2219,15 @@ index 735b43826..e43a6f0c9 100644
  #include "xenia/cpu/backend/x64/x64_emitter.h"
  #include "xenia/cpu/backend/x64/x64_op.h"
  #include "xenia/cpu/backend/x64/x64_tracers.h"
-@@ -54,6 +56,12 @@ DEFINE_bool(delay_via_maybeyield, false,
+@@ -54,6 +57,17 @@ DEFINE_bool(delay_via_maybeyield, false,
              "implement the db16cyc instruction via MaybeYield, may improve "
              "scheduling of guest threads",
              "x64");
++DEFINE_uint32(
++    x64_spin_pauses, 1,
++    "PS5X360E (alpha.97): PAUSE instructions emitted for each guest spin hint "
++    "(db16cyc), at least 1. Read as code is compiled.",
++    "x64");
 +DEFINE_bool(spin_hint_yields, false,
 +            "PS5X360E (alpha.89): a guest spin (db16cyc) that has gone on for "
 +            "0.2 ms gives its guest CPU to the other threads waiting for it, "
@@ -2167,7 +2237,7 @@ index 735b43826..e43a6f0c9 100644
  namespace xe {
  namespace cpu {
  namespace backend {
-@@ -3778,6 +3786,14 @@ struct SET_ROUNDING_MODE_I32
+@@ -3778,17 +3792,53 @@ struct SET_ROUNDING_MODE_I32
  EMITTER_OPCODE_TABLE(OPCODE_SET_ROUNDING_MODE, SET_ROUNDING_MODE_I32);
  
  static void MaybeYieldForwarder(void* ctx) { xe::threading::MaybeYield(); }
@@ -2182,15 +2252,46 @@ index 735b43826..e43a6f0c9 100644
  // ============================================================================
  // OPCODE_DELAY_EXECUTION
  // ============================================================================
-@@ -3787,6 +3803,8 @@ struct DELAY_EXECUTION
+ struct DELAY_EXECUTION
+     : Sequence<DELAY_EXECUTION, I<OPCODE_DELAY_EXECUTION, VoidOp>> {
++  // PS5X360E (alpha.97): x64_spin_pauses PAUSEs (a Xenon db16cyc gives the
++  // other hardware thread of the core the pipeline; a PAUSE does that on
++  // the PS5's Zen 2, whose cost per instruction the launcher measures).
++  static void EmitPauses(X64Emitter& e) {
++    const uint32_t pauses =
++        std::clamp<uint32_t>(uint32_t(cvars::x64_spin_pauses), 1, 16);
++    for (uint32_t n = 0; n < pauses; ++n) {
++      e.pause();
++    }
++  }
+   static void Emit(X64Emitter& e, const EmitArgType& i) {
      // todo: what if they dont have smt?
      if (cvars::delay_via_maybeyield) {
        e.CallNativeSafe((void*)MaybeYieldForwarder);
 +    } else if (cvars::spin_hint_yields) {
++      // PS5X360E (alpha.97): the pauses here and the scheduler's look at the
++      // spin every 16th hint (which it did itself before, after a call into
++      // the host each time: a thread-local lookup and the register saves of
++      // the thunk on every turn of a guest spin, competing with the other
++      // half of the core instead of leaving it the pipeline).
++      EmitPauses(e);
++      // The backend context lies just below the guest context (as
++      // X64Emitter::GetBackendCtxPtr addresses it), here with operand sizes.
++      const int count_delta =
++          -static_cast<int>(sizeof(X64BackendContext)) +
++          static_cast<int>(offsetof(X64BackendContext, spin_hint_count));
++      e.inc(e.dword[e.GetContextReg() + count_delta]);
++      e.test(e.byte[e.GetContextReg() + count_delta], 15);
++      Xbyak::Label& skip = e.NewCachedLabel();
++      e.jnz(skip, X64Emitter::T_NEAR);
 +      e.CallNativeSafe((void*)SpinHintForwarder);
++      e.L(skip);
      } else {
-       e.pause();
+-      e.pause();
++      EmitPauses(e);
      }
+   }
+ };
 diff --git a/src/xenia/cpu/processor.cc b/src/xenia/cpu/processor.cc
 index 7f5c296ef..d1d0eb841 100644
 --- a/src/xenia/cpu/processor.cc
@@ -9389,7 +9490,7 @@ index 108718adf..502c3708e 100644
      return true;
    }
 diff --git a/src/xenia/kernel/guest_scheduler.cc b/src/xenia/kernel/guest_scheduler.cc
-index c24087925..509579c74 100644
+index c24087925..7637e88f6 100644
 --- a/src/xenia/kernel/guest_scheduler.cc
 +++ b/src/xenia/kernel/guest_scheduler.cc
 @@ -7,11 +7,16 @@
@@ -9480,7 +9581,7 @@ index c24087925..509579c74 100644
  }
  
 +// PS5X360E (alpha.89): the JIT's spin hint handler (spin_hint_yields), called
-+// for each db16cyc a fiber runs.
++// for every 16th db16cyc a fiber runs (alpha.97; for each one before).
 +static void SpinHintFromGuest(void* /*raw_context*/) {
 +  xe::SpinPause();
 +  XThread* self = XThread::GetCurrentFiberThread();
@@ -9501,9 +9602,9 @@ index c24087925..509579c74 100644
 +
 +void GuestScheduler::OnSpinHint(XThread* self) {
 +  auto& links = self->scheduler_links();
-+  if (++links.spin_hints & 15) {
-+    return;
-+  }
++  // PS5X360E (alpha.97): the generated code calls this at every 16th hint
++  // (DELAY_EXECUTION counts them), so every call is looked at.
++  ++links.spin_hints;
 +  const uint64_t now = Clock::host_tick_count_raw();
 +  const double ticks_per_us = ticks_per_us_ > 0.0 ? ticks_per_us_ : 1000.0;
 +  if (!links.spin_since_tick ||

@@ -10,6 +10,7 @@
 #include "xbox360ps5/renderer.hpp"
 #include "xbox360ps5/canary_audio.hpp"
 #include "xbox360ps5/gpu_diagnostics.hpp"
+#include "xbox360ps5/thread_place.hpp"  // alpha.97: PauseNanoseconds
 #include "xenia/base/cvar.h"
 #include "xenia/base/platform.h"  // xe::amd64::InitFeatureFlags
 #include "xenia/base/logging.h"
@@ -50,6 +51,8 @@ DECLARE_bool(content_delete_in_background);
 DECLARE_bool(module_load_offload);
 DECLARE_bool(scheduler_lock_spins);
 DECLARE_bool(preempt_at_irql_drop);
+DECLARE_uint32(x64_spin_pauses);
+DECLARE_uint32(x64_reserve_fail_pauses);
 DECLARE_uint32(wait_reg_mem_spin_us);
 DECLARE_bool(spin_hint_yields);
 DECLARE_bool(x64_ps5_zen2_features);
@@ -277,6 +280,9 @@ const std::vector<Option>& Options() {
        off_on},
       {"irql_preempt", &S::irql_preempt, 1, W::start, 0, true, "Troca de tarefa ao baixar o IRQL (teste)",
        "Quando a fatia de tempo de uma CPU emulada acaba enquanto a tarefa do jogo roda num nível de interrupção elevado (DISPATCH_LEVEL, em que o Xbox 360 não troca de tarefa), a troca espera. Até aqui o emulador perguntava de novo a cada volta de laço da tarefa até o nível baixar, cada vez uma chamada ao agendador. Ligado, pergunta uma vez, quando a tarefa baixa o nível. Teste: compare a mesma corrida ligado e desligado; com Diagnóstico, o registro mostra quantas trocas esperaram.",
+       off_on},
+      {"spin_waits", &S::spin_waits, 1, W::start, 0, true, "Pausas calibradas nas esperas do jogo (teste)",
+       "Quando uma tarefa do jogo espera girando num laço (por uma trava, por outra tarefa), o emulador cede a outra metade do núcleo do PS5 com a instrução PAUSE. Ligado, o número de PAUSEs vem do quanto uma custa neste console (medido na abertura, mostrado no registro), para cada volta da espera durar cerca de 40 ns, e uma gravação atômica perdida (outra CPU pegou a trava antes) também pausa antes de o jogo tentar de novo. Teste: compare a mesma corrida ligado e desligado.",
        off_on},
       {"spin_yields", &S::spin_yields, 1, W::start, 0, true, "Ceder a CPU em esperas longas (teste)",
        "Quando uma tarefa do jogo fica girando à espera de algo (o vídeo, outra tarefa) por mais de 0,2 ms, ela cede a CPU emulada às outras tarefas do jogo que esperam nessa mesma CPU, como o Xbox 360 faz quando uma tarefa pede para ceder a vez. Sem isso, as outras só rodam quando a fatia de tempo dela acaba. Teste: compare a mesma corrida ligado e desligado; com Diagnóstico, o registro mostra quantas vezes cedeu.",
@@ -593,6 +599,18 @@ void Settings::Apply() const {
   cvars::scheduler_lock_spins = scheduler_spin != 0;
   // alpha.96: read at each deferred preemption and IRQL drop.
   cvars::preempt_at_irql_drop = irql_preempt != 0;
+  // alpha.97: PAUSEs per guest spin hint (read as code is compiled) and after
+  // a failed store-conditional (read at each failure), from one PAUSE's
+  // measured time: a turn of a guest spin lasts about 40 ns.
+  {
+    uint32_t pauses = 1;
+    if (spin_waits) {
+      const double pause_ns = xbox360ps5::PauseNanoseconds();
+      if (pause_ns > 0.0) pauses = uint32_t(std::clamp(std::lround(40.0 / pause_ns), 1l, 16l));
+    }
+    cvars::x64_spin_pauses = pauses;
+    cvars::x64_reserve_fail_pauses = spin_waits ? pauses : 0;
+  }
   // alpha.90: the recompiler's instruction set, worked out again here the
   // first time (a start option; the recompiler takes it when it starts).
   cvars::x64_ps5_zen2_features = jit_zen2 != 0;
