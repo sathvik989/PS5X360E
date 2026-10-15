@@ -2,7 +2,7 @@
 
 Last updated 2026-10-15, during alpha.98. The newest state is at the top; finished items move to the CHANGELOG.
 
-## Now: alpha.98 (code done, building)
+## Now: alpha.98 (built; waiting for the user's test)
 
 - [x] **Object lookups without the global lock (test)** (`handle_lookups` → `object_table_shared_lookups`):
   the object table gets its own spinning reader-writer lock (`ObjectTableLock`). Lookups take it
@@ -13,8 +13,8 @@ Last updated 2026-10-15, during alpha.98. The newest state is at the top; finish
 - [x] **Exit**: the boot log records each step of closing a game (`WatchExit`). If the title is still
   there after 15 s, the main thread's stack is written every 15 s for 5 minutes. A restart now
   flushes the log (`FlushLog`) instead of closing it (`ShutdownLogging`).
-- [ ] Build until `ninja -n` has nothing left, run the symbol check, commit both trees, regenerate
-  the patch, push, then ask the user to test.
+- [x] Built (`ninja -n`: no work to do), symbol check clean, both trees committed, patch current,
+  pushed. Next: the user tests it.
 - [ ] Reply to the user with the alpha.97 findings, the settings to use and the review of the
   co-design document (sections below).
 

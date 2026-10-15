@@ -5,7 +5,7 @@ PS5X360 release it is built on.
 
 ## 0.2-alpha.98+0.6.0 (PS5X360E, on Xenia Edge)
 
-From the alpha.97 logs of NFS The Run (October 15). Work in progress: saved before its first build.
+From the alpha.97 logs of NFS The Run (October 15).
 
 - **Performance > Save without stopping the game (test)** (was "Delete saves in the background";
   off by default; from the next start). In the menu the game saves, and deleting its save folder
@@ -22,11 +22,19 @@ From the alpha.97 logs of NFS The Run (October 15). Work in progress: saved befo
   reader-writer lock, many threads at once; changes to the table still take both locks.
 - **Exit to the library**: going back to the launcher hung for five minutes in alpha.97, right
   after the boot log's "restarting the title", while the game was deleting a save, and the game
-  log had lost its last lines. The emulator closed its log there while the game's threads still
-  ran and logged (a restart doesn't end the title first), and closing waits for the log writer,
-  which a stuck file system call holds up. It now writes the log out instead. The boot log also
-  follows the end of a game step by step, and if the title is still there 15 s later it says
-  where the main thread is, every 15 s for five minutes.
+  log had lost its last lines. The likely cause: the emulator closed its log there while the
+  game's threads still ran and logged (a restart doesn't end the title first), and closing waits
+  for the log writer, which a file system call that doesn't return holds up. It now writes the
+  log out instead of closing it. To settle it if it happens again, the boot log follows the end
+  of a game step by step, and if the title is still there 15 s later it says where the main
+  thread is, every 15 s for five minutes.
+- **Notes from your tests**: the other menu pause was 12 render target pipelines made on the GPU
+  thread in 2.9 s; Performance > Prepare image conversions at start (test) keeps them from one
+  start to the next and makes them at start. Frame generation set to Automatic switched to 3x
+  and back each time the game dipped, a hiccup each time; with a game at 30 frames a second,
+  fixed 2x keeps an even beat. Switch threads when the IRQL drops (alpha.96) found nothing to do
+  in NFS (no switch was ever deferred), and PAUSE measured 19.3 ns on the console, about 68
+  cycles at 3.5 GHz.
 
 ## 0.2-alpha.97+0.6.0 (PS5X360E, on Xenia Edge)
 
