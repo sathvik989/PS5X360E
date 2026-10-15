@@ -3,6 +3,21 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.93+0.6.0 (PS5X360E, on Xenia Edge)
+
+Phase E, part 1: what the GPU's image work at 2x and 3x is made of. At 3x the GPU is 88-97% busy
+in NFS The Run and Forza Horizon, and about 60% of its time goes to work on images rather than
+to the game's own drawing: textures the game rendered (about 270 ms of GPU time a second in the
+NFS race), render target copies (about 190) and resolves (80 to 160).
+
+- **Diagnostics: the image work in detail**, on the "GPU work" line of the summary: textures the
+  game rendered loaded a second and their size in host pixels, other texture loads and theirs
+  (for both, how many went by one copy rather than through the integer staging image: Direct
+  copy of rendered textures, or formats the staging image can't take), render target transfers
+  and the samples they move (same format, format change, depth, MSAA), and resolves and their
+  pixels (copies, clears, MSAA). The time each kind takes against what it moves shows which to
+  make cheaper first.
+
 ## 0.2-alpha.92+0.6.0 (PS5X360E, on Xenia Edge)
 
 - **New: Video > Frame generation engine: FSR 3 or MihawkGen** (FSR 3 by default, as before;

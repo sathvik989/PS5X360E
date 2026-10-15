@@ -5542,7 +5542,7 @@ index e1feb3fd4..aff58b41a 100644
    // uintmax_t to ensure uint64_t and pointer alignment of all structures.
    std::vector<uintmax_t> command_stream_;
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
-index b61995956..5ee631098 100644
+index b61995956..eff21e366 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
 @@ -8,16 +8,21 @@
@@ -6814,7 +6814,7 @@ index b61995956..5ee631098 100644
  
      // Reset cached state of the command buffer.
      dynamic_viewport_update_needed_ = true;
-@@ -5665,6 +6551,203 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5665,6 +6551,256 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
    return true;
  }
  
@@ -6853,6 +6853,20 @@ index b61995956..5ee631098 100644
 +    for (auto& counter : perf_gpu_section_spans_) counter.store(0);
 +    perf_gpu_section_changes_.store(0);
 +    perf_gpu_section_overflow_.store(0);
++    // PS5X360E (alpha.93): the image work detail starts with the window.
++    for (std::atomic<uint64_t>* counter :
++         {&image_work_.rendered_loads, &image_work_.rendered_texels,
++          &image_work_.rendered_direct, &image_work_.texture_loads,
++          &image_work_.texture_texels, &image_work_.texture_direct,
++          &image_work_.transfers,
++          &image_work_.transfer_samples, &image_work_.transfer_same_format,
++          &image_work_.transfer_format_change, &image_work_.transfer_depth,
++          &image_work_.transfer_host_depth, &image_work_.transfer_msaa,
++          &image_work_.resolves, &image_work_.resolve_pixels,
++          &image_work_.resolve_copies, &image_work_.resolve_clears,
++          &image_work_.resolve_msaa}) {
++      counter->store(0, std::memory_order_relaxed);
++    }
 +    perf_draws_previous_ = perf_draws_.load(std::memory_order_relaxed);
 +    perf_thread_cpu_previous_ns_ =
 +        perf_thread_cpu_ns_.load(std::memory_order_relaxed);
@@ -6953,6 +6967,45 @@ index b61995956..5ee631098 100644
 +        ms_per_s(section_ns[size_t(GpuSection::kUpload)]),
 +        per_s(spans[size_t(GpuSection::kUpload)]), per_s(changes),
 +        per_s(overflow));
++    // PS5X360E (alpha.93): what that image work was (host pixels a second, in
++    // millions).
++    ImageWork& w = image_work_;
++    auto take = [](std::atomic<uint64_t>& counter) {
++      return counter.exchange(0, std::memory_order_relaxed);
++    };
++    const uint64_t rendered_loads = take(w.rendered_loads),
++                   rendered_texels = take(w.rendered_texels),
++                   rendered_direct = take(w.rendered_direct),
++                   texture_loads = take(w.texture_loads),
++                   texture_texels = take(w.texture_texels),
++                   texture_direct = take(w.texture_direct),
++                   transfers = take(w.transfers),
++                   transfer_samples = take(w.transfer_samples),
++                   transfer_same = take(w.transfer_same_format),
++                   transfer_change = take(w.transfer_format_change),
++                   transfer_depth = take(w.transfer_depth),
++                   transfer_host_depth = take(w.transfer_host_depth),
++                   transfer_msaa = take(w.transfer_msaa),
++                   resolves = take(w.resolves),
++                   resolve_pixels = take(w.resolve_pixels),
++                   resolve_copies = take(w.resolve_copies),
++                   resolve_clears = take(w.resolve_clears),
++                   resolve_msaa = take(w.resolve_msaa);
++    gpu_sections += fmt::format(
++        "; image work: textures the game rendered {:.0f}/s ({:.1f} Mpx/s, "
++        "{:.0f}/s by one copy), other texture loads {:.0f}/s ({:.1f} Mpx/s, "
++        "{:.0f}/s by one copy), render target transfers {:.0f}/s ({:.1f} M "
++        "samples/s: same format {:.0f}, format change {:.0f}, depth {:.0f}, "
++        "host depth {:.0f}, MSAA {:.0f}), resolves {:.0f}/s ({:.1f} Mpx/s: "
++        "copies {:.0f}, clears {:.0f}, MSAA {:.0f})",
++        per_s(rendered_loads), per_s(rendered_texels) / 1e6,
++        per_s(rendered_direct), per_s(texture_loads),
++        per_s(texture_texels) / 1e6, per_s(texture_direct), per_s(transfers),
++        per_s(transfer_samples) / 1e6, per_s(transfer_same),
++        per_s(transfer_change), per_s(transfer_depth),
++        per_s(transfer_host_depth), per_s(transfer_msaa), per_s(resolves),
++        per_s(resolve_pixels) / 1e6, per_s(resolve_copies),
++        per_s(resolve_clears), per_s(resolve_msaa));
 +  }
 +  // PS5X360E (alpha.88): the GPU thread's waits on what the guest writes
 +  // (WAIT_REG_MEM): how many did not end at once and their time, the sleeps
@@ -7018,7 +7071,7 @@ index b61995956..5ee631098 100644
  void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    if (!vulkan_device->properties().timestampPeriod) {
-@@ -5679,6 +6762,63 @@ void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
+@@ -5679,6 +6815,63 @@ void VulkanCommandProcessor::CreateGpuTimeQueryPool() {
                              &gpu_time_query_pool_) != VK_SUCCESS) {
      XELOGE("Vulkan: failed to create the GPU time query pool");
      gpu_time_query_pool_ = VK_NULL_HANDLE;
@@ -7082,7 +7135,7 @@ index b61995956..5ee631098 100644
    }
  }
  
-@@ -5690,6 +6830,11 @@ void VulkanCommandProcessor::DestroyGpuTimeQueryPool() {
+@@ -5690,6 +6883,11 @@ void VulkanCommandProcessor::DestroyGpuTimeQueryPool() {
    vulkan_device->functions().vkDestroyQueryPool(vulkan_device->device(),
                                                  gpu_time_query_pool_, nullptr);
    gpu_time_query_pool_ = VK_NULL_HANDLE;
@@ -7094,7 +7147,7 @@ index b61995956..5ee631098 100644
  }
  
  void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
-@@ -5711,13 +6856,241 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
+@@ -5711,13 +6909,241 @@ void VulkanCommandProcessor::CollectCompletedGpuTimeQueries() {
                                    sizeof(uint64_t),
                                    VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
          timestamps[1] > timestamps[0]) {
@@ -7337,7 +7390,7 @@ index b61995956..5ee631098 100644
    ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5757,13 +7130,17 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5757,13 +7183,17 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        command_buffer_allocate_info.pNext = nullptr;
        command_buffer_allocate_info.commandPool = command_buffer.pool;
        command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -7357,7 +7410,7 @@ index b61995956..5ee631098 100644
        command_buffers_writable_.push_back(command_buffer);
      }
    }
-@@ -5822,6 +7199,12 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5822,6 +7252,12 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        bind_sparse_info.signalSemaphoreCount = 1;
        bind_sparse_info.pSignalSemaphores = &bind_sparse_semaphore;
        VkResult bind_sparse_result;
@@ -7370,7 +7423,7 @@ index b61995956..5ee631098 100644
        {
          ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
              vulkan_device->AcquireQueue(
-@@ -5860,11 +7243,6 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5860,11 +7296,6 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
      command_buffer_begin_info.flags =
          VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
      command_buffer_begin_info.pInheritanceInfo = nullptr;
@@ -7382,7 +7435,7 @@ index b61995956..5ee631098 100644
      // Bracket the whole submission. Recycle finished slots first, or a frame
      // with more submissions than slots leaves the later ones untimed.
      CollectCompletedGpuTimeQueries();
-@@ -5874,68 +7252,91 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5874,68 +7305,91 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
          gpu_time_pool_available && !gpu_time_query_submissions_[gpu_time_slot];
      if (gpu_time_pool_available && !gpu_time_recorded) {
        ++gpu_time_untimed_submissions_;
@@ -7517,7 +7570,7 @@ index b61995956..5ee631098 100644
        LogRecentSubmissions("submit-failure");
        if (vulkan_device->IsLost() && !device_lost_) {
          device_lost_ = true;
-@@ -5943,6 +7344,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5943,6 +7397,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        }
        return false;
      }
@@ -7526,7 +7579,7 @@ index b61995956..5ee631098 100644
      current_submission_wait_stage_masks_.clear();
      for (VkSemaphore semaphore : current_submission_wait_semaphores_) {
        submissions_in_flight_semaphores_.emplace_back(submission_index,
-@@ -5966,6 +7369,13 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5966,6 +7422,13 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
  
      submission_open_ = false;
  
@@ -7540,7 +7593,7 @@ index b61995956..5ee631098 100644
      // Process any query resolves that completed with this submission.
      PumpQueryResolves();
      PumpPendingRetire();
-@@ -6882,20 +8292,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6882,20 +8345,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
          std::memcpy(mapping, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X],
                      sizeof(float) * 4 * 256);
        } else {
@@ -7564,7 +7617,7 @@ index b61995956..5ee631098 100644
        }
      }
      // Pixel shader float constants.
-@@ -6909,20 +8308,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6909,20 +8361,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
        if (!mapping) {
          return false;
        }
@@ -7589,7 +7642,7 @@ index b61995956..5ee631098 100644
      // Bool and loop constants.
      if (!(current_constant_buffers_up_to_date_ &
 diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.h b/src/xenia/gpu/vulkan/vulkan_command_processor.h
-index 34c45db8a..1c0073308 100644
+index 34c45db8a..e827bbb9a 100644
 --- a/src/xenia/gpu/vulkan/vulkan_command_processor.h
 +++ b/src/xenia/gpu/vulkan/vulkan_command_processor.h
 @@ -14,13 +14,16 @@
@@ -7609,7 +7662,7 @@ index 34c45db8a..1c0073308 100644
  #include <unordered_map>
  #include <unordered_set>
  #include <utility>
-@@ -64,6 +67,43 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -64,6 +67,61 @@ class VulkanCommandProcessor final : public CommandProcessor {
  #include "../pm4_command_processor_declare.h"
  #undef OVERRIDING_BASE_CMDPROCESSOR
   public:
@@ -7650,10 +7703,28 @@ index 34c45db8a..1c0073308 100644
 +    GpuSection previous_;
 +  };
 +
++  // PS5X360E (alpha.93): what the image work was, beside its GPU time (the
++  // performance summary with Diagnostics): loads of textures the game rendered
++  // and of other textures (host texels, and how many went by one copy rather
++  // than through the integer staging image), render target transfers (host
++  // samples, by kind) and resolves (host pixels).
++  struct ImageWork {
++    std::atomic<uint64_t> rendered_loads{0}, rendered_texels{0},
++        rendered_direct{0};
++    std::atomic<uint64_t> texture_loads{0}, texture_texels{0},
++        texture_direct{0};
++    std::atomic<uint64_t> transfers{0}, transfer_samples{0},
++        transfer_same_format{0}, transfer_format_change{0}, transfer_depth{0},
++        transfer_host_depth{0}, transfer_msaa{0};
++    std::atomic<uint64_t> resolves{0}, resolve_pixels{0}, resolve_copies{0},
++        resolve_clears{0}, resolve_msaa{0};
++  };
++  ImageWork& image_work() { return image_work_; }
++
    // Single-descriptor layouts for use within a single frame.
    enum class SingleTransientDescriptorLayout {
      kStorageBuffer,
-@@ -166,6 +206,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -166,6 +224,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
        std::function<void()> completion_callback = nullptr) override;
  
    void RestoreEdramSnapshot(const void* snapshot) override;
@@ -7664,7 +7735,7 @@ index 34c45db8a..1c0073308 100644
  
    void PollCompletedSubmission() override;
  
-@@ -240,6 +284,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -240,6 +302,14 @@ class VulkanCommandProcessor final : public CommandProcessor {
                                            uint32_t size_bytes,
                                            bool whole_range = false);
  
@@ -7679,7 +7750,7 @@ index 34c45db8a..1c0073308 100644
    // If not started yet, begins a render pass from the render target cache.
    // Submission must be open.
    void SubmitBarriersAndEnterRenderTargetCacheRenderPass(
-@@ -315,14 +367,31 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -315,14 +385,31 @@ class VulkanCommandProcessor final : public CommandProcessor {
    XE_FORCEINLINE
    virtual void WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
                                       uint32_t num_registers) override;
@@ -7712,7 +7783,7 @@ index 34c45db8a..1c0073308 100644
    uint64_t GetResolveSubmittedThrough() const {
      return resolve_submitted_through_.load(std::memory_order_acquire);
    }
-@@ -366,7 +435,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -366,7 +453,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
    void StageMemexportReadback();
    void FlushMemexportStagingReadback();
    void AwaitMemexportSubmission(uint64_t submission) {
@@ -7721,7 +7792,7 @@ index 34c45db8a..1c0073308 100644
    }
    // Export ranges staged but not yet copied out, in record order - a later
    // copy of an overlapping range has to win.
-@@ -380,6 +449,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -380,6 +467,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
    std::vector<MemexportStagedRange> memexport_staged_;
    // For EnsureMemexportRangeInDeviceBuffer.
    std::vector<VkBufferCopy> memexport_copy_regions_;
@@ -7735,7 +7806,7 @@ index 34c45db8a..1c0073308 100644
  
    void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                   uint32_t frontbuffer_height) override;
-@@ -395,6 +471,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -395,6 +489,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
                   bool major_mode_explicit) override;
    bool IssueCopy() override;
  
@@ -7743,7 +7814,7 @@ index 34c45db8a..1c0073308 100644
    void InitializeTrace() override;
    bool DumpEdramSnapshotToFile(const std::filesystem::path& path) override;
  
-@@ -402,6 +479,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -402,6 +497,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
    struct CommandBuffer {
      VkCommandPool pool;
      VkCommandBuffer buffer;
@@ -7754,7 +7825,7 @@ index 34c45db8a..1c0073308 100644
    };
  
    struct SparseBufferBind {
-@@ -521,7 +602,17 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -521,7 +620,17 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // Rechecks submission number and reclaims per-submission resources. Pass 0 as
    // the submission to await to simply check status, or pass
    // GetCurrentSubmission() to wait for all queue operations to be completed.
@@ -7773,7 +7844,7 @@ index 34c45db8a..1c0073308 100644
    // If is_guest_command is true, a new full frame - with full cleanup of
    // resources and, if needed, starting capturing - is opened if pending (as
    // opposed to simply resuming after mid-frame synchronization). Returns
-@@ -573,6 +664,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -573,6 +682,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
    void PumpQueryResolves() override;
    bool AwaitQueryResolve(ReportHandle report_handle,
                           uint64_t wait_for_submission) override;
@@ -7782,7 +7853,7 @@ index 34c45db8a..1c0073308 100644
  
    bool EnsureVIZPredicateBuffer();
    // Drains the queued predicate copies.
-@@ -701,7 +794,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -701,7 +812,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
  
    // A timestamp pair per in-flight submission, so the summed GPU busy time is
    // comparable against the Metal backend's completion-handler figure.
@@ -7791,7 +7862,7 @@ index 34c45db8a..1c0073308 100644
    VkQueryPool gpu_time_query_pool_ = VK_NULL_HANDLE;
    uint64_t gpu_time_query_submissions_[kGpuTimeQuerySubmissions] = {};
    uint32_t gpu_time_query_slot_ = 0;
-@@ -713,6 +806,78 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -713,6 +824,80 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // which sums per-submission intervals and misleads without it.
    uint64_t gpu_time_submissions_window_start_ = 0;
    uint64_t gpu_time_window_start_ns_ = 0;
@@ -7818,6 +7889,8 @@ index 34c45db8a..1c0073308 100644
 +  std::atomic<uint64_t> perf_gpu_section_spans_[size_t(GpuSection::kCount)] =
 +      {};
 +  std::atomic<uint64_t> perf_gpu_section_overflow_{0};
++  // PS5X360E (alpha.93): image_work().
++  ImageWork image_work_;
 +  // PS5X360E: performance figures, read by TakePerformanceSummary from another
 +  // thread. Why each submission ended (set just before EndSubmission, which
 +  // counts and resets it), and the GPU waits by cause.
@@ -7870,7 +7943,7 @@ index 34c45db8a..1c0073308 100644
    void CreateGpuTimeQueryPool();
    void DestroyGpuTimeQueryPool();
    void CollectCompletedGpuTimeQueries();
-@@ -734,6 +899,48 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -734,6 +919,48 @@ class VulkanCommandProcessor final : public CommandProcessor {
    std::deque<std::pair<uint64_t, CommandBuffer>> command_buffers_submitted_;
    DeferredCommandBuffer deferred_command_buffer_;
  
@@ -7919,7 +7992,7 @@ index 34c45db8a..1c0073308 100644
    std::vector<VkSparseMemoryBind> sparse_memory_binds_;
    std::vector<SparseBufferBind> sparse_buffer_binds_;
    // SparseBufferBind converted to VkSparseBufferMemoryBindInfo to this buffer
-@@ -1092,6 +1299,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
+@@ -1092,6 +1319,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
    // .inc for ScaledResolveReadbackInfo.
    bool DownscaleScaledResolve(uint32_t written_address,
                                const ScaledResolveReadbackInfo& scaled_info);
@@ -8412,7 +8485,7 @@ index bf2533069..b2ddc8261 100644
      Shutdown();
      return false;
 diff --git a/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc b/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
-index d32d11d28..4cadac81e 100644
+index d32d11d28..6ad62a174 100644
 --- a/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
 @@ -8,14 +8,20 @@
@@ -8463,7 +8536,41 @@ index d32d11d28..4cadac81e 100644
    SCOPE_profile_cpu_f("gpu");
    written_address_out = 0;
    written_length_out = 0;
-@@ -1984,6 +2003,9 @@ uint32_t VulkanRenderTargetCache::GetMaxRenderTargetHeight() const {
+@@ -1101,6 +1120,33 @@ bool VulkanRenderTargetCache::Resolve(
+     return true;
+   }
+ 
++#if XE_PLATFORM_PS5
++  // PS5X360E (alpha.93): what this resolve is, for the image work detail.
++  {
++    VulkanCommandProcessor::ImageWork& work = command_processor_.image_work();
++    work.resolves.fetch_add(1, std::memory_order_relaxed);
++    work.resolve_pixels.fetch_add(
++        uint64_t(resolve_info.coordinate_info.width_div_8) * 8 *
++            resolve_info.height_div_8 * 8 *
++            (draw_resolution_scaled
++                 ? draw_resolution_scale_x() * draw_resolution_scale_y()
++                 : 1),
++        std::memory_order_relaxed);
++    if (resolve_info.copy_dest_extent_length) {
++      work.resolve_copies.fetch_add(1, std::memory_order_relaxed);
++    }
++    if (resolve_info.IsClearingDepth() || resolve_info.IsClearingColor()) {
++      work.resolve_clears.fetch_add(1, std::memory_order_relaxed);
++    }
++    const draw_util::ResolveEdramInfo edram_info =
++        resolve_info.IsCopyingDepth() ? resolve_info.depth_edram_info
++                                      : resolve_info.color_edram_info;
++    if (edram_info.msaa_samples != xenos::MsaaSamples::k1X) {
++      work.resolve_msaa.fetch_add(1, std::memory_order_relaxed);
++    }
++  }
++#endif
++
+   const ui::vulkan::VulkanDevice* const vulkan_device =
+       command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+@@ -1984,6 +2030,9 @@ uint32_t VulkanRenderTargetCache::GetMaxRenderTargetHeight() const {
  RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(
      RenderTargetKey key) {
    SCOPE_profile_cpu_f("gpu");
@@ -8473,7 +8580,7 @@ index d32d11d28..4cadac81e 100644
    const ui::vulkan::VulkanDevice* const vulkan_device =
        command_processor_.GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
-@@ -2058,6 +2080,42 @@ RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(
+@@ -2058,6 +2107,42 @@ RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(
    std::string debug_name = key.GetDebugName();
    vulkan_device->SetObjectName(VK_OBJECT_TYPE_IMAGE, image, debug_name.c_str());
  
@@ -8516,7 +8623,7 @@ index d32d11d28..4cadac81e 100644
    // Create the image views.
  
    VkImageViewCreateInfo view_create_info;
-@@ -2522,6 +2580,9 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+@@ -2522,6 +2607,9 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
      return pipeline_it->second[0] != VK_NULL_HANDLE ? pipeline_it->second.data()
                                                      : nullptr;
    }
@@ -8526,7 +8633,7 @@ index d32d11d28..4cadac81e 100644
  
    const ui::vulkan::VulkanDevice* const vulkan_device =
        command_processor_.GetVulkanDevice();
-@@ -2796,7 +2857,13 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+@@ -2796,7 +2884,13 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
    pipeline_create_info.subpass = 0;
    pipeline_create_info.basePipelineHandle = VK_NULL_HANDLE;
    pipeline_create_info.basePipelineIndex = -1;
@@ -8541,7 +8648,7 @@ index d32d11d28..4cadac81e 100644
                                      &pipeline_create_info, nullptr,
                                      &pipelines[0]) != VK_SUCCESS) {
      XELOGE(
-@@ -2821,7 +2888,7 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+@@ -2821,7 +2915,7 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
                : i;
        sample_id_specialization_constant = host_sample_index;
        sample_mask = uint32_t(1) << host_sample_index;
@@ -8550,7 +8657,7 @@ index d32d11d28..4cadac81e 100644
                                          &pipeline_create_info, nullptr,
                                          &pipelines[i]) != VK_SUCCESS) {
          XELOGE(
-@@ -2837,6 +2904,11 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
+@@ -2837,6 +2931,11 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
        }
      }
    }
@@ -8562,7 +8669,7 @@ index d32d11d28..4cadac81e 100644
    return transfer_pipelines_.emplace(key, pipelines).first->second.data();
  }
  
-@@ -2845,6 +2917,11 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
+@@ -2845,6 +2944,11 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
      const std::vector<Transfer>* render_target_transfers,
      const uint64_t* render_target_resolve_clear_values,
      const Transfer::Rectangle* resolve_clear_rectangle) {
@@ -8574,7 +8681,54 @@ index d32d11d28..4cadac81e 100644
    SCOPE_profile_cpu_f("gpu");
    assert_true(GetPath() == Path::kHostRenderTargets);
  
-@@ -3770,11 +3847,93 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
+@@ -2866,6 +2970,46 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
+   LogTransfers(render_target_count, render_targets, render_target_transfers,
+                resolve_clear_needed ? resolve_clear_rectangle : nullptr);
+ 
++#if XE_PLATFORM_PS5
++  // PS5X360E (alpha.93): what these transfers are, for the image work detail:
++  // host samples moved (EDRAM tiles of 80x16 samples, scaled), by kind.
++  {
++    VulkanCommandProcessor::ImageWork& work = command_processor_.image_work();
++    for (uint32_t i = 0; i < render_target_count; ++i) {
++      if (!render_targets[i]) {
++        continue;
++      }
++      const RenderTargetKey dest_key = render_targets[i]->key();
++      const uint64_t scale =
++          uint64_t(GetKeyScaleX(dest_key)) * GetKeyScaleY(dest_key);
++      for (const Transfer& transfer : render_target_transfers[i]) {
++        work.transfers.fetch_add(1, std::memory_order_relaxed);
++        work.transfer_samples.fetch_add(
++            uint64_t(transfer.end_tiles - transfer.start_tiles) *
++                xenos::kEdramTileWidthSamples *
++                xenos::kEdramTileHeightSamples * scale,
++            std::memory_order_relaxed);
++        if (dest_key.is_depth) {
++          work.transfer_depth.fetch_add(1, std::memory_order_relaxed);
++        } else if (transfer.source &&
++                   !transfer.source->key().is_depth &&
++                   transfer.source->key().GetColorFormat() ==
++                       dest_key.GetColorFormat()) {
++          work.transfer_same_format.fetch_add(1, std::memory_order_relaxed);
++        } else {
++          work.transfer_format_change.fetch_add(1, std::memory_order_relaxed);
++        }
++        if (transfer.host_depth_source) {
++          work.transfer_host_depth.fetch_add(1, std::memory_order_relaxed);
++        }
++        if (dest_key.msaa_samples != xenos::MsaaSamples::k1X) {
++          work.transfer_msaa.fetch_add(1, std::memory_order_relaxed);
++        }
++      }
++    }
++  }
++#endif
++
+   command_processor_.PushDebugMarker("PerformTransfersAndResolveClears");
+ 
+   const ui::vulkan::VulkanDevice* const vulkan_device =
+@@ -3770,11 +3914,93 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
    command_processor_.PopDebugMarker();
  }
  
@@ -8668,7 +8822,7 @@ index d32d11d28..4cadac81e 100644
  
    EdramDumpShaderOptions shader_options;
    shader_options.spirv_version = spirv_version_;
-@@ -3800,7 +3959,14 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(EdramDumpShaderKey key) {
+@@ -3800,7 +4026,14 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(EdramDumpShaderKey key) {
    VkPipeline pipeline = ui::vulkan::util::CreateComputePipeline(
        command_processor_.GetVulkanDevice(),
        key.is_depth ? dump_pipeline_layout_depth_ : dump_pipeline_layout_color_,
@@ -8804,7 +8958,7 @@ index 00f89352d..334eaa706 100644
   private:
    void GetUsageMasks(Usage usage, VkPipelineStageFlags& stage_mask,
 diff --git a/src/xenia/gpu/vulkan/vulkan_texture_cache.cc b/src/xenia/gpu/vulkan/vulkan_texture_cache.cc
-index 108718adf..7e68a1f00 100644
+index 108718adf..502c3708e 100644
 --- a/src/xenia/gpu/vulkan/vulkan_texture_cache.cc
 +++ b/src/xenia/gpu/vulkan/vulkan_texture_cache.cc
 @@ -8,7 +8,11 @@
@@ -8855,7 +9009,47 @@ index 108718adf..7e68a1f00 100644
  
    // Get the pipeline.
    const HostFormatPair& host_format_pair = GetHostFormatPair(texture_key);
-@@ -1773,7 +1792,10 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+@@ -1246,6 +1265,39 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+     return false;
+   }
+   LogTextureLoad(texture_key, load_shader, load_base, load_mips);
++#if XE_PLATFORM_PS5
++  // PS5X360E (alpha.93): what this load is, for the image work detail: host
++  // texels of the base level (a third more with the mips).
++  {
++    VulkanCommandProcessor::ImageWork& work = command_processor_.image_work();
++    uint64_t texels = uint64_t(texture_key.GetWidth()) *
++                      texture_key.GetHeight() *
++                      texture_key.GetDepthOrArraySize();
++    if (texture_key.scaled_resolve) {
++      texels *= uint64_t(draw_resolution_scale_x()) * draw_resolution_scale_y();
++    }
++    texels = (load_base ? texels : 0) + (load_mips ? texels / 3 : 0);
++    // By one buffer-to-image copy, as the load below decides, or through the
++    // integer staging image and an image-to-image copy.
++    const bool one_copy =
++        (texture_key.scaled_resolve &&
++         cvars::texture_load_scaled_direct_copy) ||
++        GetScratchBlitStagingFormat(texture_key) == VK_FORMAT_UNDEFINED;
++    if (texture_key.scaled_resolve) {
++      work.rendered_loads.fetch_add(1, std::memory_order_relaxed);
++      work.rendered_texels.fetch_add(texels, std::memory_order_relaxed);
++      if (one_copy) {
++        work.rendered_direct.fetch_add(1, std::memory_order_relaxed);
++      }
++    } else {
++      work.texture_loads.fetch_add(1, std::memory_order_relaxed);
++      work.texture_texels.fetch_add(texels, std::memory_order_relaxed);
++      if (one_copy) {
++        work.texture_direct.fetch_add(1, std::memory_order_relaxed);
++      }
++    }
++  }
++#endif
+   VkPipeline pipeline = texture_key.scaled_resolve
+                             ? load_pipelines_scaled_[load_shader]
+                             : load_pipelines_[load_shader];
+@@ -1773,7 +1825,10 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
    uint32_t blit_level_count = 0;
    uint32_t blit_staging_columns = 0;
    uint32_t blit_staging_rows = 0;
@@ -8867,7 +9061,7 @@ index 108718adf..7e68a1f00 100644
    if (blit_staging_format != VK_FORMAT_UNDEFINED) {
      for (uint32_t level = level_first; level <= level_last; ++level) {
        const HostLayout& level_host_layout =
-@@ -3765,6 +3787,9 @@ xenos::ClampMode VulkanTextureCache::NormalizeClampMode(
+@@ -3765,6 +3820,9 @@ xenos::ClampMode VulkanTextureCache::NormalizeClampMode(
  bool VulkanTextureCache::EnsureScaledResolveMemoryCommitted(
      uint32_t start_unscaled, uint32_t length_unscaled,
      uint32_t length_scaled_alignment_log2) {
