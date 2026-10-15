@@ -20,9 +20,13 @@ From the alpha.97 logs of NFS The Run (October 15). Work in progress: saved befo
   under the global lock: 470,000 to 690,000 times a second in a race, two thirds of all the time
   threads spent waiting for that lock (alpha.94's lock timing). On, a lookup takes the table's own
   reader-writer lock, many threads at once; changes to the table still take both locks.
-- **Exit to the library**: the boot log follows the end of a game step by step, and if the title
-  is still there 15 s later it says where the main thread is, every 15 s for five minutes
-  (alpha.97: back to the launcher hung for five minutes after "restarting the title").
+- **Exit to the library**: going back to the launcher hung for five minutes in alpha.97, right
+  after the boot log's "restarting the title", while the game was deleting a save, and the game
+  log had lost its last lines. The emulator closed its log there while the game's threads still
+  ran and logged (a restart doesn't end the title first), and closing waits for the log writer,
+  which a stuck file system call holds up. It now writes the log out instead. The boot log also
+  follows the end of a game step by step, and if the title is still there 15 s later it says
+  where the main thread is, every 15 s for five minutes.
 
 ## 0.2-alpha.97+0.6.0 (PS5X360E, on Xenia Edge)
 

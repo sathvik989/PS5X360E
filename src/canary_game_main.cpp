@@ -2594,8 +2594,15 @@ int main(int argc, char** argv) {
       // ends this one and runs the title's executable again.
       XELOGI("ENGINE RESTART");
       WatchExit("BOOT restarting the title");
-      xe::ShutdownLogging();
-      Stage("BOOT exit: log closed; asking the system to start the title again");
+      // alpha.98: the log is flushed here, not closed. A restart does not end
+      // the title, so its threads still run and log while the logger would be
+      // freed under them, and closing waits for the log writer, which a file
+      // system call that does not end holds up (alpha.97: the last restart
+      // stopped after "restarting the title", with a save being deleted, and
+      // the game log was missing its last lines). If the restart is refused,
+      // the log is closed below as before.
+      xe::FlushLog();
+      Stage("BOOT exit: log flushed; asking the system to start the title again");
       const int refused = sceSystemServiceLoadExec("/app0/eboot.bin", nullptr);
       char text[64];
       std::snprintf(text, sizeof(text), "BOOT restart refused %08x", unsigned(refused));
