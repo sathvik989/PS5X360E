@@ -391,4 +391,9 @@ bool InGeneratedCode(unsigned long long address) {
   return address >= generated_begin.load(std::memory_order_relaxed) &&
          address < generated_end.load(std::memory_order_relaxed);
 }
+bool TitleCodeOffset(unsigned long long address, unsigned long long* offset) {
+  if (!InCode(address)) return false;
+  *offset = address - CodeStart();
+  return true;
+}
 }  // namespace xbox360ps5

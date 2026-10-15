@@ -481,6 +481,74 @@ index 02ee840da..e1a2ce33c 100644
    // get preferred data home
    char* home = std::getenv("XDG_DATA_HOME");
    if (home) {
+diff --git a/src/xenia/base/global_lock_stats.h b/src/xenia/base/global_lock_stats.h
+new file mode 100644
+index 000000000..bd76a24b2
+--- /dev/null
++++ b/src/xenia/base/global_lock_stats.h
+@@ -0,0 +1,62 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++// PS5X360E (alpha.94): the global critical region's timing, for the PS5
++// build's Diagnostics. Every thread that makes a system call, takes a write
++// fault or looks up a handle goes through that one lock; this says how much
++// of the time it is held, from where, and how long threads wait for it.
++//
++// A place is the return address of the call that took the lock (an address in
++// the emulator's code, which the build's llvm-pie.elf names). Only the
++// outermost acquisition of a thread counts: a hold lasts from it to the
++// matching release.
++
++#ifndef XENIA_BASE_GLOBAL_LOCK_STATS_H_
++#define XENIA_BASE_GLOBAL_LOCK_STATS_H_
++
++#include <cstdint>
++
++namespace xe {
++
++struct GlobalLockPlace {
++  uintptr_t site = 0;
++  uint64_t taken = 0, held_ns = 0, waits = 0, waited_ns = 0;
++};
++
++struct GlobalLockStats {
++  // The time these figures cover.
++  double seconds = 0;
++  uint64_t taken = 0, held_ns = 0;
++  // Acquisitions that found the lock held, and the time they waited for it,
++  // summed over the threads.
++  uint64_t waits = 0, waited_ns = 0;
++  uint64_t longest_hold_ns = 0, longest_wait_ns = 0;
++  uintptr_t longest_hold_site = 0, longest_wait_site = 0;
++  // The places that held it longest and that waited longest in all, most
++  // first.
++  static constexpr uint32_t kPlaces = 6;
++  GlobalLockPlace most_held[kPlaces];
++  GlobalLockPlace most_waited[kPlaces];
++  uint32_t most_held_count = 0, most_waited_count = 0;
++  // How many places it was taken from, and acquisitions from places the
++  // table had no room for (in the totals above, not in the lists).
++  uint32_t places = 0;
++  uint64_t untracked = 0;
++};
++
++// Set once, before the game starts (no thread may hold the region). Off, a
++// lock or unlock of the region compares one pointer more.
++void SetGlobalLockTiming(bool on);
++bool GlobalLockTiming();
++// The figures since the last call (the first: since the timing was switched
++// on).
++GlobalLockStats TakeGlobalLockStats();
++
++}  // namespace xe
++
++#endif  // XENIA_BASE_GLOBAL_LOCK_STATS_H_
 diff --git a/src/xenia/base/logging.cc b/src/xenia/base/logging.cc
 index 967eb8d0b..bee777493 100644
 --- a/src/xenia/base/logging.cc
@@ -1042,11 +1110,14 @@ index a335d5e4d..f63c82ffc 100644
  uint32_t ToPosixProtectFlags(PageAccess access) {
    switch (access) {
 diff --git a/src/xenia/base/mutex.cc b/src/xenia/base/mutex.cc
-index 848edcc8c..6e8ffb86d 100644
+index 848edcc8c..ba99f8f3a 100644
 --- a/src/xenia/base/mutex.cc
 +++ b/src/xenia/base/mutex.cc
-@@ -10,7 +10,7 @@
+@@ -8,9 +8,10 @@
+  */
+ 
  #include "xenia/base/mutex.h"
++#include "xenia/base/global_lock_stats.h"
  #if XE_PLATFORM_WIN32 == 1
  #include "xenia/base/platform_win.h"
 -#elif XE_PLATFORM_LINUX == 1
@@ -1054,7 +1125,7 @@ index 848edcc8c..6e8ffb86d 100644
  #include <linux/futex.h>
  #include <pthread.h>
  #include <sys/syscall.h>
-@@ -94,7 +94,7 @@ bool xe_fast_mutex::try_lock() {
+@@ -94,7 +95,7 @@ bool xe_fast_mutex::try_lock() {
    }
    return false;
  }
@@ -1063,7 +1134,7 @@ index 848edcc8c..6e8ffb86d 100644
  
  namespace {
  
-@@ -312,6 +312,161 @@ void xe_fast_mutex::lock() { os_unfair_lock_lock(&lock_); }
+@@ -312,6 +313,401 @@ void xe_fast_mutex::lock() { os_unfair_lock_lock(&lock_); }
  void xe_fast_mutex::unlock() { os_unfair_lock_unlock(&lock_); }
  bool xe_fast_mutex::try_lock() { return os_unfair_lock_trylock(&lock_); }
  
@@ -1074,6 +1145,11 @@ index 848edcc8c..6e8ffb86d 100644
 +#include <pthread.h>
 +#include <sched.h>
 +#include <time.h>
++#include <algorithm>
++#include <mutex>
++#include <vector>
++extern "C" uint64_t sceKernelReadTsc(void);
++extern "C" uint64_t sceKernelGetTscFrequency(void);
 +namespace xe {
 +std::atomic<bool> ps5_spin_mutexes{false};
 +
@@ -1107,12 +1183,215 @@ index 848edcc8c..6e8ffb86d 100644
 +}
 +}  // namespace
 +
++// PS5X360E (alpha.94): the global critical region's timing (global_lock_stats.h).
++// Everything below but the reader runs on the thread that holds the region,
++// at its outermost acquisition and release, so the figures need no atomic
++// read-modify-writes: one holder at a time writes them, and the reader only
++// loads them (it keeps the previous values and takes differences).
++namespace {
++// The mutex being timed (the global critical region's), or null.
++std::atomic<const xe_global_mutex*> timed_mutex{nullptr};
++uint64_t timing_start_tsc = 0;
++
++struct LockPlace {
++  std::atomic<uintptr_t> site{0};
++  std::atomic<uint64_t> taken{0}, held{0}, waits{0}, waited{0};
++};
++constexpr uint32_t kLockPlaces = 512;
++LockPlace lock_places[kLockPlaces];
++struct LockTotals {
++  std::atomic<uint64_t> taken{0}, held{0}, waits{0}, waited{0}, untracked{0};
++  // The reader exchanges these for 0; a holder raises them.
++  std::atomic<uint64_t> longest_hold{0}, longest_wait{0};
++  std::atomic<uintptr_t> longest_hold_site{0}, longest_wait_site{0};
++};
++LockTotals lock_totals;
++// The current hold: when it began (TSC ticks, 0 when untimed), where, and its
++// place in the table.
++uint64_t hold_start = 0;
++uintptr_t hold_site = 0;
++LockPlace* hold_place = nullptr;
++
++inline void Bump(std::atomic<uint64_t>& value, uint64_t by) {
++  value.store(value.load(std::memory_order_relaxed) + by,
++              std::memory_order_relaxed);
++}
++inline void Raise(std::atomic<uint64_t>& longest,
++                  std::atomic<uintptr_t>& longest_site, uint64_t ticks,
++                  uintptr_t site) {
++  if (ticks > longest.load(std::memory_order_relaxed)) {
++    longest.store(ticks, std::memory_order_relaxed);
++    longest_site.store(site, std::memory_order_relaxed);
++  }
++}
++LockPlace* FindLockPlace(uintptr_t site) {
++  uint32_t index = uint32_t((uint64_t(site) * 0x9E3779B97F4A7C15ull) >> 55);
++  for (uint32_t probe = 0; probe < 32; ++probe) {
++    LockPlace& place = lock_places[(index + probe) & (kLockPlaces - 1)];
++    const uintptr_t at = place.site.load(std::memory_order_relaxed);
++    if (at == site) {
++      return &place;
++    }
++    if (!at) {
++      place.site.store(site, std::memory_order_relaxed);
++      return &place;
++    }
++  }
++  return nullptr;
++}
++// The new owner, at its outermost acquisition: `waited` TSC ticks waiting.
++XE_NOINLINE void TimedTaken(uintptr_t site, uint64_t waited) {
++  LockPlace* place = FindLockPlace(site);
++  Bump(lock_totals.taken, 1);
++  if (place) {
++    Bump(place->taken, 1);
++  } else {
++    Bump(lock_totals.untracked, 1);
++  }
++  if (waited) {
++    Bump(lock_totals.waits, 1);
++    Bump(lock_totals.waited, waited);
++    if (place) {
++      Bump(place->waits, 1);
++      Bump(place->waited, waited);
++    }
++    Raise(lock_totals.longest_wait, lock_totals.longest_wait_site, waited,
++          site);
++  }
++  hold_site = site;
++  hold_place = place;
++  const uint64_t now = sceKernelReadTsc();
++  hold_start = now ? now : 1;
++}
++// The owner, at its outermost release, still holding.
++XE_NOINLINE void TimedReleased() {
++  const uint64_t held = sceKernelReadTsc() - hold_start;
++  hold_start = 0;
++  Bump(lock_totals.held, held);
++  if (hold_place) {
++    Bump(hold_place->held, held);
++  }
++  Raise(lock_totals.longest_hold, lock_totals.longest_hold_site, held,
++        hold_site);
++}
++}  // namespace
++
++void SetGlobalLockTiming(bool on) {
++  const xe_global_mutex* mutex = &global_critical_region::mutex();
++  if (on) {
++    hold_start = 0;
++    timing_start_tsc = sceKernelReadTsc();
++  }
++  timed_mutex.store(on ? mutex : nullptr, std::memory_order_relaxed);
++}
++
++bool GlobalLockTiming() {
++  return timed_mutex.load(std::memory_order_relaxed) != nullptr;
++}
++
++GlobalLockStats TakeGlobalLockStats() {
++  static std::mutex reader_mutex;
++  std::lock_guard<std::mutex> reader_lock(reader_mutex);
++  struct Counts {
++    uint64_t taken = 0, held = 0, waits = 0, waited = 0;
++  };
++  static Counts previous_totals;
++  static uint64_t previous_untracked = 0, previous_tsc = 0;
++  static Counts previous_places[kLockPlaces];
++  GlobalLockStats stats;
++  const uint64_t frequency = sceKernelGetTscFrequency();
++  if (!GlobalLockTiming() || !frequency) {
++    return stats;
++  }
++  const double ns_per_tick = 1e9 / double(frequency);
++  auto ns = [ns_per_tick](uint64_t ticks) {
++    return uint64_t(double(ticks) * ns_per_tick);
++  };
++  const uint64_t now = sceKernelReadTsc();
++  const uint64_t since = previous_tsc ? previous_tsc : timing_start_tsc;
++  previous_tsc = now;
++  stats.seconds = double(now - since) / double(frequency);
++
++  auto take = [](const std::atomic<uint64_t>& value, uint64_t& previous) {
++    const uint64_t current = value.load(std::memory_order_relaxed);
++    const uint64_t delta = current - previous;
++    previous = current;
++    return delta;
++  };
++  stats.taken = take(lock_totals.taken, previous_totals.taken);
++  stats.held_ns = ns(take(lock_totals.held, previous_totals.held));
++  stats.waits = take(lock_totals.waits, previous_totals.waits);
++  stats.waited_ns = ns(take(lock_totals.waited, previous_totals.waited));
++  stats.untracked = take(lock_totals.untracked, previous_untracked);
++  stats.longest_hold_site =
++      lock_totals.longest_hold_site.load(std::memory_order_relaxed);
++  stats.longest_hold_ns =
++      ns(lock_totals.longest_hold.exchange(0, std::memory_order_relaxed));
++  stats.longest_wait_site =
++      lock_totals.longest_wait_site.load(std::memory_order_relaxed);
++  stats.longest_wait_ns =
++      ns(lock_totals.longest_wait.exchange(0, std::memory_order_relaxed));
++
++  // The places, by their time held and by their time waited.
++  std::vector<GlobalLockPlace> places;
++  for (uint32_t i = 0; i < kLockPlaces; ++i) {
++    LockPlace& place = lock_places[i];
++    const uintptr_t site = place.site.load(std::memory_order_relaxed);
++    if (!site) {
++      continue;
++    }
++    ++stats.places;
++    Counts& previous = previous_places[i];
++    GlobalLockPlace delta;
++    delta.site = site;
++    delta.taken = take(place.taken, previous.taken);
++    delta.held_ns = ns(take(place.held, previous.held));
++    delta.waits = take(place.waits, previous.waits);
++    delta.waited_ns = ns(take(place.waited, previous.waited));
++    if (delta.taken || delta.waits) {
++      places.push_back(delta);
++    }
++  }
++  const uint32_t held_count =
++      std::min<uint32_t>(uint32_t(places.size()), GlobalLockStats::kPlaces);
++  std::partial_sort(places.begin(), places.begin() + held_count, places.end(),
++                    [](const GlobalLockPlace& a, const GlobalLockPlace& b) {
++                      return a.held_ns > b.held_ns;
++                    });
++  for (uint32_t i = 0; i < held_count; ++i) {
++    stats.most_held[stats.most_held_count++] = places[i];
++  }
++  std::partial_sort(places.begin(), places.begin() + held_count, places.end(),
++                    [](const GlobalLockPlace& a, const GlobalLockPlace& b) {
++                      return a.waited_ns > b.waited_ns;
++                    });
++  for (uint32_t i = 0; i < held_count && places[i].waits; ++i) {
++    stats.most_waited[stats.most_waited_count++] = places[i];
++  }
++  return stats;
++}
++
 +void xe_global_mutex::lock() {
++  const bool timed =
++      timed_mutex.load(std::memory_order_relaxed) == this;
 +  if (!ps5_spin_mutexes.load(std::memory_order_relaxed)) {
-+    blocking_.lock();
 +    // PS5X360E: the owner is kept in this mode too, for
 +    // is_held_by_current_thread (Xenia Edge's guest scheduler asks).
 +    const uint64_t self = ps5_thread_id();
++    if (XE_UNLIKELY(timed) && owner_.load(std::memory_order_relaxed) != self) {
++      const uintptr_t site = uintptr_t(__builtin_return_address(0));
++      uint64_t waited = 0;
++      if (!blocking_.try_lock()) {
++        const uint64_t start = sceKernelReadTsc();
++        blocking_.lock();
++        waited = std::max<uint64_t>(sceKernelReadTsc() - start, 1);
++      }
++      owner_.store(self, std::memory_order_relaxed);
++      recursion_count_ = 1;
++      TimedTaken(site, waited);
++      return;
++    }
++    blocking_.lock();
 +    if (owner_.load(std::memory_order_relaxed) == self) {
 +      ++recursion_count_;
 +    } else {
@@ -1131,6 +1410,16 @@ index 848edcc8c..6e8ffb86d 100644
 +          expected, 1, std::memory_order_acquire, std::memory_order_relaxed))) {
 +    owner_.store(self, std::memory_order_relaxed);
 +    recursion_count_ = 1;
++    if (XE_UNLIKELY(timed)) {
++      TimedTaken(uintptr_t(__builtin_return_address(0)), 0);
++    }
++    return;
++  }
++  if (XE_UNLIKELY(timed)) {
++    const uintptr_t site = uintptr_t(__builtin_return_address(0));
++    const uint64_t start = sceKernelReadTsc();
++    lock_slow();
++    TimedTaken(site, std::max<uint64_t>(sceKernelReadTsc() - start, 1));
 +    return;
 +  }
 +  lock_slow();
@@ -1145,18 +1434,28 @@ index 848edcc8c..6e8ffb86d 100644
 +void xe_global_mutex::unlock() {
 +  if (!ps5_spin_mutexes.load(std::memory_order_relaxed)) {
 +    if (--recursion_count_ == 0) {
++      if (XE_UNLIKELY(timed_mutex.load(std::memory_order_relaxed) == this) &&
++          hold_start) {
++        TimedReleased();
++      }
 +      owner_.store(0, std::memory_order_relaxed);
 +    }
 +    blocking_.unlock();
 +    return;
 +  }
 +  if (--recursion_count_ == 0) {
++    if (XE_UNLIKELY(timed_mutex.load(std::memory_order_relaxed) == this) &&
++        hold_start) {
++      TimedReleased();
++    }
 +    owner_.store(0, std::memory_order_relaxed);
 +    state_.store(0, std::memory_order_release);
 +  }
 +}
 +
 +bool xe_global_mutex::try_lock() {
++  const bool timed =
++      timed_mutex.load(std::memory_order_relaxed) == this;
 +  if (!ps5_spin_mutexes.load(std::memory_order_relaxed)) {
 +    if (!blocking_.try_lock()) {
 +      return false;
@@ -1167,6 +1466,9 @@ index 848edcc8c..6e8ffb86d 100644
 +    } else {
 +      owner_.store(self, std::memory_order_relaxed);
 +      recursion_count_ = 1;
++      if (XE_UNLIKELY(timed)) {
++        TimedTaken(uintptr_t(__builtin_return_address(0)), 0);
++      }
 +    }
 +    return true;
 +  }
@@ -1180,6 +1482,9 @@ index 848edcc8c..6e8ffb86d 100644
 +                                     std::memory_order_relaxed)) {
 +    owner_.store(self, std::memory_order_relaxed);
 +    recursion_count_ = 1;
++    if (XE_UNLIKELY(timed)) {
++      TimedTaken(uintptr_t(__builtin_return_address(0)), 0);
++    }
 +    return true;
 +  }
 +  return false;
@@ -1222,6 +1527,12 @@ index 848edcc8c..6e8ffb86d 100644
 +  return state_.compare_exchange_strong(
 +      expected, 1, std::memory_order_acquire, std::memory_order_relaxed);
 +}
++#endif
++#if !XE_PLATFORM_PS5
++// PS5X360E (alpha.94): the global critical region is timed on the PS5 only.
++void SetGlobalLockTiming(bool on) {}
++bool GlobalLockTiming() { return false; }
++GlobalLockStats TakeGlobalLockStats() { return GlobalLockStats(); }
  #endif
  global_mutex_type& global_critical_region::mutex() {
    static global_mutex_type global_mutex;

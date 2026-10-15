@@ -20,6 +20,10 @@ void ProbeThread(void* thread, const char* name);
 // allows, not at a fixed 0x40000000.
 void SetGeneratedCodeRange(unsigned long long begin, unsigned long long end);
 bool InGeneratedCode(unsigned long long address);
+// alpha.94: an address in the title's code as an offset into it (the address in
+// the build's llvm-pie.elf, printed eboot+0x... like the crash report); false
+// for any other address.
+bool TitleCodeOffset(unsigned long long address, unsigned long long* offset);
 // One performance sample of a thread. rip: the instruction (an offset into the
 // title when in_title, else an address, see InGeneratedCode for generated
 // guest code); caller: for an instruction in a system library, the offset of

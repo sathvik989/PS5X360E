@@ -3,6 +3,21 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.94+0.6.0 (PS5X360E, on Xenia Edge)
+
+Phase C, part 1: the global lock, measured. Every thread that makes a system call, takes a write
+fault or looks up a handle goes through Xenia's one global critical region. In NFS The Run a
+fault now costs 110 to 180 us in the handler, three times what the kernel's protection change
+itself takes, and while the game saves, system calls on four guest CPUs stood still for 2 to 3
+seconds together; how much of that is waiting for this lock is what this build shows.
+
+- **Diagnostics: global lock timing**, a line in the summary every half minute: how often the
+  lock was taken and how much of each second it was held, how often threads found it held and
+  how long they waited (summed over the threads), its longest hold and longest wait, and the
+  places in the emulator that held it longest and waited longest in all (as `eboot+0x...`
+  offsets, which the build's `llvm-pie.elf` names). Off without Diagnostics: a lock or unlock
+  compares one pointer more.
+
 ## 0.2-alpha.93+0.6.0 (PS5X360E, on Xenia Edge)
 
 Phase E, part 1: what the GPU's image work at 2x and 3x is made of. At 3x the GPU is 88-97% busy

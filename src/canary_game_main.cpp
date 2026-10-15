@@ -22,6 +22,7 @@
 #endif
 #include "xbox360ps5/gpu_diagnostics.hpp"
 #include "xenia/base/mutex.h"
+#include "xenia/base/global_lock_stats.h"
 #include "xbox360ps5/thread_place.hpp"
 #include "xbox360ps5/driver_wait.hpp"
 #include "xbox360ps5/frame_watch.hpp"
@@ -1333,6 +1334,9 @@ int main(int argc, char** argv) {
   // title has made no core thread and holds no lock yet: the core's mutexes
   // may still be told to spin before they block (xenia/base/mutex.h).
   xe::ps5_spin_mutexes = settings.fast_locks != 0;
+  // alpha.94: with Diagnostics, the global critical region is timed (who
+  // holds it, for how long, and how long others wait), also before any lock.
+  xe::SetGlobalLockTiming(settings.diagnostics != 0);
   // PS5X360E: the GPU command thread on a core of its own (CPU 2, with its twin
   // CPU 3 kept free), before any core thread places itself.
   xbox360ps5::SetGpuCoreDedicated(settings.gpu_core != 0);
@@ -2073,7 +2077,7 @@ int main(int argc, char** argv) {
         // PS5X360E (alpha.84): Diagnostics: profiles in the log by themselves.
         std::unique_ptr<BackgroundProfiler> background_profiler;
         if (settings.diagnostics) {
-          XELOGW("Diagnostics: on (background profiles, GPU work by kind, hitch detail)");
+          XELOGW("Diagnostics: on (background profiles, GPU work by kind, hitch detail, global lock timing)");
           background_profiler = std::make_unique<BackgroundProfiler>(emulator);
         }
         double next_shot = 5;
@@ -2423,6 +2427,44 @@ int main(int argc, char** argv) {
                          double(totals.ahead_ns - last.ahead_ns) / 1e6);
                 }
                 last = totals;
+              }
+              // alpha.94: the global critical region in the same half minute
+              // (Diagnostics): how much of the time a thread held it, from
+              // where (eboot+ offsets name the emulator's code in the build's
+              // llvm-pie.elf), and how long threads waited for it.
+              if (xe::GlobalLockTiming()) {
+                const xe::GlobalLockStats lock = xe::TakeGlobalLockStats();
+                if (lock.seconds > 0.5 && lock.taken) {
+                  const double seconds = lock.seconds;
+                  auto where = [](uintptr_t site) {
+                    unsigned long long offset = 0;
+                    if (xbox360ps5::TitleCodeOffset(site, &offset)) return fmt::format("eboot+0x{:x}", offset);
+                    if (xbox360ps5::InGeneratedCode(site)) return std::string("guest code");
+                    return fmt::format("0x{:x}", site);
+                  };
+                  std::string held, waited;
+                  for (uint32_t i = 0; i < lock.most_held_count; ++i) {
+                    const auto& place = lock.most_held[i];
+                    held += fmt::format("{} {} {:.1f} ms/s ({:.0f}/s)", i ? "," : "", where(place.site),
+                                        double(place.held_ns) / 1e6 / seconds, double(place.taken) / seconds);
+                  }
+                  for (uint32_t i = 0; i < lock.most_waited_count; ++i) {
+                    const auto& place = lock.most_waited[i];
+                    waited += fmt::format("{} {} {:.1f} ms/s ({:.0f}/s)", i ? "," : "", where(place.site),
+                                          double(place.waited_ns) / 1e6 / seconds, double(place.waits) / seconds);
+                  }
+                  XELOGW("Performance: global lock taken {:.0f}/s, held {:.1f} ms/s (longest {:.2f} ms, taken at {}); "
+                         "waited for {:.0f}/s, {:.1f} ms/s summed over the threads (longest {:.2f} ms, at {}); "
+                         "{} places{}; held most from:{}; waited most at:{}",
+                         double(lock.taken) / seconds, double(lock.held_ns) / 1e6 / seconds,
+                         double(lock.longest_hold_ns) / 1e6, where(lock.longest_hold_site),
+                         double(lock.waits) / seconds, double(lock.waited_ns) / 1e6 / seconds,
+                         double(lock.longest_wait_ns) / 1e6,
+                         lock.longest_wait_ns ? where(lock.longest_wait_site) : std::string("-"), lock.places,
+                         lock.untracked ? fmt::format(" ({} acquisitions from places past the table)", lock.untracked)
+                                        : std::string(),
+                         held.empty() ? std::string(" -") : held, waited.empty() ? std::string(" -") : waited);
+                }
               }
               // Draws made while their shader was still being compiled show
               // a stand-in: brief gaps in a frame, lasting ones in what a game
