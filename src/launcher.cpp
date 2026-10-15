@@ -50,6 +50,8 @@ DECLARE_bool(clock_lock_free);
 DECLARE_bool(content_delete_in_background);
 DECLARE_bool(module_load_offload);
 DECLARE_bool(scheduler_lock_spins);
+DECLARE_bool(content_off_global_lock);
+DECLARE_bool(object_table_shared_lookups);
 DECLARE_bool(preempt_at_irql_drop);
 DECLARE_uint32(x64_spin_pauses);
 DECLARE_uint32(x64_reserve_fail_pauses);
@@ -269,11 +271,14 @@ const std::vector<Option>& Options() {
       {"clock_lock_free", &S::clock_lock_free, 1, W::start, 0, true, "Relógio do console sem trava (teste)",
        "As tarefas do jogo leem o relógio do console emulado o tempo todo, e cada leitura espera numa trava compartilhada: numa corrida do NFS The Run, quatro das seis CPUs emuladas passavam de um quinto a um terço do tempo esperando nela. Ligado, cada leitura calcula a hora sozinha, sem esperar. Teste: compare a mesma corrida ligado e desligado.",
        off_on},
-      {"save_delete_background", &S::save_delete_background, 1, W::start, 0, true, "Apagar salvamentos em segundo plano (teste)",
-       "Quando o jogo apaga um salvamento para gravar de novo, o armazenamento do PS5 levou de meio segundo a seis segundos, e o jogo inteiro esperou (no NFS The Run, as paradas nos carregamentos). Ligado, a pasta é tirada do lugar na hora e apagada depois, por conta própria. Teste: compare os mesmos carregamentos ligado e desligado.",
+      {"save_delete_background", &S::save_delete_background, 1, W::start, 0, true, "Salvar sem parar o jogo (teste)",
+       "Quando o jogo grava, apaga ou abre um salvamento, o armazenamento do PS5 levou de meio segundo a seis segundos por passo, e o jogo inteiro esperou (no NFS The Run, quase travamentos nos menus). Ligado, só a tarefa que salva espera: as outras seguem, e a pasta de um salvamento apagado é tirada do lugar na hora e apagada depois, por conta própria. Teste: compare os mesmos menus ligado e desligado.",
        off_on},
       {"module_load_offload", &S::module_load_offload, 1, W::start, 0, true, "Carregar código do jogo sem parar as outras tarefas (teste)",
        "Quando o jogo carrega uma parte do seu código do disco (antes do menu principal do NFS The Run), a leitura e a preparação ocupavam a CPU emulada, e as outras tarefas dessa CPU paravam, até a de que o vídeo dependia: pausas de 2 a 10 segundos. Ligado, esse trabalho vai para outra tarefa do emulador enquanto as do jogo continuam. Teste: compare a abertura ligado e desligado.",
+       off_on},
+      {"handle_lookups", &S::handle_lookups, 1, W::start, 0, true, "Consultas de objetos sem a trava global (teste)",
+       "Cada chamada de sistema do jogo que nomeia um objeto (um evento, uma tarefa, um arquivo) o procura numa tabela, e a procura tomava a trava global do emulador, a que as CPUs emuladas mais esperavam: nas corridas do NFS The Run, 500 a 700 mil vezes por segundo, e dois terços de toda a espera por essa trava. Ligado, a tabela tem uma trava própria, que muitas procuras seguram ao mesmo tempo. Teste: compare a mesma corrida ligado e desligado; com Diagnóstico, a linha da trava global mostra a diferença.",
        off_on},
       {"scheduler_spin", &S::scheduler_spin, 1, W::start, 0, true, "Trava do agendador sem dormir (teste)",
        "As CPUs emuladas dividem uma trava para trocar, pôr em espera e acordar as tarefas do jogo. No PS5 ela punha uma CPU para dormir no sistema sempre que outra a segurava, e acordá-la custava outra chamada ao sistema: nas corridas do NFS The Run, um décimo do tempo das CPUs emuladas ia nisso. Ligado, a CPU espera alguns microssegundos pela trava (as outras a seguram por pouco tempo). Teste: compare a mesma corrida ligado e desligado; com Diagnóstico, o registro mostra o uso das CPUs emuladas.",
@@ -588,6 +593,10 @@ void Settings::Apply() const {
   cvars::clock_lock_free = clock_lock_free != 0;
   // alpha.87: both read when used (a delete, a module load).
   cvars::content_delete_in_background = save_delete_background != 0;
+  // alpha.98: and the content operations off the global lock.
+  cvars::content_off_global_lock = save_delete_background != 0;
+  // alpha.98: read at each handle lookup.
+  cvars::object_table_shared_lookups = handle_lookups != 0;
   cvars::module_load_offload = module_load_offload != 0;
   // alpha.88: the GPU thread watches guest memory for 0.2 ms before sleeping
   // in a WAIT_REG_MEM (read at each wait); the driver's half is set at start

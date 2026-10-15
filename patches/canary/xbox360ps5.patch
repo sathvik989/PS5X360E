@@ -10996,6 +10996,261 @@ index 000000000..819b273b9
 +}  // namespace xe
 +
 +#endif  // XENIA_KERNEL_UTIL_LDI_DECOMPRESSOR_H_
+diff --git a/src/xenia/kernel/util/object_table.cc b/src/xenia/kernel/util/object_table.cc
+index e12406365..99b805c5f 100644
+--- a/src/xenia/kernel/util/object_table.cc
++++ b/src/xenia/kernel/util/object_table.cc
+@@ -9,15 +9,39 @@
+ 
+ #include "xenia/kernel/util/object_table.h"
+ 
++#include <thread>
++
+ #include "xenia/base/byte_stream.h"
++#include "xenia/base/cvar.h"
+ #include "xenia/base/logging.h"
++#include "xenia/base/platform.h"
++#include "xenia/base/threading.h"
+ #include "xenia/kernel/xobject.h"
+ #include "xenia/kernel/xthread.h"
+ 
++DEFINE_bool(object_table_shared_lookups, false,
++            "PS5X360E (alpha.98): look a handle up under the object table's "
++            "own reader-writer lock, many threads at once, instead of the "
++            "global critical region (the changes to the table keep both). "
++            "Read at each lookup.",
++            "Kernel");
++
+ namespace xe {
+ namespace kernel {
+ namespace util {
+ 
++// Pauses first (the other side holds the lock for a few loads and stores),
++// then gives the CPU away, then short naps.
++void ObjectTableLock::Backoff(uint32_t spins) {
++  if (spins < 256) {
++    xe::SpinPause();
++  } else if (spins < 256 + 32) {
++    std::this_thread::yield();
++  } else {
++    xe::threading::NanoSleep(20000);
++  }
++}
++
+ ObjectTable::ObjectTable() {}
+ 
+ ObjectTable::~ObjectTable() { Reset(); }
+@@ -25,18 +49,38 @@ ObjectTable::~ObjectTable() { Reset(); }
+ void ObjectTable::Reset() {
+   auto global_lock = global_critical_region_.Acquire();
+ 
++  // PS5X360E (alpha.98): the tables are taken out under the table's lock
++  // (a lookup reading them finishes first), and their objects released
++  // after it, as their destructors may come back to the table.
++  ObjectTableEntry* table;
++  ObjectTableEntry* host_table;
++  uint32_t table_capacity, host_table_capacity;
++  {
++    std::lock_guard<ObjectTableLock> table_lock(table_lock_);
++    table = table_;
++    host_table = host_table_;
++    table_capacity = table_capacity_;
++    host_table_capacity = host_table_capacity_;
++    table_capacity_ = 0;
++    host_table_capacity_ = 0;
++    last_free_entry_ = 0;
++    last_free_host_entry_ = 0;
++    table_ = nullptr;
++    host_table_ = nullptr;
++  }
++
+   // Release all objects, clearing their handles first so destructors
+   // don't assert on non-empty handles_.
+-  for (uint32_t n = 0; n < table_capacity_; n++) {
+-    ObjectTableEntry& entry = table_[n];
++  for (uint32_t n = 0; n < table_capacity; n++) {
++    ObjectTableEntry& entry = table[n];
+     if (entry.object) {
+       entry.object->handles().clear();
+       entry.handle_ref_count = 0;
+       entry.object->Release();
+     }
+   }
+-  for (uint32_t n = 0; n < host_table_capacity_; n++) {
+-    ObjectTableEntry& entry = host_table_[n];
++  for (uint32_t n = 0; n < host_table_capacity; n++) {
++    ObjectTableEntry& entry = host_table[n];
+     if (entry.object) {
+       entry.object->handles().clear();
+       entry.handle_ref_count = 0;
+@@ -44,14 +88,8 @@ void ObjectTable::Reset() {
+     }
+   }
+ 
+-  table_capacity_ = 0;
+-  host_table_capacity_ = 0;
+-  last_free_entry_ = 0;
+-  last_free_host_entry_ = 0;
+-  free(table_);
+-  table_ = nullptr;
+-  free(host_table_);
+-  host_table_ = nullptr;
++  free(table);
++  free(host_table);
+ }
+ 
+ X_STATUS ObjectTable::FindFreeSlot(uint32_t* out_slot, bool host) {
+@@ -123,6 +161,9 @@ X_STATUS ObjectTable::AddHandle(XObject* object, X_HANDLE* out_handle,
+   uint32_t handle = 0;
+   {
+     auto global_lock = global_critical_region_.Acquire();
++    // PS5X360E (alpha.98): a lookup does not read the tables while they grow
++    // or an entry is filled.
++    std::lock_guard<ObjectTableLock> table_lock(table_lock_);
+ 
+     // Find a free slot.
+     uint32_t slot = 0;
+@@ -224,7 +265,13 @@ X_STATUS ObjectTable::RemoveHandle(X_HANDLE handle) {
+ 
+   if (entry->object) {
+     auto object = entry->object;
+-    entry->object = nullptr;
++    {
++      // PS5X360E (alpha.98): cleared under the table's lock, so a lookup
++      // either finished retaining the object first or finds the entry empty;
++      // the table's reference is released below, after it.
++      std::lock_guard<ObjectTableLock> table_lock(table_lock_);
++      entry->object = nullptr;
++    }
+     assert_zero(entry->handle_ref_count);
+     entry->handle_ref_count = 0;
+ 
+@@ -279,6 +326,8 @@ void ObjectTable::PurgeAllObjects() {
+       entry.handle_ref_count = 0;
+       entry.object->ReleaseHandle();
+ 
++      // PS5X360E (alpha.98): see RemoveHandle.
++      std::lock_guard<ObjectTableLock> table_lock(table_lock_);
+       entry.object = nullptr;
+     }
+   }
+@@ -324,7 +373,11 @@ XObject* ObjectTable::LookupObject(X_HANDLE handle, bool already_locked) {
+   }
+ 
+   XObject* object = nullptr;
+-  if (!already_locked) {
++  // PS5X360E (alpha.98): object_table_shared_lookups.
++  const bool shared = !already_locked && cvars::object_table_shared_lookups;
++  if (shared) {
++    table_lock_.lock_shared();
++  } else if (!already_locked) {
+     global_critical_region_.mutex().lock();
+   }
+ 
+@@ -351,7 +404,9 @@ XObject* ObjectTable::LookupObject(X_HANDLE handle, bool already_locked) {
+     object->Retain();
+   }
+ 
+-  if (!already_locked) {
++  if (shared) {
++    table_lock_.unlock_shared();
++  } else if (!already_locked) {
+     global_critical_region_.mutex().unlock();
+   }
+ 
+@@ -450,6 +505,7 @@ bool ObjectTable::Save(ByteStream* stream) {
+ }
+ 
+ bool ObjectTable::Restore(ByteStream* stream) {
++  std::lock_guard<ObjectTableLock> table_lock(table_lock_);
+   Resize(stream->Read<uint32_t>(), true);
+   for (uint32_t i = 0; i < host_table_capacity_; i++) {
+     auto& entry = host_table_[i];
+@@ -468,6 +524,7 @@ bool ObjectTable::Restore(ByteStream* stream) {
+ }
+ 
+ X_STATUS ObjectTable::RestoreHandle(X_HANDLE handle, XObject* object) {
++  std::lock_guard<ObjectTableLock> table_lock(table_lock_);
+   const bool is_host_object = XObject::is_handle_host_object(handle);
+   uint32_t slot = GetHandleSlot(handle, is_host_object);
+   uint32_t capacity = is_host_object ? host_table_capacity_ : table_capacity_;
+diff --git a/src/xenia/kernel/util/object_table.h b/src/xenia/kernel/util/object_table.h
+index 7e7dee77c..0295dc443 100644
+--- a/src/xenia/kernel/util/object_table.h
++++ b/src/xenia/kernel/util/object_table.h
+@@ -10,6 +10,8 @@
+ #ifndef XENIA_KERNEL_UTIL_OBJECT_TABLE_H_
+ #define XENIA_KERNEL_UTIL_OBJECT_TABLE_H_
+ 
++#include <atomic>
++#include <cstdint>
+ #include <string>
+ #include <unordered_map>
+ #include <vector>
+@@ -27,6 +29,54 @@ namespace xe {
+ namespace kernel {
+ namespace util {
+ 
++// PS5X360E (alpha.98): the table's own reader-writer lock. Every change to
++// the tables holds the global critical region too, so writers stay one at a
++// time and the readers that take the global lock read as before. With
++// object_table_shared_lookups, LookupObject, the busiest acquirer of the
++// global lock (each handle a system call names: in NFS The Run's races 470,000
++// to 690,000 a second, and two thirds of all the time threads spent waiting
++// for that lock), reads under this alone, many at once. It spins: both sides
++// hold it for a handful of loads and stores.
++class ObjectTableLock {
++ public:
++  void lock_shared() {
++    for (uint32_t spins = 0;; ++spins) {
++      uint32_t state = state_.load(std::memory_order_relaxed);
++      if (!(state & kWriter) &&
++          state_.compare_exchange_weak(state, state + 1,
++                                       std::memory_order_acquire,
++                                       std::memory_order_relaxed)) {
++        return;
++      }
++      Backoff(spins);
++    }
++  }
++  void unlock_shared() { state_.fetch_sub(1, std::memory_order_release); }
++  // A writer keeps new readers out, then waits for those inside to leave.
++  void lock() {
++    for (uint32_t spins = 0;; ++spins) {
++      uint32_t state = state_.load(std::memory_order_relaxed);
++      if (!(state & kWriter) &&
++          state_.compare_exchange_weak(state, state | kWriter,
++                                       std::memory_order_acquire,
++                                       std::memory_order_relaxed)) {
++        break;
++      }
++      Backoff(spins);
++    }
++    for (uint32_t spins = 0;
++         state_.load(std::memory_order_acquire) != kWriter; ++spins) {
++      Backoff(spins);
++    }
++  }
++  void unlock() { state_.fetch_and(~kWriter, std::memory_order_release); }
++
++ private:
++  static constexpr uint32_t kWriter = 0x80000000u;
++  static void Backoff(uint32_t spins);
++  std::atomic<uint32_t> state_{0};
++};
++
+ class ObjectTable {
+  public:
+   ObjectTable();
+@@ -106,6 +156,8 @@ class ObjectTable {
+   bool Resize(uint32_t new_capacity, bool host);
+ 
+   xe::global_critical_region global_critical_region_;
++  // PS5X360E (alpha.98): see ObjectTableLock. Taken after the global lock.
++  ObjectTableLock table_lock_;
+   uint32_t table_capacity_ = 0;
+   uint32_t host_table_capacity_ = 0;
+   ObjectTableEntry* table_ = nullptr;
 diff --git a/src/xenia/kernel/util/shim_utils.cc b/src/xenia/kernel/util/shim_utils.cc
 index 68c0773ae..84b069f8b 100644
 --- a/src/xenia/kernel/util/shim_utils.cc
@@ -11327,10 +11582,10 @@ index 6f9e52008..461ce5698 100644
  
  }  // namespace apps
 diff --git a/src/xenia/kernel/xam/content_manager.cc b/src/xenia/kernel/xam/content_manager.cc
-index 3fec23c43..28f952887 100644
+index 3fec23c43..da783fc04 100644
 --- a/src/xenia/kernel/xam/content_manager.cc
 +++ b/src/xenia/kernel/xam/content_manager.cc
-@@ -9,29 +9,186 @@
+@@ -9,29 +9,193 @@
  
  #include "xenia/kernel/xam/content_manager.h"
  
@@ -11362,6 +11617,13 @@ index 3fec23c43..28f952887 100644
 +            "aside at once and removes it on a thread of its own. The title "
 +            "waits for the delete, and on the console's storage it took from "
 +            "half a second to six seconds.",
++            "Kernel");
++
++DEFINE_bool(content_off_global_lock, false,
++            "PS5X360E (alpha.98): a title's content operations (a save made, "
++            "opened, closed, deleted) hold a lock of their own instead of the "
++            "global critical region across their file system calls, so the "
++            "other threads keep running meanwhile. Read at each operation.",
 +            "Kernel");
 +
  namespace xe {
@@ -11517,7 +11779,7 @@ index 3fec23c43..28f952887 100644
  ContentPackage::ContentPackage(KernelState* kernel_state,
                                 const std::string_view root_name,
                                 const XCONTENT_AGGREGATE_DATA& data,
-@@ -44,10 +201,14 @@ ContentPackage::ContentPackage(KernelState* kernel_state,
+@@ -44,10 +208,14 @@ ContentPackage::ContentPackage(KernelState* kernel_state,
    content_data_ = data;
  
    auto fs = kernel_state_->file_system();
@@ -11532,7 +11794,33 @@ index 3fec23c43..28f952887 100644
      fs->RegisterDevice(std::move(device));
    } else {
      // A title can install content by copying the package file itself, so a
-@@ -346,12 +507,14 @@ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
+@@ -96,6 +264,16 @@ ContentManager::ContentManager(KernelState* kernel_state,
+ 
+ ContentManager::~ContentManager() = default;
+ 
++ContentManager::ContentGuard ContentManager::LockContent() {
++  ContentGuard guard;
++  if (cvars::content_off_global_lock) {
++    guard.content = std::unique_lock<std::recursive_mutex>(content_lock_);
++  } else {
++    guard.global = global_critical_region_.Acquire();
++  }
++  return guard;
++}
++
+ std::filesystem::path ContentManager::ResolvePackageRoot(
+     uint64_t xuid, uint32_t title_id, XContentType content_type) const {
+   if (title_id == kCurrentlyRunningTitleId) {
+@@ -329,7 +507,7 @@ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
+     return nullptr;
+   }
+ 
+-  auto global_lock = global_critical_region_.Acquire();
++  auto content_guard = LockContent();
+ 
+   // A multi-disc title's update ships as one package holding a discNNN
+   // directory per disc; mount the one this disc needs.
+@@ -346,12 +524,14 @@ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
  
  bool ContentManager::ContentExists(const uint64_t xuid,
                                     const XCONTENT_AGGREGATE_DATA& data) {
@@ -11547,7 +11835,7 @@ index 3fec23c43..28f952887 100644
    if (data.title_id == -1) {
      data.title_id = kernel_state_->title_id();
    }
-@@ -365,18 +528,24 @@ X_RESULT ContentManager::WriteContentHeaderFile(const uint64_t xuid,
+@@ -365,18 +545,24 @@ X_RESULT ContentManager::WriteContentHeaderFile(const uint64_t xuid,
                                                data.title_id, data.content_type);
    auto parent_path = header_path.parent_path();
  
@@ -11572,15 +11860,17 @@ index 3fec23c43..28f952887 100644
      return X_STATUS_SUCCESS;
    }
    return X_STATUS_NO_SUCH_FILE;
-@@ -417,6 +586,7 @@ X_RESULT ContentManager::ReadContentHeaderFile(
+@@ -417,7 +603,8 @@ X_RESULT ContentManager::ReadContentHeaderFile(
  X_RESULT ContentManager::CreateContent(const std::string_view root_name,
                                         const uint64_t xuid,
                                         const XCONTENT_AGGREGATE_DATA& data) {
+-  auto global_lock = global_critical_region_.Acquire();
 +  SlowContentLog slow("CreateContent", data.file_name());
-   auto global_lock = global_critical_region_.Acquire();
++  auto content_guard = LockContent();
  
    if (open_packages_.count(string_key_insensitive(root_name))) {
-@@ -430,9 +600,11 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name,
+     // Already content open with this root name.
+@@ -430,9 +617,11 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name,
      return X_ERROR_ALREADY_EXISTS;
    }
  
@@ -11592,47 +11882,57 @@ index 3fec23c43..28f952887 100644
  
    auto package = ResolvePackage(root_name, xuid, data);
    if (!package) {
-@@ -450,6 +622,7 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
+@@ -450,7 +639,8 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
                                       const XCONTENT_AGGREGATE_DATA& data,
                                       uint32_t& content_license,
                                       const uint32_t disc_number) {
+-  auto global_lock = global_critical_region_.Acquire();
 +  SlowContentLog slow("OpenContent", data.file_name());
-   auto global_lock = global_critical_region_.Acquire();
++  auto content_guard = LockContent();
  
    if (open_packages_.count(string_key_insensitive(root_name))) {
-@@ -493,6 +666,7 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
+     // Already content open with this root name.
+@@ -493,7 +683,8 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
  }
  
  X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
+-  auto global_lock = global_critical_region_.Acquire();
 +  SlowContentLog slow("CloseContent", root_name);
-   auto global_lock = global_critical_region_.Acquire();
++  auto content_guard = LockContent();
  
    // 415607D6 - Uses XamContentCreate with name "save", but XamContentClose with
-@@ -513,6 +687,7 @@ X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
+   // "SAVE".
+@@ -513,7 +704,8 @@ X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
  X_RESULT ContentManager::GetContentThumbnail(
      const uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
      std::vector<uint8_t>* buffer) {
+-  auto global_lock = global_critical_region_.Acquire();
 +  SlowContentLog slow("GetContentThumbnail", data.file_name());
-   auto global_lock = global_critical_region_.Acquire();
++  auto content_guard = LockContent();
  
    auto package_path = ResolvePackagePath(xuid, data);
-@@ -532,6 +707,7 @@ X_RESULT ContentManager::GetContentThumbnail(
+   auto thumb_path = package_path / vfs::kPackageThumbnailFileName;
+@@ -532,7 +724,8 @@ X_RESULT ContentManager::GetContentThumbnail(
  X_RESULT ContentManager::SetContentThumbnail(
      const uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
      std::vector<uint8_t> buffer) {
+-  auto global_lock = global_critical_region_.Acquire();
 +  SlowContentLog slow("SetContentThumbnail", data.file_name());
-   auto global_lock = global_critical_region_.Acquire();
++  auto content_guard = LockContent();
    auto package_path = ResolvePackagePath(xuid, data);
    std::filesystem::create_directories(package_path);
-@@ -548,6 +724,7 @@ X_RESULT ContentManager::SetContentThumbnail(
+   if (std::filesystem::exists(package_path)) {
+@@ -548,7 +741,8 @@ X_RESULT ContentManager::SetContentThumbnail(
  
  X_RESULT ContentManager::DeleteContent(const uint64_t xuid,
                                         const XCONTENT_AGGREGATE_DATA& data) {
+-  auto global_lock = global_critical_region_.Acquire();
 +  SlowContentLog slow("DeleteContent", data.file_name());
-   auto global_lock = global_critical_region_.Acquire();
++  auto content_guard = LockContent();
  
    if (IsContentOpen(data)) {
-@@ -556,7 +733,26 @@ X_RESULT ContentManager::DeleteContent(const uint64_t xuid,
+     // TODO(Gliniak): Get real error code for this case.
+@@ -556,7 +750,26 @@ X_RESULT ContentManager::DeleteContent(const uint64_t xuid,
    }
  
    auto package_path = ResolvePackagePath(xuid, data);
@@ -11660,6 +11960,35 @@ index 3fec23c43..28f952887 100644
      return X_ERROR_SUCCESS;
    } else {
      return X_ERROR_FILE_NOT_FOUND;
+diff --git a/src/xenia/kernel/xam/content_manager.h b/src/xenia/kernel/xam/content_manager.h
+index 9ebdd08c4..e22b74f73 100644
+--- a/src/xenia/kernel/xam/content_manager.h
++++ b/src/xenia/kernel/xam/content_manager.h
+@@ -11,6 +11,7 @@
+ #define XENIA_KERNEL_XAM_CONTENT_MANAGER_H_
+ 
+ #include <memory>
++#include <mutex>
+ #include <string>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -294,6 +295,16 @@ class ContentManager {
+ 
+   // TODO(benvanik): remove use of global lock, it's bad here!
+   xe::global_critical_region global_critical_region_;
++  // PS5X360E (alpha.98): with content_off_global_lock, what the content
++  // operations hold instead of the global lock: the file system calls they
++  // make took 0.3 to 4 s on the console (a save's folder deleted, made), and
++  // every thread making a system call meanwhile stood still behind them.
++  struct ContentGuard {
++    std::unique_lock<std::recursive_mutex> content;
++    global_unique_lock_type global;
++  };
++  ContentGuard LockContent();
++  std::recursive_mutex content_lock_;
+   std::unordered_map<string_key_insensitive, ContentPackage*> open_packages_;
+ };
+ 
 diff --git a/src/xenia/kernel/xam/profile_manager.cc b/src/xenia/kernel/xam/profile_manager.cc
 index a5cb274ef..fe9b9aea7 100644
 --- a/src/xenia/kernel/xam/profile_manager.cc

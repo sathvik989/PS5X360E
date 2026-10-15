@@ -3,6 +3,27 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.98+0.6.0 (PS5X360E, on Xenia Edge)
+
+From the alpha.97 logs of NFS The Run (October 15). Work in progress: saved before its first build.
+
+- **Performance > Save without stopping the game (test)** (was "Delete saves in the background";
+  off by default; from the next start). In the menu the game saves, and deleting its save folder
+  took 0.3 to 4 s on the PS5's storage while holding the emulator's global lock: every other game
+  thread stopped at its next system call (the main thread, the job threads, the disc thread; no
+  frame for 4 s, the "almost hang"). On, the save's folder is moved aside and deleted later on a
+  thread of its own, as before, and the save calls (made, opened, closed, deleted, thumbnails)
+  hold a lock of their own instead of the global one, so the other threads keep running while
+  the storage works.
+- **New: Performance > Object lookups without the global lock (test)** (off by default; from the
+  next start). Every system call that names a handle looks it up in the kernel's object table
+  under the global lock: 470,000 to 690,000 times a second in a race, two thirds of all the time
+  threads spent waiting for that lock (alpha.94's lock timing). On, a lookup takes the table's own
+  reader-writer lock, many threads at once; changes to the table still take both locks.
+- **Exit to the library**: the boot log follows the end of a game step by step, and if the title
+  is still there 15 s later it says where the main thread is, every 15 s for five minutes
+  (alpha.97: back to the launcher hung for five minutes after "restarting the title").
+
 ## 0.2-alpha.97+0.6.0 (PS5X360E, on Xenia Edge)
 
 Spin waits and the PS5's SMT. The emulated CPUs share PS5 cores in pairs (emulated CPUs 1 and 2 on

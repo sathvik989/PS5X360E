@@ -1271,7 +1271,28 @@ class ConsoleLogSink final : public xe::LogSink {
   std::atomic<int> lines_{0};
 };
 namespace xbox360ps5 { void CaptureDriverMessages(const std::filesystem::path& directory); }
+// alpha.98: the end of a game, step by step in the boot log, and where the
+// main thread is when the title has not gone 15 seconds later, every 15
+// seconds (alpha.97: a return to the library hung for five minutes after the
+// boot log's "restarting the title").
+pthread_t main_pthread{};
+void WatchExit(const char* step) {
+  xbox360ps5::Stage(step);
+  static std::atomic<bool> started{false};
+  if (started.exchange(true)) return;
+  std::thread([] {
+    for (int n = 1; n <= 20; ++n) {
+      std::this_thread::sleep_for(std::chrono::seconds(15));
+      char text[96];
+      std::snprintf(text, sizeof(text), "BOOT exit still running after %d s; the main thread:", n * 15);
+      xbox360ps5::Stage(text);
+      xbox360ps5::ProbeThread(reinterpret_cast<void*>(main_pthread), "main");
+    }
+  }).detach();
+}
+
 int main(int argc, char** argv) {
+  main_pthread = pthread_self();
   const std::filesystem::path storage = "/download0/ps5x360e";
   std::error_code error;
   std::filesystem::create_directories(storage, error);
@@ -2525,6 +2546,9 @@ int main(int argc, char** argv) {
             }
           }
         }
+        WatchExit(quit ? "BOOT exit: the game is closing (quit)"
+                       : restart ? "BOOT exit: the game is closing (back to the launcher)"
+                                 : "BOOT exit: the game is closing");
         xe::ui::controller_keyboard::Cancel();
         // Publish cancellation and signal any keyboard fence while the drawer
         // and kernel still exist, before ending the guest title.
@@ -2540,27 +2564,38 @@ int main(int argc, char** argv) {
         }
         if (quit) {
           // "Fechar o emulador": the system ends the title.
+          WatchExit("BOOT exit: saving the exit cache");
           CheckpointExitCache(exit_cache);
           XELOGW("Menu: closing the title");
           xe::FlushLog();
+          WatchExit("BOOT exit: sending the last log lines");
           xbox360ps5::DrainNetLog();
+          WatchExit("BOOT exit: asking the system to end the title");
           sceSystemServiceLoadExec("exit", nullptr);
           for (;;) usleep(100000);
         }
         // Every launcher/settings/guide restart passes here before LoadExec.
         // Normal quit is also saved before TerminateTitle tears down storage.
         if (!restart) CheckpointExitCache(exit_cache);
-        if (!restart && emulator.is_title_open()) emulator.TerminateTitle();
+        if (!restart && emulator.is_title_open()) {
+          WatchExit("BOOT exit: ending the title");
+          emulator.TerminateTitle();
+          WatchExit("BOOT exit: title ended");
+        }
       }
-      if (restart) CheckpointExitCache(exit_cache);
+      if (restart) {
+        WatchExit("BOOT exit: saving the exit cache");
+        CheckpointExitCache(exit_cache);
+      }
       if (!restart) context.ExecutePendingFunctionsFromUIThread();
     }
     if (restart) {
       // A fresh process is the reliable way back to the launcher: the system
       // ends this one and runs the title's executable again.
       XELOGI("ENGINE RESTART");
-      Stage("BOOT restarting the title");
+      WatchExit("BOOT restarting the title");
       xe::ShutdownLogging();
+      Stage("BOOT exit: log closed; asking the system to start the title again");
       const int refused = sceSystemServiceLoadExec("/app0/eboot.bin", nullptr);
       char text[64];
       std::snprintf(text, sizeof(text), "BOOT restart refused %08x", unsigned(refused));

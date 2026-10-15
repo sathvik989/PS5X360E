@@ -50,8 +50,9 @@ struct Settings {
   int rendered_texture_copy = 0;  // 1: rendered textures in one copy (texture_load_scaled_direct_copy; alpha.83 test).
   int rt_warm_up = 0;         // 1: render target conversion pipelines cached and made at start (rt_pipeline_warm_up; alpha.82 test).
   int clock_lock_free = 0;    // 1: the guest clock read without its lock (clock_lock_free; alpha.85 test).
-  int save_delete_background = 0;  // 1: a deleted save is moved aside and removed later (content_delete_in_background; alpha.87 test).
+  int save_delete_background = 0;  // 1: Save without stopping the game: a deleted save is moved aside and removed later (content_delete_in_background, alpha.87) and save calls hold their own lock, not the global one (content_off_global_lock, alpha.98); test.
   int module_load_offload = 0;     // 1: a game module's read and precompile on an I/O worker (module_load_offload; alpha.87 test).
+  int handle_lookups = 0;          // 1: handle lookups under the object table's own lock, not the global one (object_table_shared_lookups; alpha.98 test).
   int scheduler_spin = 0;          // 1: the guest scheduler's lock spins instead of sleeping (scheduler_lock_spins; alpha.96 test).
   int irql_preempt = 0;            // 1: a preemption DISPATCH_LEVEL defers is asked again when the IRQL drops (preempt_at_irql_drop; alpha.96 test).
   int spin_waits = 0;              // 1: PAUSEs per guest spin and after a failed store-conditional from the measured PAUSE time (x64_spin_pauses, x64_reserve_fail_pauses; alpha.97 test).
