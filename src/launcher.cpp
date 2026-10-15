@@ -48,6 +48,8 @@ DECLARE_bool(rt_pipeline_warm_up);
 DECLARE_bool(clock_lock_free);
 DECLARE_bool(content_delete_in_background);
 DECLARE_bool(module_load_offload);
+DECLARE_bool(scheduler_lock_spins);
+DECLARE_bool(preempt_at_irql_drop);
 DECLARE_uint32(wait_reg_mem_spin_us);
 DECLARE_bool(spin_hint_yields);
 DECLARE_bool(x64_ps5_zen2_features);
@@ -269,6 +271,12 @@ const std::vector<Option>& Options() {
        off_on},
       {"module_load_offload", &S::module_load_offload, 1, W::start, 0, true, "Carregar código do jogo sem parar as outras tarefas (teste)",
        "Quando o jogo carrega uma parte do seu código do disco (antes do menu principal do NFS The Run), a leitura e a preparação ocupavam a CPU emulada, e as outras tarefas dessa CPU paravam, até a de que o vídeo dependia: pausas de 2 a 10 segundos. Ligado, esse trabalho vai para outra tarefa do emulador enquanto as do jogo continuam. Teste: compare a abertura ligado e desligado.",
+       off_on},
+      {"scheduler_spin", &S::scheduler_spin, 1, W::start, 0, true, "Trava do agendador sem dormir (teste)",
+       "As CPUs emuladas dividem uma trava para trocar, pôr em espera e acordar as tarefas do jogo. No PS5 ela punha uma CPU para dormir no sistema sempre que outra a segurava, e acordá-la custava outra chamada ao sistema: nas corridas do NFS The Run, um décimo do tempo das CPUs emuladas ia nisso. Ligado, a CPU espera alguns microssegundos pela trava (as outras a seguram por pouco tempo). Teste: compare a mesma corrida ligado e desligado; com Diagnóstico, o registro mostra o uso das CPUs emuladas.",
+       off_on},
+      {"irql_preempt", &S::irql_preempt, 1, W::start, 0, true, "Troca de tarefa ao baixar o IRQL (teste)",
+       "Quando a fatia de tempo de uma CPU emulada acaba enquanto a tarefa do jogo roda num nível de interrupção elevado (DISPATCH_LEVEL, em que o Xbox 360 não troca de tarefa), a troca espera. Até aqui o emulador perguntava de novo a cada volta de laço da tarefa até o nível baixar, cada vez uma chamada ao agendador. Ligado, pergunta uma vez, quando a tarefa baixa o nível. Teste: compare a mesma corrida ligado e desligado; com Diagnóstico, o registro mostra quantas trocas esperaram.",
        off_on},
       {"spin_yields", &S::spin_yields, 1, W::start, 0, true, "Ceder a CPU em esperas longas (teste)",
        "Quando uma tarefa do jogo fica girando à espera de algo (o vídeo, outra tarefa) por mais de 0,2 ms, ela cede a CPU emulada às outras tarefas do jogo que esperam nessa mesma CPU, como o Xbox 360 faz quando uma tarefa pede para ceder a vez. Sem isso, as outras só rodam quando a fatia de tempo dela acaba. Teste: compare a mesma corrida ligado e desligado; com Diagnóstico, o registro mostra quantas vezes cedeu.",
@@ -581,6 +589,10 @@ void Settings::Apply() const {
   cvars::wait_reg_mem_spin_us = gpu_waits ? 200 : 0;
   // alpha.89: read as guest code is compiled, so from the next start.
   cvars::spin_hint_yields = spin_yields != 0;
+  // alpha.96: read when the kernel starts (its scheduler is made then).
+  cvars::scheduler_lock_spins = scheduler_spin != 0;
+  // alpha.96: read at each deferred preemption and IRQL drop.
+  cvars::preempt_at_irql_drop = irql_preempt != 0;
   // alpha.90: the recompiler's instruction set, worked out again here the
   // first time (a start option; the recompiler takes it when it starts).
   cvars::x64_ps5_zen2_features = jit_zen2 != 0;

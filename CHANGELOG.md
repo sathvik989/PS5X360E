@@ -3,6 +3,28 @@
 PS5X360E versions are `0.X-alpha.N+<PS5X360 base>` (0.2 and up: on Xenia Edge): an alpha number of this fork, then the
 PS5X360 release it is built on.
 
+## 0.2-alpha.96+0.6.0 (PS5X360E, on Xenia Edge)
+
+- **New: Performance > Scheduler lock without sleeping (test)** (off by default; from the next
+  start). The six emulated CPUs share one lock to switch the game's threads, put them to wait
+  and wake them, taken on every switch, wait and signal. It was a standard mutex, which on the
+  PS5 puts a CPU to sleep in the system whenever another holds it, and wakes it with a second
+  system call; in NFS The Run's races (alpha.92 profiles) about a tenth of the emulated CPUs'
+  samples were in those two calls. On, a CPU waits for the lock a few microseconds (the others
+  hold it for a few list operations), then gives its core away, then sleeps briefly, and the
+  release is a single store. Compare a race on and off with Diagnostics: the emulated CPUs'
+  use and the profiles' share of system time.
+- **New: Performance > Switch threads when the IRQL drops (test)** (off by default; from the next
+  start). When an emulated CPU's time slice runs out while the game's thread runs at
+  DISPATCH_LEVEL (where the Xbox 360 does not switch threads), the switch waits; until now the
+  emulator set its flag again at once, so its handler ran at every loop the thread went round
+  until the level dropped, each time a call through the thread-local lookups the PS5 build
+  makes expensive. On, it is asked for once, when the thread lowers its IRQL (KfLowerIrql,
+  a spinlock's release, the end of a DPC), and by the watchdog once a millisecond meanwhile.
+- **Diagnostics**: a scheduler line with the safepoint preemptions a second, those handled and
+  those deferred because the thread held the global lock or ran at DISPATCH_LEVEL, which says
+  whether the option above has anything to do in a game.
+
 ## 0.2-alpha.95+0.6.0 (PS5X360E, on Xenia Edge)
 
 From the alpha.92 logs of NFS The Run.
